@@ -185,6 +185,17 @@ describe("GIF export cancellation", () => {
 		expect(toast.success).toHaveBeenCalledOnce();
 	});
 
+	it("surfaces a rejected cancel request instead of keeping the progress view", async () => {
+		vi.mocked(cancelGifExportNative).mockRejectedValueOnce(new Error("cancel ipc failed"));
+		pendingExport();
+		await start();
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.getByText("cancel ipc failed")).toBeVisible());
+		expect(toast.error).toHaveBeenCalledWith("cancel ipc failed");
+		expect(toast.success).not.toHaveBeenCalled();
+		expect(screen.queryByText(/Rendering frames/i)).not.toBeInTheDocument();
+	});
+
 	it("reports success when native publication wins the race", async () => {
 		vi.mocked(cancelGifExportNative).mockResolvedValue({ accepted: false });
 		const job = pendingExport();

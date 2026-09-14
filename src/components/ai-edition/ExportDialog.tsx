@@ -296,7 +296,10 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 			if (activeExport.current !== job) return;
 			job.cancelRequested = false;
 			setCancelPending(false);
-			setError(err instanceof Error ? err.message : String(err));
+			const message = err instanceof Error ? err.message : String(err);
+			setError(message);
+			setPhase("error");
+			toast.error(message);
 		}
 	};
 
