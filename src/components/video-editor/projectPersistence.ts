@@ -71,6 +71,7 @@ export interface ProjectEditorState {
 	shadowIntensity: number;
 	showBlur: boolean;
 	motionBlurAmount: number;
+	depthOfField: boolean;
 	borderRadius: number;
 	padding: number;
 	cropRegion: CropRegion;
@@ -490,6 +491,10 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					? DEFAULT_ZOOM_MOTION_BLUR
 					: DEFAULT_EDITOR_APPEARANCE_SETTINGS.motionBlurAmount
 				: DEFAULT_EDITOR_APPEARANCE_SETTINGS.motionBlurAmount,
+		depthOfField:
+			typeof editor.depthOfField === "boolean"
+				? editor.depthOfField
+				: DEFAULT_EDITOR_APPEARANCE_SETTINGS.depthOfField,
 		borderRadius:
 			typeof editor.borderRadius === "number"
 				? editor.borderRadius

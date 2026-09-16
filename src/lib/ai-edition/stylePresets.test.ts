@@ -19,6 +19,7 @@ function appearance(overrides: Partial<StylePresetAppearance> = {}): StylePreset
 		shadowIntensity: 0.2,
 		showBlur: false,
 		motionBlurAmount: 0.2,
+		depthOfField: true,
 		borderRadius: 40,
 		padding: 50,
 		webcamLayoutPreset: "picture-in-picture",
@@ -47,6 +48,17 @@ describe("parseStylePresetAppearance", () => {
 	it("rejects a missing field instead of guessing a factory value", () => {
 		const { padding: _padding, ...rest } = appearance();
 		expect(() => parseStylePresetAppearance(rest)).toThrow(/padding/);
+	});
+
+	it("keeps depth of field on for a preset saved before the setting existed", () => {
+		const { depthOfField: _dof, ...older } = appearance({ depthOfField: false });
+		expect(parseStylePresetAppearance(older).depthOfField).toBe(true);
+		expect(parseStylePresetAppearance(appearance({ depthOfField: false })).depthOfField).toBe(
+			false,
+		);
+		expect(() => parseStylePresetAppearance({ ...appearance(), depthOfField: "on" })).toThrow(
+			/depthOfField/,
+		);
 	});
 
 	it("rejects out-of-range numbers, wrong types and unknown enum values", () => {

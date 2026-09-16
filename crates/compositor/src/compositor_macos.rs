@@ -325,6 +325,10 @@ pub struct Compositor {
     /// échantillonner la cible sur laquelle on dessine, et le mode 10 lit un niveau de mip
     /// pour flouter à coût constant.
     ann_copy: metal::Texture,
+    /// Pyramide de profondeur de champ (mode 8) : la vidéo en RGBA8 à demi-résolution de la
+    /// texture DÉCODEUR, mips compris. Allouée au premier écran incliné, recréée quand la
+    /// texture décodeur change de taille. Cf. `compositor_windows::DofPyramid`.
+    dof_pyramid: RefCell<Option<metal::Texture>>,
     /// Images d'annotation, indexées par ID d'annotation (pas par data-URL : celle-ci pèse
     /// souvent des mégaoctets et la hacher à chaque frame coûterait plus que le décodage).
     /// La longueur sert de garde-fou quand l'utilisateur change l'image.
@@ -636,6 +640,7 @@ impl Compositor {
             pipeline_kdown,
             pipeline_kup,
             ann_copy,
+            dof_pyramid: RefCell::new(None),
             ann_img_cache: RefCell::new(std::collections::HashMap::new()),
             text_cache: RefCell::new(std::collections::HashMap::new()),
             text_raster: crate::text::TextRasterizer::new().ok(),
@@ -1083,6 +1088,66 @@ impl Compositor {
     }
 
 
+    /// Remplit la pyramide de profondeur de champ depuis la frame écran et la rend. Port de
+    /// `compositor_windows::fill_dof_pyramid` : UN draw du mode 0 en UV plein vers une cible
+    /// demi-résolution vidée d'abord (`color.a = 1`, un seul tap), puis `generate_mipmaps`,
+    /// l'appel qui sert déjà `ann_copy`. Le viewport découle de la taille de l'attachement.
+    unsafe fn fill_dof_pyramid(
+        &self,
+        cmd: &metal::CommandBufferRef,
+        y: &metal::Texture,
+        uv: &metal::Texture,
+        tex_w: u32,
+        tex_h: u32,
+    ) -> Result<metal::Texture> {
+        let (w, h) = (tex_w.div_ceil(2).max(1), tex_h.div_ceil(2).max(1));
+        let stale = self
+            .dof_pyramid
+            .borrow()
+            .as_ref()
+            .is_none_or(|p| (p.width(), p.height()) != (w as u64, h as u64));
+        if stale {
+            let d = metal::TextureDescriptor::new();
+            d.set_texture_type(metal::MTLTextureType::D2);
+            d.set_pixel_format(metal::MTLPixelFormat::RGBA8Unorm);
+            d.set_width(w as u64);
+            d.set_height(h as u64);
+            d.set_storage_mode(metal::MTLStorageMode::Private);
+            d.set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
+            d.set_mipmap_level_count(crate::frame_geometry::dof_pyramid_levels(w, h) as u64);
+            *self.dof_pyramid.borrow_mut() = Some(self.gpu.device.new_texture(&d));
+        }
+        let pyr = self.dof_pyramid.borrow().clone().expect("pyramide allouée ci-dessus");
+        let enc = self.begin_pass(
+            cmd,
+            &pyr,
+            Some(metal::MTLClearColor::new(0.0, 0.0, 0.0, 0.0)),
+            &self.pipeline_main,
+        )?;
+        let full = [0.0, 0.0, 1.0, 1.0];
+        self.draw_video(
+            enc,
+            &LayerCB {
+                dst: full,
+                src: full,
+                quad_px: [w as f32, h as f32],
+                mode: 0.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+                src_prev: full,
+                dst_prev: full,
+                mb: [1.0, 0.0, 1.0, 0.0],
+                ..Default::default()
+            },
+            y,
+            uv,
+        );
+        enc.end_encoding();
+        let blit = cmd.new_blit_command_encoder();
+        blit.generate_mipmaps(&pyr);
+        blit.end_encoding();
+        Ok(pyr)
+    }
+
     /// Ombre d'un écran incliné en 3D : la pénombre suit le QUADRILATÈRE projeté (mode 12),
     /// pas son rect englobant. Port de `compositor_windows::draw_quad_shadow`.
     #[allow(clippy::too_many_arguments)]
@@ -1143,6 +1208,7 @@ impl Compositor {
         radius: f32,
         y: &metal::Texture,
         uv: &metal::Texture,
+        dof_pyramid: Option<&metal::Texture>,
     ) {
         let (rw, rh) = (self.render_w as f32, self.render_h as f32);
         let corners = quad.corners;
@@ -1161,6 +1227,9 @@ impl Compositor {
         let [tr0, tr1] = local(corners[1]);
         let [br0, br1] = local(corners[2]);
         let [bl0, bl1] = local(corners[3]);
+        // texture(2) EXPLICITE : `draw_video` ne lie que 0/1, et le slot 2 garde sinon ce que
+        // le draw précédent y a laissé. `None` quand l'effet est coupé : `k = 0`, rien n'y est lu.
+        enc.set_fragment_texture(2, dof_pyramid.map(|t| &**t));
         self.draw_video(
             enc,
             &LayerCB {
@@ -1177,9 +1246,9 @@ impl Compositor {
                 fx: [tl0, tl1, tr0, tr1],
                 src_prev: [br0, br1, bl0, bl1],
                 dst_prev: [plane_px[0], plane_px[1], 0.0, 0.0],
-                // Gradient de profondeur du plan et profondeur du focus (`depth_mb`) ; `k = 0`,
-                // le shader ne les lit pas encore.
-                mb: quad.depth_mb(s_px, focus_plane),
+                // Gradient de profondeur du plan, profondeur du focus et `k` (`depth_mb`) : la
+                // pyramide liée décide seule si l'effet tourne.
+                mb: quad.depth_mb(s_px, focus_plane, dof_pyramid.is_some()),
                 ..Default::default()
             },
             y,
@@ -1995,6 +2064,13 @@ impl Compositor {
         });
 
         let cmd_buf = self.gpu.context.new_command_buffer();
+        // Profondeur de champ : pyramide remplie seulement sur une frame inclinée qui la lit,
+        // dans ses propres passes, avant celles de la composition.
+        let dof_pyramid = if g.depth_of_field_on(self.gpu.backend == crate::d3d::Backend::Cpu) {
+            Some(self.fill_dof_pyramid(cmd_buf, &sy, &suv, stw, sth)?)
+        } else {
+            None
+        };
         let enc = self.begin_pass(
             cmd_buf,
             &self.rt,
@@ -2122,7 +2198,16 @@ impl Compositor {
                 &suv,
             ),
             Some(quad) => self.draw_tilted_screen(
-                enc, quad, s_px, quad_center_px, g.cut, g.focus_plane, g.s_radius, &sy, &suv,
+                enc,
+                quad,
+                s_px,
+                quad_center_px,
+                g.cut,
+                g.focus_plane,
+                g.s_radius,
+                &sy,
+                &suv,
+                dof_pyramid.as_ref(),
             ),
         }
 

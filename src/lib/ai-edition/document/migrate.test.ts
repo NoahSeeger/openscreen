@@ -17,6 +17,7 @@ function makeV2Project(overrides: Partial<EditorProjectData> = {}): EditorProjec
 			shadowIntensity: 0,
 			showBlur: false,
 			motionBlurAmount: 0,
+			depthOfField: true,
 			borderRadius: 0,
 			padding: 50,
 			cropRegion: { x: 0, y: 0, width: 1, height: 1 },

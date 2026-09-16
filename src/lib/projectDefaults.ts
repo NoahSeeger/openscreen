@@ -4,6 +4,8 @@ export interface ProjectAppearanceDefaults {
 	shadowIntensity: number;
 	showBlur: boolean;
 	motionBlurAmount: number;
+	/** Defocus a 3D-tilted screen by its depth; inert on flat zooms. */
+	depthOfField: boolean;
 	borderRadius: number;
 	padding: number;
 	webcamLayoutPreset: "picture-in-picture" | "vertical-stack" | "dual-frame" | "no-webcam";
@@ -36,6 +38,8 @@ export const DEFAULT_PROJECT_APPEARANCE: ProjectAppearanceDefaults = {
 	shadowIntensity: 0.2,
 	showBlur: false,
 	motionBlurAmount: 0.2,
+	// On: it only acts on tilted zooms, where the blur already scales with the real angle.
+	depthOfField: true,
 	borderRadius: 40,
 	padding: 50,
 	webcamLayoutPreset: "picture-in-picture",

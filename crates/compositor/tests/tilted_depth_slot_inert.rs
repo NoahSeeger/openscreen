@@ -1,8 +1,10 @@
-//! Le slot de profondeur du mode 8 (`mb = [gx, gy, z_focus, 0]`) ne change pas un octet du rendu.
+//! La profondeur de champ éteinte ne change pas un octet du rendu.
 //!
-//! `TiltedQuad::depth_mb` remplit un champ que le shader du mode 8 ne lisait pas. Tant que `k`
-//! vaut 0, une frame inclinée doit sortir identique, octet pour octet, à celle d'avant ce slot.
-//! La seule façon de le montrer est de comparer à un rendu de référence produit SANS le slot :
+//! `TiltedQuad::depth_mb` remplit le `mb` du mode 8. Réglage « Depth of field » coupé, `k` vaut 0
+//! et une frame inclinée doit sortir identique, octet pour octet, à celle d'avant ce slot. Même
+//! chose, réglage ALLUMÉ, pour une frame sans rotation : le mode 8 n'y est pas dessiné et la
+//! pyramide n'est pas remplie. La seule façon de le montrer est de comparer à un rendu de
+//! référence produit SANS le slot (la clé `depthOfField` y est ignorée) :
 //!
 //! ```powershell
 //! # 1) sur le code d'avant (sources de src/ de la base), écrire la référence
@@ -33,14 +35,14 @@ const H: u32 = 540;
 /// En plein palier du zoom : la région couvre 0..6 s.
 const AT_SEC: f64 = 3.0;
 
-fn scene_json(secret: &str, fx: f32, fy: f32, rotation: &str) -> String {
+fn scene_json(secret: &str, fx: f32, fy: f32, rotation: &str, dof: bool) -> String {
     let s = secret.replace('\\', "/");
     format!(
         r##"{{
         "clips": [{{"screenPath":"{s}","webcamPath":"","sourceStartSec":0,"sourceEndSec":6,"webcamOffsetSec":0,"hasAudio":false}}],
         "layout": {{"preset":"no-webcam","webcamSize":1.0,"webcamShape":"rounded","webcamMirror":false,"webcamPosition":null,"webcamReactiveZoom":false,
                     "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
-        "effects": {{"padding":0.1,"blur":false,"shadow":0.35,"roundnessFrac":0.03,"motionBlur":0.0}},
+        "effects": {{"padding":0.1,"blur":false,"shadow":0.35,"roundnessFrac":0.03,"motionBlur":0.0,"depthOfField":{dof}}},
         "background": {{"kind":"color","color":"#303030"}},
         "zoomRegions": [{{"id":"z","startSec":0,"endSec":6,"scale":1.6,"focusX":{fx},"focusY":{fy},"focusMode":"manual","rotation":"{rotation}"}}],
         "annotations": [],
@@ -52,12 +54,12 @@ fn scene_json(secret: &str, fx: f32, fy: f32, rotation: &str) -> String {
     )
 }
 
-fn render(gpu: &Gpu, secret: &str, fx: f32, fy: f32, rotation: &str) -> Vec<u8> {
+fn render(gpu: &Gpu, secret: &str, fx: f32, fy: f32, rotation: &str, dof: bool) -> Vec<u8> {
     let mut cfg = config::all().pop().expect("au moins une config");
     cfg.zoom = false;
     cfg.layout_anim = false;
     let comp = Compositor::new_sized(gpu, W, H).expect("compositor");
-    let scene = Scene::from_json(&scene_json(secret, fx, fy, rotation)).expect("scene valide");
+    let scene = Scene::from_json(&scene_json(secret, fx, fy, rotation, dof)).expect("scene valide");
     comp.set_live_params(live_params_from_scene(&scene));
     comp.set_scene(Some(scene));
     comp.clear_cursor();
@@ -91,10 +93,16 @@ fn a_tilted_frame_is_unchanged_by_the_depth_slot() {
     let gpu = Gpu::create(false).expect("device d3d11");
 
     // Focus décentrés : un `z_focus` nul (focus au centre) ne prouverait rien sur le 3e champ.
-    let cases = [("iso", 0.8, 0.3), ("left", 0.2, 0.7), ("right", 0.9, 0.9)];
+    // Les trois présets inclinés réglage coupé ; la frame droite réglage allumé.
+    let cases = [
+        ("iso", 0.8, 0.3, false),
+        ("left", 0.2, 0.7, false),
+        ("right", 0.9, 0.9, false),
+        ("none", 0.8, 0.3, true),
+    ];
     let mut diffs = Vec::new();
-    for (rotation, fx, fy) in cases {
-        let rgba = render(&gpu, &secret, fx, fy, rotation);
+    for (rotation, fx, fy, dof) in cases {
+        let rgba = render(&gpu, &secret, fx, fy, rotation, dof);
         // Garde : la frame montre bien l'écran, pas un fond uni.
         let red = rgba.chunks_exact(4).filter(|p| p[0] > 150 && p[1] < 80 && p[2] < 80).count();
         assert!(red > 1_000, "{rotation}: pave rouge absent ({red} px)");
@@ -114,5 +122,5 @@ fn a_tilted_frame_is_unchanged_by_the_depth_slot() {
             }
         }
     }
-    assert!(diffs.is_empty(), "le slot de profondeur a change le rendu :\n{}", diffs.join("\n"));
+    assert!(diffs.is_empty(), "la profondeur de champ eteinte a change le rendu :\n{}", diffs.join("\n"));
 }

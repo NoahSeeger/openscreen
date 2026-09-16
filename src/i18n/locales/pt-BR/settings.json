@@ -108,6 +108,9 @@
 		"format": "Formato",
 		"fitClip": "Ajustar",
 		"motionBlur": "Desfoque de Movimento",
+		"depthOfField": "Profundidade de campo",
+		"depthOfFieldHint": "Zooms 3D",
+		"depthOfFieldNoTilt": "Nenhum zoom 3D neste projeto",
 		"roundness": "Arredondamento"
 	},
 	"stylePresets": {

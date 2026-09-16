@@ -359,6 +359,11 @@ export interface SceneEffects {
 	roundnessFrac: number;
 	/** 0..1 motion blur. */
 	motionBlur: number;
+	/**
+	 * Defocus a 3D-tilted screen by its depth, sharp at the zoom focus. Inert on flat zooms:
+	 * the native side only reads it where it draws a tilted plane.
+	 */
+	depthOfField: boolean;
 }
 
 /** Cursor rendering, from the editor settings. */
@@ -1025,6 +1030,7 @@ export function buildSceneDescription(
 			roundnessFrac:
 				settings.borderRadius / Math.max(1, Math.min(outputDims.width, outputDims.height)),
 			motionBlur: settings.motionBlurAmount,
+			depthOfField: settings.depthOfField,
 		},
 		cursor: {
 			show: settings.cursorShow,

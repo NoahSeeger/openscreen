@@ -361,6 +361,20 @@ pub const HALF_W: u32 = OUT_W / 2;
 pub const HALF_H: u32 = OUT_H / 2;
 pub const FIXTURE_FRAMES: u32 = 360;
 pub(crate) const FPS: f32 = 60.0;
+/// La profondeur de champ tourne-t-elle sur le backend CPU (WARP, lavapipe) ? Le seul drapeau
+/// partagé qui la coupe là-bas si son coût y devient prohibitif (seuil fixé par la spec :
+/// 10 ms/frame). Mesuré (`tests/tilted_depth_of_field.rs`, 1080p iso, trois passes) : WARP
+/// +3.8 / +6.3 / +12.2 ms/frame, soit +35 à +45 % ; le matériel +0.04 à +0.08 ms/frame. Médiane
+/// sous le seuil : l'effet reste allumé partout, ce drapeau est le levier si ça change.
+pub const DOF_ON_CPU_BACKEND: bool = true;
+/// Niveaux de la pyramide de profondeur de champ (demi-résolution de la texture décodeur, donc
+/// son niveau 0 est le niveau 1 d'une pyramide pleine résolution). Le shader plafonne sa lecture
+/// à `DOF_MAX_LOD` (1.5) ; les niveaux au-delà laissent la marge de relever ce plafond sans
+/// toucher aux trois backends. Jamais plus que la chaîne complète d'une très petite source.
+pub fn dof_pyramid_levels(w: u32, h: u32) -> u32 {
+    const DOF_PYRAMID_LEVELS: u32 = 5;
+    DOF_PYRAMID_LEVELS.min(32 - w.max(h).max(1).leading_zeros())
+}
 /// Longueurs de style exprimées en FRACTION du petit côté du cadre, et non en pixels.
 ///
 /// Elles étaient écrites en px bruts au point d'appel, ce qui voulait dire « px du render
@@ -767,6 +781,8 @@ pub struct FrameGeometry {
     /// dessinée `cut`, c'est-à-dire dans le plan que le mode 8 incline. Borné au plan : un focus
     /// que le cover a rogné retombe sur le bord. C'est lui qui fixe `z_focus` (`depth_mb`).
     pub focus_plane: [f32; 2],
+    /// Réglage « Depth of field » du projet. Ne décide rien seul : voir `depth_of_field_on`.
+    pub depth_of_field: bool,
     pub s_dst: [f32; 4],
     pub s_dst_prev: [f32; 4],
     /// Boîte écran **sans le zoom** : le conteneur auquel les annotations et les
@@ -815,6 +831,16 @@ pub fn annotation_dst_in(anchor: [f32; 4], x: f32, y: f32, w: f32, h: f32) -> [f
 }
 
 impl FrameGeometry {
+    /// La profondeur de champ tourne-t-elle sur CETTE frame ? Réglage allumé, écran réellement
+    /// incliné (à plat le mode 8 n'est pas dessiné), et backend qui en a les moyens (cf.
+    /// `DOF_ON_CPU_BACKEND`). Une seule réponse pour les trois backends : elle décide à la fois
+    /// du remplissage de la pyramide et du `k` du mode 8, qui ne doivent jamais diverger.
+    pub fn depth_of_field_on(&self, cpu_backend: bool) -> bool {
+        self.depth_of_field
+            && !crate::regions::is_identity_rotation(self.zoom_rotation)
+            && (DOF_ON_CPU_BACKEND || !cpu_backend)
+    }
+
     /// `annotation_dst_in` appliqué à `s_ann`, pour les backends qui tiennent la géométrie
     /// entière — c'est-à-dire ceux qui n'ont aucune raison de choisir un rect.
     pub fn annotation_dst(&self, x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
@@ -1382,6 +1408,8 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         padding_scale,
         cut,
         focus_plane,
+        // Sans scène (bench fixture), aucune zoom region, donc aucun tilt : rien à défocaliser.
+        depth_of_field: scene.is_some_and(|s| s.effects.depth_of_field),
         s_dst,
         s_dst_prev,
         // La boîte écran telle qu'elle serait sans zoom : `remap_box` n'est PAS appliqué.
@@ -1858,7 +1886,9 @@ mod tests {
         let render = input.render_px;
         let s_px = [g.s_dst[2] * render[0], g.s_dst[3] * render[1]];
         let quad = crate::regions::rotated_quad_corners_px(s_px[0], s_px[1], g.zoom_rotation);
-        let mb = quad.depth_mb(s_px, g.focus_plane);
+        let mb = quad.depth_mb(s_px, g.focus_plane, g.depth_of_field_on(false));
+        assert!(mb[3] > 0.0, "réglage absent de la scène : la profondeur de champ est allumée");
+        assert!(!g.depth_of_field_on(true) || DOF_ON_CPU_BACKEND);
         let want = (0.95 - 0.5) * mb[0] + (0.3 - 0.5) * mb[1];
         assert!((mb[2] - want).abs() < 1e-3 && mb[2].abs() > 1.0, "z_focus {} au lieu de {want}", mb[2]);
     }
@@ -2499,6 +2529,7 @@ mod tests {
             padding_scale: 1.0,
             cut: [0.0, 0.0, 1.0, 1.0],
             focus_plane: [0.5, 0.5],
+            depth_of_field: false,
             s_dst: [0.0, 0.0, 1.0, 1.0],
             s_dst_prev: [0.0, 0.0, 1.0, 1.0],
             s_ann: [0.0, 0.0, 1.0, 1.0],

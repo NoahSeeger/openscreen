@@ -162,6 +162,15 @@ pub struct SceneEffects {
     pub roundness_frac: f32,
     /// 0..1 flou de mouvement.
     pub motion_blur: f32,
+    /// Réglage « Depth of field » : défocalise l'écran incliné selon sa profondeur (mode 8),
+    /// net au focus du zoom. Sans effet hors tilt. Allumé par défaut, clé absente comprise : il
+    /// ne s'applique qu'aux zooms inclinés, où il suit l'angle réel.
+    #[serde(default = "default_true")]
+    pub depth_of_field: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Fond derrière l'écran (parsé depuis `settings.wallpaper`).

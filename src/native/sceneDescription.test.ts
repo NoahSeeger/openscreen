@@ -992,6 +992,12 @@ describe("buildSceneDescription.settings mapping", () => {
 		expect(buildSceneDescription(high).layout.webcamSize).toBeCloseTo(0.5, 5);
 	});
 
+	it("carries depth of field: on by default, off when the project turns it off", () => {
+		expect(buildSceneDescription(makeDoc({})).effects.depthOfField).toBe(true);
+		const off = makeDoc({ legacyEditor: { depthOfField: false } });
+		expect(buildSceneDescription(off).effects.depthOfField).toBe(false);
+	});
+
 	it("maps the cursor sub-settings", () => {
 		const doc = makeDoc({
 			legacyEditor: {
