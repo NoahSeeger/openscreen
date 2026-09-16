@@ -1399,6 +1399,13 @@ impl Compositor {
         *self.programme_time.borrow_mut() = t;
     }
 
+    /// Dernier temps programme reçu : pour que les tests vérifient ce qui atteint vraiment
+    /// `FrameGeometryInput`, pas seulement ce que l'appelant croit envoyer.
+    #[doc(hidden)]
+    pub fn programme_time(&self) -> Option<f32> {
+        *self.programme_time.borrow()
+    }
+
     /// Copie de la scène courante (si présente) — utilisé par l'export multiclip pour lire les
     /// réglages curseur (thème/lissage/show) sans dupliquer le contrat de scène côté pipeline.
     pub fn scene_snapshot(&self) -> Option<Scene> {

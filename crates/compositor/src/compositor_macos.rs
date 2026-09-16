@@ -693,6 +693,13 @@ impl Compositor {
         *self.programme_time.borrow_mut() = t;
     }
 
+    /// Dernier temps programme reçu : pour que les tests vérifient ce qui atteint vraiment
+    /// `FrameGeometryInput`, pas seulement ce que l'appelant croit envoyer.
+    #[doc(hidden)]
+    pub fn programme_time(&self) -> Option<f32> {
+        *self.programme_time.borrow()
+    }
+
     pub fn clear_cursor(&self) {
         *self.cursor.borrow_mut() = None;
     }

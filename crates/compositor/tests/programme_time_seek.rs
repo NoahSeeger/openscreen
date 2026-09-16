@@ -2,7 +2,10 @@
 //! lecture libre (`Player::step`) ou par un seek (`Player::present_frame`) donne le même.
 //!
 //! Rend de vraies frames par le compositeur D3D11, sur une vraie source (pts réels du
-//! décodeur). Piloté par l'environnement, comme `privacy_blur_under_zoom.rs`, dont il réutilise
+//! décodeur). Vérifie la valeur que le compositeur a REÇUE (celle que lit `plan_frame`), pas
+//! celle du player : le lien Player -> Compositor n'a pas de test sans GPU.
+//!
+//! La CI ne le joue pas : il faut D3D11 et une source vidéo, sinon il se saute. Piloté par l'environnement, comme `privacy_blur_under_zoom.rs`, dont il réutilise
 //! la source (n'importe quel MP4 d'au moins 6 s convient) :
 //!
 //! ```powershell
@@ -67,17 +70,22 @@ fn playback_and_seek_give_the_same_programme_time() {
         let mut target = 2.0;
         while target < 5.0 {
             target += 1.0 / 60.0;
+            // Effacé avant chaque appel : c'est l'appel lui-même qui doit le poser.
+            comp.set_programme_time(None);
             if player.step(&comp, &cfg, target).expect("step") {
-                played.push((player.screen_time_sec(), player.programme_time().expect("horloge")));
+                let programme = comp.programme_time().expect("step n'a pas transmis le temps programme");
+                assert_eq!(Some(programme), player.programme_time(), "garde : compositeur et player divergent");
+                played.push((player.screen_time_sec(), programme));
             }
         }
         assert!(played.len() > 60, "garde : trop peu d'images jouées ({})", played.len());
 
         // Les mêmes images, atteintes par un seek.
         for &(pts, programme) in played.iter().step_by(7) {
+            comp.set_programme_time(None);
             assert!(player.present_frame(&comp, &cfg, pts).expect("seek"));
             assert_eq!(player.screen_time_sec(), pts, "garde : le seek doit retomber sur l'image");
-            let sought = player.programme_time().expect("horloge");
+            let sought = comp.programme_time().expect("le seek n'a pas transmis le temps programme");
             assert_eq!(sought.to_bits(), programme.to_bits(), "pts {pts} : lecture {programme}, seek {sought}");
         }
 
