@@ -49,8 +49,6 @@ const APPEARANCE: StylePresetAppearance = {
 		smoothing: 0.67,
 		motionBlur: 0.35,
 		clickBounce: 2.5,
-		volume: 0,
-		hover: 0,
 		clipToBounds: false,
 	},
 	cursorShow: true,

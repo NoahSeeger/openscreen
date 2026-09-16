@@ -152,8 +152,6 @@ interface LegacyShape {
 	cursorSmoothing?: number;
 	cursorMotionBlur?: number;
 	cursorClickBounce?: number;
-	cursorVolume?: number;
-	cursorHover?: number;
 	cursorClipToBounds?: boolean;
 	cursorShow?: boolean;
 	cursorAutoHide?: boolean;
@@ -185,12 +183,6 @@ export function getEditorSettings(doc: AxcutDocument | null | undefined): Editor
 		smoothing: num(legacy?.cursorSmoothing, DEFAULT_EDITOR_SETTINGS.cursor.smoothing),
 		motionBlur: num(legacy?.cursorMotionBlur, DEFAULT_EDITOR_SETTINGS.cursor.motionBlur),
 		clickBounce: num(legacy?.cursorClickBounce, DEFAULT_EDITOR_SETTINGS.cursor.clickBounce),
-		// Same 0-1 range as the slider and the native clamp; absent in every project saved
-		// before the setting existed, which is what keeps them flat.
-		volume: clamp01(num(legacy?.cursorVolume, DEFAULT_EDITOR_SETTINGS.cursor.volume)),
-		// Same read as the volume above, and the same reason: absent in every project saved
-		// before the setting existed, which is what keeps their cursor resting on the plane.
-		hover: clamp01(num(legacy?.cursorHover, DEFAULT_EDITOR_SETTINGS.cursor.hover)),
 		clipToBounds: bool(legacy?.cursorClipToBounds, DEFAULT_EDITOR_SETTINGS.cursor.clipToBounds),
 		autoHide: bool(legacy?.cursorAutoHide, DEFAULT_EDITOR_SETTINGS.cursorAutoHide),
 	};
@@ -305,8 +297,6 @@ function nextLegacy(current: LegacyShape | null, patch: EditorSettingsPatch): Le
 		if (c.smoothing !== undefined) next.cursorSmoothing = c.smoothing;
 		if (c.motionBlur !== undefined) next.cursorMotionBlur = c.motionBlur;
 		if (c.clickBounce !== undefined) next.cursorClickBounce = c.clickBounce;
-		if (c.volume !== undefined) next.cursorVolume = c.volume;
-		if (c.hover !== undefined) next.cursorHover = c.hover;
 		if (c.clipToBounds !== undefined) next.cursorClipToBounds = c.clipToBounds;
 		if (c.theme !== undefined) next.cursorTheme = c.theme;
 		if (c.show !== undefined) next.cursorShow = c.show;

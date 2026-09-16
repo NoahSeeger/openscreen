@@ -130,20 +130,6 @@ describe("patchEditorSettings", () => {
 		const snap = getEditorSettings(next);
 		expect(snap.cursor.size).toBe(4);
 		expect(snap.cursor.smoothing).toBe(0.9);
-		const deep = getEditorSettings(patchEditorSettings(next, { cursor: { volume: 0.5 } }));
-		expect(deep.cursor.volume).toBe(0.5);
-		expect(deep.cursor.size).toBe(4);
-		expect(snap.cursor.volume).toBe(0);
-	});
-
-	it("patches the modelled cursor's height without clobbering its depth", () => {
-		const seed = patchEditorSettings(baseDoc, { cursor: { size: 4, volume: 0.5 } });
-		const lifted = getEditorSettings(patchEditorSettings(seed, { cursor: { hover: 0.8 } }));
-		expect(lifted.cursor.hover).toBe(0.8);
-		expect(lifted.cursor.volume).toBe(0.5);
-		expect(lifted.cursor.size).toBe(4);
-		// Et le projet d'avant, lui, reste posé sur le plan.
-		expect(getEditorSettings(seed).cursor.hover).toBe(0);
 	});
 
 	it("toggles cursorAutoHide on and off via patch", () => {

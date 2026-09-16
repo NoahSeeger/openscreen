@@ -38,8 +38,6 @@ const ADDON_KEYS = [
 	"webcamSize",
 	"cursorSize",
 	"cursorClickBounce",
-	"cursorVolume",
-	"cursorHover",
 	"cursorSmoothing",
 	"cursorMotionBlur",
 	"backgroundColor",
@@ -84,16 +82,12 @@ describe("pushAllNativeParams", () => {
 			cursor: {
 				size: 3,
 				clickBounce: 2.5,
-				volume: 0.4,
-				hover: 0.6,
 				smoothing: 0.67,
 				motionBlur: 0.35,
 			},
 		});
 		expect(pushed.get("cursorSize")).toBe(3);
 		expect(pushed.get("cursorClickBounce")).toBe(2.5);
-		expect(pushed.get("cursorVolume")).toBeCloseTo(0.4, 5);
-		expect(pushed.get("cursorHover")).toBeCloseTo(0.6, 5);
 		expect(pushed.get("cursorSmoothing")).toBeCloseTo(0.67, 5);
 		expect(pushed.get("cursorMotionBlur")).toBeCloseTo(0.35, 5);
 	});

@@ -392,10 +392,6 @@
 	"cursor": {
 		"smoothing": "Vyhlazení",
 		"clickBounce": "Odraz při kliknutí",
-		"depth": "3D hloubka",
-		"depthNeedsCursor": "Zapněte „Zobrazit kurzor“, aby kurzor získal hloubku.",
-		"hover": "Výška",
-		"hoverNeedsCursor": "Zapněte „Zobrazit kurzor“, aby se kurzor vznesl nad obrazovku.",
 		"help": "Renderování kurzoru ze zaznamenané telemetrie: motiv, velikost, vyhlazení, pohybové rozmazání a zdůraznění odrazu při kliknutí.",
 		"clipToBoundsDescription": "Udržuje kurzor uvnitř rámce videa. Vypněte, pokud chcete, aby kurzor přesahoval okraje, což se hodí při přiblížení nebo posunu.",
 		"size": "Velikost",
