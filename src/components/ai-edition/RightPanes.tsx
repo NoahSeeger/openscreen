@@ -3573,6 +3573,24 @@ export function CursorPane() {
 					}}
 					onCommit={() => void commit()}
 				/>
+				{/* The height of the modelled cursor, same units and same gate as the depth
+				    above: the native side keeps the sprite, so a hidden cursor has none. */}
+				<SliderCell
+					label={ts("cursor.hover")}
+					value={settings.cursor.hover * 100}
+					min={0}
+					max={100}
+					suffix="%"
+					disabled={!hasDocument || !settings.cursorShow}
+					title={settings.cursorShow ? undefined : ts("cursor.hoverNeedsCursor")}
+					onChange={(v) => {
+						setLive({ cursor: { hover: v / 100 } });
+						if (isNativeCompositorActive()) {
+							setNativeParam("cursorHover", v / 100);
+						}
+					}}
+					onCommit={() => void commit()}
+				/>
 			</div>
 		</Pane>
 	);

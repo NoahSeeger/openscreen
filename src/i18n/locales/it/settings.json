@@ -346,6 +346,14 @@
 			"none": "Nessuna",
 			"title": "Rotazione 3D"
 		},
+		"cameraMotion": {
+			"title": "Movimento camera",
+			"still": "Fermo",
+			"sway": "Oscillazione",
+			"follow": "Segue il cursore",
+			"flip": "Cambio lato",
+			"needsRotation": "Scegli prima una rotazione 3D: solo uno schermo inclinato può muoversi."
+		},
 		"clickImpact": {
 			"title": "Impatto del clic",
 			"description": "Ogni clic preme lo schermo inclinato: il lato cliccato si abbassa, poi torna.",
@@ -386,6 +394,8 @@
 		"clickBounce": "Rimbalzo clic",
 		"depth": "Profondità 3D",
 		"depthNeedsCursor": "Attiva «Mostra cursore» per dargli profondità.",
+		"hover": "Altezza flottante",
+		"hoverNeedsCursor": "Attiva «Mostra cursore» per staccarlo dallo schermo.",
 		"help": "Resa del cursore dalla telemetria registrata: tema, dimensione, smussatura, sfocatura di movimento e rimbalzo al clic.",
 		"clipToBoundsDescription": "Mantiene il cursore all'interno del fotogramma video. Disattiva per lasciare che il cursore superi i bordi — utile quando si esegue zoom o panoramica.",
 		"size": "Dimensione",

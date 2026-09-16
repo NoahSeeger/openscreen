@@ -91,6 +91,19 @@ export const ROTATION_3D_PRESETS: Record<Rotation3DPreset, Rotation3D> = {
 
 export const ROTATION_3D_PRESET_ORDER: Rotation3DPreset[] = ["iso", "left", "right"];
 
+/**
+ * How the camera behaves during a zoom, ON TOP of the attitude above. The preset says
+ * where the plane leans, this says what animates it — so each attitude gains all four
+ * motions instead of twelve presets recopying one attitude. Absent means `sway`, which is
+ * the render from before the field existed (`regions.rs::CameraMotion`).
+ */
+export const CAMERA_MOTIONS = ["still", "sway", "follow", "flip"] as const;
+export type CameraMotion = (typeof CAMERA_MOTIONS)[number];
+
+export function isCameraMotion(value: unknown): value is CameraMotion {
+	return typeof value === "string" && (CAMERA_MOTIONS as readonly string[]).includes(value);
+}
+
 /** Perspective distance in CSS px is this factor times min(viewport w, h). Same
  * factor in preview and export so the look matches at any canvas resolution.
  * Lower = camera closer = edges converge more visibly. At 2.6 the convergence was so flat that
@@ -123,6 +136,9 @@ export interface ZoomRegion {
 	hideCursor?: boolean;
 	/** When true, each click presses the tilted plane (needs `rotationPreset`). Omitted when off. */
 	clickImpact?: true;
+	/** How the camera moves while the tilt is installed. Omitted when `sway`, which is the
+	 *  historical render — an absent field is not a missing choice, and needs no migration. */
+	cameraMotion?: CameraMotion;
 }
 
 export function getRotation3D(region: Pick<ZoomRegion, "rotationPreset">): Rotation3D {
@@ -243,6 +259,12 @@ export interface CursorVisualSettings {
 	clickBounce: number;
 	/** 0..1 — extrudes the cursor along the screen's normal and adds a contact shadow. */
 	volume: number;
+	/**
+	 * 0..1 — lifts the MODELLED cursor off the plane: the sprite rises towards the viewer, its
+	 * cast shadow stays on the plane and spreads, and a click drops it back onto the surface.
+	 * Independent of `volume`: a height with no thickness still casts a shadow.
+	 */
+	hover: number;
 	clipToBounds: boolean;
 	autoHide?: boolean;
 }
@@ -253,6 +275,8 @@ export const DEFAULT_CURSOR_MOTION_BLUR = 0.35;
 export const DEFAULT_CURSOR_CLICK_BOUNCE = 2.5;
 // Off: a flat sprite, exactly the cursor every existing project renders.
 export const DEFAULT_CURSOR_VOLUME = 0;
+// Off: the cursor rests on the plane, exactly the cursor every existing project renders.
+export const DEFAULT_CURSOR_HOVER = 0;
 // false lets the cursor overflow into the background; true clips it to the canvas bounds.
 export const DEFAULT_CURSOR_CLIP_TO_BOUNDS = false;
 export const DEFAULT_CURSOR_AUTO_HIDE = false;

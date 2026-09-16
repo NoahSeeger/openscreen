@@ -346,6 +346,14 @@
 			"none": "Yok",
 			"title": "3D Döndürme"
 		},
+		"cameraMotion": {
+			"title": "Kamera hareketi",
+			"still": "Sabit",
+			"sway": "Salınım",
+			"follow": "İmleci izler",
+			"flip": "Taraf değiştir",
+			"needsRotation": "Önce bir 3B döndürme seç: yalnızca eğik bir ekran hareket edebilir."
+		},
 		"clickImpact": {
 			"title": "Tıklama etkisi",
 			"description": "Her tıklama eğik ekranı bastırır: tıklanan taraf çöker, sonra geri döner.",
@@ -386,6 +394,8 @@
 		"clickBounce": "Tıklama Sıçraması",
 		"depth": "3B Derinlik",
 		"depthNeedsCursor": "Derinlik vermek için «İmleci Göster»i açın.",
+		"hover": "Yükseklik",
+		"hoverNeedsCursor": "Ekrandan kaldırmak için «İmleci Göster»i açın.",
 		"help": "Kaydedilen telemetriden imleç çizimi: tema, boyut, yumuşatma, hareket bulanıklığı ve tıklama sıçraması.",
 		"clipToBoundsDescription": "İmleci video kare içinde tutar. İmlecin kenarları aşmasına izin vermek için kapatın — yakınlaştırma veya kaydırma yapılırken kullanışlıdır.",
 		"size": "Boyut",

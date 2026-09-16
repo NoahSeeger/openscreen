@@ -38,6 +38,7 @@ export function stylePresetAppearanceFromSettings(
 			motionBlur: settings.cursor.motionBlur,
 			clickBounce: settings.cursor.clickBounce,
 			volume: settings.cursor.volume,
+			hover: settings.cursor.hover,
 			clipToBounds: settings.cursor.clipToBounds,
 		},
 		cursorShow: settings.cursorShow,

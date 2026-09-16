@@ -48,6 +48,7 @@ function styledSettings(): EditorSettingsSnapshot {
 			motionBlur: 0.9,
 			clickBounce: 4,
 			volume: 0.6,
+			hover: 0.5,
 			clipToBounds: true,
 		},
 		cursorShow: false,

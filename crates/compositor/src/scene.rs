@@ -387,6 +387,12 @@ pub struct SceneZoomRegion {
     pub focus_mode: Option<String>,
     /// "iso" | "left" | "right" | null.
     pub rotation: Option<String>,
+    /// "still" | "sway" | "follow" | "flip" | null — quel mouvement anime l'attitude
+    /// ci-dessus. `#[serde(default)]` : absent de tout payload écrit avant le réglage,
+    /// et le défaut retenu (`sway`) est le rendu d'avant — une valeur inconnue y retombe
+    /// aussi, donc une scène d'une version plus récente ne casse pas un binaire ancien.
+    #[serde(default)]
+    pub camera_motion: Option<String>,
     /// La région entière tombe sur une portion qu'un trim retire. Ses temps sont donc HORS de
     /// la fenêtre source de `clip_index`, qui n'est là que pour l'adresser (le segment que la
     /// coupe interrompt, cf. `cutAddressingSegmentIndex` côté TS).
@@ -451,6 +457,11 @@ pub struct SceneCursor {
     /// d'avant. `#[serde(default)]` : absent des projets et des JSON écrits avant ce réglage.
     #[serde(default)]
     pub volume: f32,
+    /// 0..1 : hauteur du curseur au-dessus du plan (`2d-effects-v2.md` §B, le curseur modélisé :
+    /// le sprite monte, l'ombre portée reste au sol et s'étale, un clic le fait toucher le plan).
+    /// 0 = posé, le rendu d'avant — même contrat de défaut que `volume`.
+    #[serde(default)]
+    pub hover: f32,
     pub clip_to_bounds: bool,
     /// id du thème (jeu de sprites) — informatif ici : le natif consomme `cursor_sprites`.
     pub theme: String,

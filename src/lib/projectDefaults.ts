@@ -41,6 +41,7 @@ export interface ProjectAppearanceDefaults {
 		motionBlur: number;
 		clickBounce: number;
 		volume: number;
+		hover: number;
 		clipToBounds: boolean;
 		autoHide: boolean;
 	};
@@ -78,6 +79,7 @@ export const DEFAULT_PROJECT_APPEARANCE: ProjectAppearanceDefaults = {
 		motionBlur: 0.35,
 		clickBounce: 2.5,
 		volume: 0,
+		hover: 0,
 		clipToBounds: false,
 		autoHide: false,
 	},

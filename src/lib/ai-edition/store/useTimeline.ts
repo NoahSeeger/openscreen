@@ -6,7 +6,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { toFileUrl } from "@/components/video-editor/projectPersistence";
-import type { AnnotationRegion, AnnotationType } from "@/components/video-editor/types";
+import type {
+	AnnotationRegion,
+	AnnotationType,
+	CameraMotion,
+} from "@/components/video-editor/types";
 import { useScopedT } from "@/contexts/I18nContext";
 import {
 	collapseTracksToPills,
@@ -730,6 +734,24 @@ export function useTimeline() {
 				...document,
 				zoomRanges: patchPillById(document.zoomRanges, id, {
 					rotationPreset,
+				}) as AxcutDocument["zoomRanges"],
+			};
+			await saveDocument(next, { history: true });
+		},
+		[document, saveDocument],
+	);
+
+	// The camera motion COMPOSES with the attitude instead of replacing it, so it is a
+	// second field and not a fourth preset. `undefined` writes `sway`, i.e. removes the
+	// key: `migrate.ts` drops falsy values, and `regions.rs::motion_for` falls back to
+	// `sway` for anything it does not know.
+	const updateZoomCameraMotion = useCallback(
+		async (id: string, cameraMotion: CameraMotion | undefined) => {
+			if (!document) return;
+			const next: AxcutDocument = {
+				...document,
+				zoomRanges: patchPillById(document.zoomRanges, id, {
+					cameraMotion,
 				}) as AxcutDocument["zoomRanges"],
 			};
 			await saveDocument(next, { history: true });
@@ -1536,6 +1558,7 @@ export function useTimeline() {
 		commitZoomFocus,
 		updateZoomDepth,
 		updateZoomRotation,
+		updateZoomCameraMotion,
 		updateZoomFocusMode,
 		updateZoomHideCursor,
 		updateZoomClickImpact,

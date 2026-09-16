@@ -121,6 +121,7 @@ const CURSOR_NUMBER_RANGES = {
 	motionBlur: [0, 1],
 	clickBounce: [0, 5],
 	volume: [0, 1],
+	hover: [0, 1],
 } as const;
 
 type Fields = Record<string, unknown>;
@@ -231,8 +232,9 @@ export function parseStylePresetWallpaper(value: unknown, key = "wallpaper"): st
  * does not ship falls back to the default cursor instead of rejecting a preset that is
  * otherwise sound (the editor does the same when it renders one). The others postdate the
  * first version-1 files, so a preset saved before one of them existed carries no choice about
- * it and gets the value that means "unchanged": `cursor.volume` may be absent (the preset was
- * authored flat), `wallpaperMotion` too (a still wallpaper, which is exactly what "none"
+ * it and gets the value that means "unchanged": `cursor.volume` and `cursor.hover` may be
+ * absent (the preset was authored flat, with the cursor resting on the screen),
+ * `wallpaperMotion` too (a still wallpaper, which is exactly what "none"
  * means), `frame` as well (no frame, see `readFrame`), and `depthOfField` keeps the factory
  * value (on). A present but ill-typed value is still refused. Unknown extra keys are dropped.
  */
@@ -286,6 +288,11 @@ export function parseStylePresetAppearance(value: unknown): StylePresetAppearanc
 				cursor.volume === undefined
 					? 0
 					: readNumber(cursor, "volume", CURSOR_NUMBER_RANGES.volume, "cursor."),
+			// Same reading for the height: absent meant a cursor lying on the screen.
+			hover:
+				cursor.hover === undefined
+					? 0
+					: readNumber(cursor, "hover", CURSOR_NUMBER_RANGES.hover, "cursor."),
 			clipToBounds: readBoolean(cursor, "clipToBounds", "cursor."),
 		},
 		cursorShow: readBoolean(value, "cursorShow"),

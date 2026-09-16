@@ -346,6 +346,14 @@
 			"none": "Ninguna",
 			"title": "Rotación 3D"
 		},
+		"cameraMotion": {
+			"title": "Movimiento de cámara",
+			"still": "Fijo",
+			"sway": "Balanceo",
+			"follow": "Sigue el cursor",
+			"flip": "Cambio de lado",
+			"needsRotation": "Elige primero una rotación 3D: solo una pantalla inclinada puede moverse."
+		},
 		"clickImpact": {
 			"title": "Impacto del clic",
 			"description": "Cada clic presiona la pantalla inclinada: el lado pulsado se hunde y luego vuelve.",
@@ -386,6 +394,8 @@
 		"clickBounce": "Rebote al clic",
 		"depth": "Profundidad 3D",
 		"depthNeedsCursor": "Activa «Mostrar cursor» para darle profundidad.",
+		"hover": "Altura flotante",
+		"hoverNeedsCursor": "Activa «Mostrar cursor» para despegarlo de la pantalla.",
 		"help": "Representación del cursor a partir de la telemetría grabada: tema, tamaño, suavizado, desenfoque de movimiento y rebote al hacer clic.",
 		"clipToBoundsDescription": "Mantiene el cursor dentro del cuadro del vídeo. Desactívalo para dejar que el cursor sobrepase los bordes; útil al hacer zoom o desplazar la imagen.",
 		"size": "Tamaño",

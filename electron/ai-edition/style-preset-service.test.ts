@@ -30,6 +30,7 @@ const APPEARANCE: StylePresetAppearance = {
 		motionBlur: 0.35,
 		clickBounce: 2.5,
 		volume: 0,
+		hover: 0,
 		clipToBounds: false,
 	},
 	cursorShow: true,

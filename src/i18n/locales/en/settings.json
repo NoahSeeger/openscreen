@@ -346,6 +346,14 @@
 			"none": "None",
 			"title": "3D Rotation"
 		},
+		"cameraMotion": {
+			"title": "Camera motion",
+			"still": "Still",
+			"sway": "Sway",
+			"follow": "Follow cursor",
+			"flip": "Switch sides",
+			"needsRotation": "Pick a 3D rotation first: only a tilted screen can move."
+		},
 		"clickImpact": {
 			"title": "Click impact",
 			"description": "Each click presses the tilted screen: the clicked side dips, then springs back.",
@@ -386,6 +394,8 @@
 		"clickBounce": "Click Bounce",
 		"depth": "3D Depth",
 		"depthNeedsCursor": "Turn on Show Cursor to give it depth.",
+		"hover": "Float Height",
+		"hoverNeedsCursor": "Turn on Show Cursor to lift it off the screen.",
 		"help": "Cursor rendering from the recorded telemetry: theme, size, smoothing, motion blur, and click-bounce emphasis.",
 		"clipToBoundsDescription": "Keeps the cursor inside the video frame. Turn off to let the cursor extend past the edges - useful when zoomed in or panned.",
 		"size": "Size",

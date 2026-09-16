@@ -346,6 +346,14 @@
 			"none": "無",
 			"title": "3D 旋轉"
 		},
+		"cameraMotion": {
+			"title": "鏡頭運動",
+			"still": "靜止",
+			"sway": "擺動",
+			"follow": "跟隨游標",
+			"flip": "切換方向",
+			"needsRotation": "請先選擇 3D 旋轉：只有傾斜的畫面才會移動。"
+		},
 		"clickImpact": {
 			"title": "點擊按壓",
 			"description": "每次點擊都會按壓傾斜的畫面：被點擊的一側下沉，然後彈回。",
@@ -386,6 +394,8 @@
 		"clickBounce": "點擊彈跳",
 		"depth": "3D 深度",
 		"depthNeedsCursor": "開啟「顯示游標」後才能為游標加上深度。",
+		"hover": "懸浮高度",
+		"hoverNeedsCursor": "開啟「顯示游標」後才能讓游標離開畫面懸浮。",
 		"help": "根據錄製的遙測資料繪製游標：主題、大小、平滑、動態模糊與點擊回彈。",
 		"clipToBoundsDescription": "讓游標保持在影片畫面內。關閉後游標可超出邊緣——在縮放或平移時很有用。",
 		"size": "大小",

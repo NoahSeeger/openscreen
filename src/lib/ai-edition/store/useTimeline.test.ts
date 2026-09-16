@@ -799,6 +799,34 @@ describe("useTimeline zoom modifiers (rotation + focus mode)", () => {
 		});
 	});
 
+	it("composes a camera motion with the attitude instead of replacing it", async () => {
+		const { result } = renderTimeline();
+		await act(async () => {
+			await result.current.updateZoomRotation("zoom_a", "iso");
+		});
+		await act(async () => {
+			await result.current.updateZoomCameraMotion("zoom_a", "follow");
+		});
+		expect(useProjectStore.getState().document?.zoomRanges[0]).toMatchObject({
+			rotationPreset: "iso",
+			cameraMotion: "follow",
+		});
+	});
+
+	it('writes sway by ABSENCE, like the rotation\'s "none"', async () => {
+		// `sway` is the render from before the field existed, so the document must not
+		// carry it: `migrate.ts` drops falsy values and `regions.rs` falls back to it.
+		const { result } = renderTimeline();
+		await act(async () => {
+			await result.current.updateZoomCameraMotion("zoom_a", "flip");
+		});
+		expect(useProjectStore.getState().document?.zoomRanges[0].cameraMotion).toBe("flip");
+		await act(async () => {
+			await result.current.updateZoomCameraMotion("zoom_a", undefined);
+		});
+		expect(useProjectStore.getState().document?.zoomRanges[0].cameraMotion).toBeUndefined();
+	});
+
 	it("updates hideCursor on a zoom region", async () => {
 		const { result } = renderTimeline();
 		await act(async () => {

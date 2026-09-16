@@ -489,6 +489,11 @@ export const zoomRegionSchema = endGteStart(
 		}),
 		focusMode: z.enum(["manual", "auto"]).optional(),
 		rotationPreset: z.enum(["iso", "left", "right"]).optional(),
+		/** How the camera moves on that attitude (`CameraMotion` in
+		 *  `components/video-editor/types.ts` — same literal list, duplicated here like
+		 *  `rotationPreset`). Absent means `sway`, the render before the field. The native
+		 *  compositor reads it; the CSS preview never carried the tilt at all. */
+		cameraMotion: z.enum(["still", "sway", "follow", "flip"]).optional(),
 		customScale: z.number().positive().optional(),
 		source: z.enum(["auto", "manual"]).optional(),
 		hideCursor: z.boolean().optional(),

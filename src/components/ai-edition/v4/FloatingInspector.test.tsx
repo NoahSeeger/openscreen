@@ -129,4 +129,49 @@ describe("FloatingInspector", () => {
 			expect(updateZoomClickImpact).toHaveBeenCalledWith("z", true);
 		});
 	});
+
+	describe("camera motion select", () => {
+		const zoomTl = (region: Record<string, unknown>) => {
+			const updateZoomCameraMotion = vi.fn();
+			const tl = {
+				...defaultProps.tl,
+				selection: { kind: "zoom", id: "z" },
+				zoomRegions: [
+					{ id: "z", startMs: 0, endMs: 1000, depth: 3, focus: { cx: 0.5, cy: 0.5 }, ...region },
+				],
+				updateZoomCameraMotion,
+			} as unknown as React.ComponentProps<typeof FloatingInspector>["tl"];
+			return { tl, updateZoomCameraMotion };
+		};
+
+		it("shows the historical sway when the region carries no motion", () => {
+			const { tl } = zoomTl({ rotationPreset: "iso" });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
+			expect(select).toHaveValue("sway");
+			expect(select).toBeEnabled();
+		});
+
+		it("is disabled with its reason while the frame is flat", () => {
+			const { tl } = zoomTl({});
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
+			expect(select).toBeDisabled();
+			expect(select).toHaveAttribute("title", "settings.zoom.cameraMotion.needsRotation");
+		});
+
+		it("writes a motion, and clears back to sway by absence", () => {
+			const { tl, updateZoomCameraMotion } = zoomTl({
+				rotationPreset: "iso",
+				cameraMotion: "flip",
+			});
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
+			expect(select).toHaveValue("flip");
+			fireEvent.change(select, { target: { value: "follow" } });
+			expect(updateZoomCameraMotion).toHaveBeenCalledWith("z", "follow");
+			fireEvent.change(select, { target: { value: "sway" } });
+			expect(updateZoomCameraMotion).toHaveBeenLastCalledWith("z", undefined);
+		});
+	});
 });

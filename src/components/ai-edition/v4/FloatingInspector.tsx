@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { parseCustomPlaybackSpeedInput } from "@/components/video-editor/customPlaybackSpeed";
 import {
+	type CameraMotion,
 	MAX_PLAYBACK_SPEED,
 	SPEED_OPTIONS,
 	ZOOM_DEPTH_SCALES,
@@ -600,6 +601,34 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 							<option value="iso">{ts("zoom.threeD.preset.iso")}</option>
 							<option value="left">{ts("zoom.threeD.preset.left")}</option>
 							<option value="right">{ts("zoom.threeD.preset.right")}</option>
+						</select>,
+					)}
+					{paneRow(
+						ts("zoom.cameraMotion.title"),
+						// Composes with the attitude above instead of replacing it — and needs one: a
+						// flat plane has nothing to animate, so the control greys out with its reason
+						// attached, the same rule as the click impact below.
+						<select
+							aria-label={ts("zoom.cameraMotion.title")}
+							value={region.cameraMotion ?? "sway"}
+							disabled={!region.rotationPreset}
+							title={region.rotationPreset ? undefined : ts("zoom.cameraMotion.needsRotation")}
+							onChange={(e) =>
+								void tl.updateZoomCameraMotion(
+									region.id,
+									e.target.value === "sway" ? undefined : (e.target.value as CameraMotion),
+								)
+							}
+							style={
+								region.rotationPreset
+									? selectStyle
+									: { ...selectStyle, opacity: 0.5, cursor: "not-allowed" }
+							}
+						>
+							<option value="sway">{ts("zoom.cameraMotion.sway")}</option>
+							<option value="still">{ts("zoom.cameraMotion.still")}</option>
+							<option value="follow">{ts("zoom.cameraMotion.follow")}</option>
+							<option value="flip">{ts("zoom.cameraMotion.flip")}</option>
 						</select>,
 					)}
 					<ClickImpactToggle

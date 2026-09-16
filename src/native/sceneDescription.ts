@@ -84,6 +84,10 @@ export interface SceneZoomRegion {
 	focusMode: "manual" | "auto" | null;
 	/** Optional rotation preset for the zoom. */
 	rotation: "iso" | "left" | "right" | null;
+	/** Optional camera motion on that attitude. `null` = the historical `sway`; the
+	 *  native side has the same fallback for an unknown value, so a scene written by a
+	 *  newer app never breaks an older binary. */
+	cameraMotion: "still" | "sway" | "follow" | "flip" | null;
 	/** Index of the clip (within `SceneDescription.clips`) whose source time this region's
 	 *  `startSec`/`endSec` are expressed in — disambiguates clips whose source windows
 	 *  numerically overlap (same or different asset). Unset only for a region that
@@ -396,6 +400,8 @@ export interface SceneCursor {
 	clickBounce: number;
 	/** 0..1 cursor extrusion + contact shadow (`scene.rs` `SceneCursor::volume`). 0 = flat. */
 	volume: number;
+	/** 0..1 height above the plane, cast shadow left on it (`scene.rs` `SceneCursor::hover`). */
+	hover: number;
 	clipToBounds: boolean;
 	/** Cursor theme id (sprite set). */
 	theme: string;
@@ -1078,6 +1084,7 @@ export function buildSceneDescription(
 			motionBlur: settings.cursor.motionBlur,
 			clickBounce: settings.cursor.clickBounce,
 			volume: settings.cursor.volume,
+			hover: settings.cursor.hover,
 			clipToBounds: settings.cursor.clipToBounds,
 			theme: settings.cursorTheme,
 		},
@@ -1113,6 +1120,7 @@ export function buildSceneDescription(
 			// button a one-click "make every zoom follow the cursor".
 			focusMode: settings.autoFocusAll ? "auto" : (region.focusMode ?? null),
 			rotation: region.rotationPreset ?? null,
+			cameraMotion: region.cameraMotion ?? null,
 			clipIndex: region.clipIndex,
 			...(region.underTrim ? { underTrim: true } : {}),
 			...(region.hideCursor ? { hideCursor: true } : {}),

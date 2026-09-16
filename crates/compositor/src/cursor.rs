@@ -174,15 +174,7 @@ impl CursorTrack {
     pub fn bounce(&self, t: f32) -> f32 {
         const ANIM_S: f32 = 0.26; // 260 ms
         const PRESS_FRAC: f32 = 0.38;
-        let mut last_tc: Option<f32> = None;
-        for &tc in &self.clicks {
-            if tc <= t {
-                last_tc = Some(tc); // clics triés croissant -> garde le plus récent <= t
-            } else {
-                break;
-            }
-        }
-        let Some(tc) = last_tc else { return 1.0 };
+        let Some(tc) = self.last_click_at(t) else { return 1.0 };
         let elapsed = (t - tc) / ANIM_S;
         if elapsed >= 1.0 {
             return 1.0;
@@ -194,6 +186,18 @@ impl CursorTrack {
             let rebound = ((elapsed - PRESS_FRAC) / (1.0 - PRESS_FRAC) * std::f32::consts::PI).sin();
             1.0 + rebound * 0.16
         }
+    }
+
+    /// L'instant du dernier clic à `t` ou avant, `None` s'il n'y en a pas. C'est le point de
+    /// départ commun du rebond d'échelle (`bounce`) et de l'abaissement de la hauteur du curseur
+    /// modélisé — les deux doivent lire le MÊME contact, sinon le sprite s'écrase et se pose à
+    /// deux instants différents. Les clics sont triés croissant (voir `CursorTrack::new`).
+    pub(crate) fn last_click_at(&self, t: f32) -> Option<f32> {
+        let i = self.clicks.partition_point(|&tc| tc <= t);
+        if i == 0 {
+            return None;
+        }
+        Some(self.clicks[i - 1])
     }
 
     /// Les instants de clic dans `(lo, hi]`, triés. L'impact du clic sur le plan

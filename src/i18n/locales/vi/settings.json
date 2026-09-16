@@ -346,6 +346,14 @@
 			"none": "Không",
 			"title": "Xoay 3D"
 		},
+		"cameraMotion": {
+			"title": "Chuyển động camera",
+			"still": "Đứng yên",
+			"sway": "Đung đưa",
+			"follow": "Bám theo con trỏ",
+			"flip": "Đổi bên",
+			"needsRotation": "Hãy chọn phép quay 3D trước: chỉ màn hình nghiêng mới chuyển động được."
+		},
 		"clickImpact": {
 			"title": "Hiệu ứng nhấp",
 			"description": "Mỗi lần nhấp sẽ ấn màn hình nghiêng: phía được nhấp lún xuống rồi bật lại.",
@@ -386,6 +394,8 @@
 		"clickBounce": "Nảy khi nhấp",
 		"depth": "Độ sâu 3D",
 		"depthNeedsCursor": "Bật “Hiện con trỏ” để tạo độ sâu cho con trỏ.",
+		"hover": "Độ cao",
+		"hoverNeedsCursor": "Bật “Hiện con trỏ” để nâng con trỏ khỏi màn hình.",
 		"help": "Cách vẽ con trỏ từ dữ liệu đã ghi: chủ đề, kích thước, làm mượt, mờ chuyển động và hiệu ứng nảy khi nhấp.",
 		"clipToBoundsDescription": "Giữ con trỏ bên trong khung hình video. Tắt để cho phép con trỏ vượt ra ngoài mép — hữu ích khi phóng to hoặc lia máy.",
 		"size": "Kích thước",

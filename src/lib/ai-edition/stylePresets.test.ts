@@ -38,6 +38,7 @@ function appearance(overrides: Partial<StylePresetAppearance> = {}): StylePreset
 			motionBlur: 0.35,
 			clickBounce: 2.5,
 			volume: 0,
+			hover: 0,
 			clipToBounds: false,
 		},
 		cursorShow: true,
@@ -132,6 +133,23 @@ describe("parseStylePresetAppearance", () => {
 		expect(() => parseStylePresetAppearance({ ...appearance(), frame: "window-sepia" })).toThrow(
 			/frame/,
 		);
+	});
+
+	it("reads a preset written before cursor.hover as a resting cursor, and bounds it", () => {
+		const { hover: _hover, ...resting } = appearance().cursor;
+		expect(parseStylePresetAppearance({ ...appearance(), cursor: resting }).cursor.hover).toBe(0);
+		expect(
+			parseStylePresetAppearance({
+				...appearance(),
+				cursor: { ...appearance().cursor, hover: 0.4 },
+			}).cursor.hover,
+		).toBe(0.4);
+		expect(() =>
+			parseStylePresetAppearance({
+				...appearance(),
+				cursor: { ...appearance().cursor, hover: 1.5 },
+			}),
+		).toThrow(/cursor\.hover/);
 	});
 
 	it("falls back to the default cursor theme for an id this build does not ship", () => {
