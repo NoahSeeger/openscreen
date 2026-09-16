@@ -132,6 +132,8 @@ pub struct Compositor {
     /// entre clips : les régions projetées par l'app portent elles aussi des temps source.
     /// Séparé de l'override curseur pour préserver les chemins fixture sans télémétrie.
     timeline_t_override: RefCell<Option<f32>>,
+    /// Temps programme (secondes de sortie) — cf. `FrameGeometryInput::programme_time`.
+    programme_time: RefCell<Option<f32>>,
     // cache des SRV décodeur par (texture array, slice) : le pool réutilise ~32 textures,
     // donc après warmup plus aucune création de SRV par frame (overhead CPU supprimé).
     srv_cache: RefCell<HashMap<(usize, u32), (ID3D11ShaderResourceView, ID3D11ShaderResourceView)>>,
@@ -606,6 +608,7 @@ impl Compositor {
             cursor: RefCell::new(None),
             cursor_t_override: RefCell::new(None),
             timeline_t_override: RefCell::new(None),
+            programme_time: RefCell::new(None),
             srv_cache: RefCell::new(HashMap::new()),
             live_params: RefCell::new(LiveParams::default()),
             scene: RefCell::new(None),
@@ -965,7 +968,8 @@ impl Compositor {
             Some(SceneBackground::Color { color }) => {
                 self.draw_solid(&solid(parse_hex(color).unwrap_or(BLACK)));
             }
-            Some(SceneBackground::Gradient { angle_deg, stops }) => {
+            // Le mouvement ne vaut que pour le fond d'écran : la bulle garde son dégradé immobile.
+            Some(SceneBackground::Gradient { angle_deg, stops, .. }) => {
                 let c0 = stops.first().and_then(|s| parse_hex(s)).unwrap_or(BLACK);
                 let c1 = stops.last().and_then(|s| parse_hex(s)).unwrap_or(c0);
                 // angle CSS → direction unitaire, même convention que le fond d'écran.
@@ -1391,6 +1395,18 @@ impl Compositor {
         *self.timeline_t_override.borrow_mut() = t;
     }
 
+    /// Voir `programme_time`. `None` restaure le comportement fixture (`frame / FPS`).
+    pub fn set_programme_time(&self, t: Option<f32>) {
+        *self.programme_time.borrow_mut() = t;
+    }
+
+    /// Dernier temps programme reçu : pour que les tests vérifient ce qui atteint vraiment
+    /// `FrameGeometryInput`, pas seulement ce que l'appelant croit envoyer.
+    #[doc(hidden)]
+    pub fn programme_time(&self) -> Option<f32> {
+        *self.programme_time.borrow()
+    }
+
     /// Copie de la scène courante (si présente) — utilisé par l'export multiclip pour lire les
     /// réglages curseur (thème/lissage/show) sans dupliquer le contrat de scène côté pipeline.
     pub fn scene_snapshot(&self) -> Option<Scene> {
@@ -1604,6 +1620,7 @@ impl Compositor {
             scene: scene_ref.as_ref(),
             cursor: cursor_ref.as_ref(),
             timeline_t_override: *self.timeline_t_override.borrow(),
+            programme_time: *self.programme_time.borrow(),
         });
         let scene_preset = g.scene_preset.clone();
         let mb_taps = g.mb_taps;
@@ -1646,19 +1663,25 @@ impl Compositor {
                         ..Default::default()
                     });
                 }
-                SceneBackground::Gradient { angle_deg, stops } => {
+                SceneBackground::Gradient { angle_deg, stops, motion } => {
                     let c0 = stops.first().and_then(|s| parse_hex(s)).unwrap_or(lp.bg_color);
                     let c1 = stops.last().and_then(|s| parse_hex(s)).unwrap_or(c0);
                     // angle CSS → direction unitaire (espace sortie, y vers le bas) :
                     // 0° = vers le haut, 90° = vers la droite.
                     let a = angle_deg.to_radians();
                     let dir = [a.sin(), -a.cos()];
+                    let (anim, mb) = crate::frame_geometry::gradient_motion_slots(
+                        motion,
+                        g.programme_t,
+                        self.rw() / self.rh(),
+                    );
                     self.draw_solid(&LayerCB {
                         dst: [0.0, 0.0, 1.0, 1.0],
                         src: [c1[0], c1[1], c1[2], c1[3]],
                         mode: 5.0,
                         color: c0,
-                        fx: [dir[0], dir[1], 0.0, 0.0],
+                        fx: [dir[0], dir[1], anim[0], anim[1]],
+                        mb,
                         ..Default::default()
                     });
                 }

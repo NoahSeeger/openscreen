@@ -262,6 +262,8 @@ pub struct Compositor {
     cursor: RefCell<Option<crate::cursor::CursorTrack>>,
     cursor_time: RefCell<Option<f32>>,
     timeline_time: RefCell<Option<f32>>,
+    /// Temps programme (secondes de sortie) — cf. `FrameGeometryInput::programme_time`.
+    programme_time: RefCell<Option<f32>>,
     live_params: RefCell<LiveParams>,
     metal_texture_cache: CVMetalTextureCache,
     /// Dernier command buffer soumis, gardé pour pouvoir l'attendre AU MOMENT où le CPU lit
@@ -611,6 +613,7 @@ impl Compositor {
             cursor: RefCell::new(None),
             cursor_time: RefCell::new(None),
             timeline_time: RefCell::new(None),
+            programme_time: RefCell::new(None),
             live_params: RefCell::new(LiveParams::default()),
             metal_texture_cache: cache,
             last_cmd: RefCell::new(None),
@@ -684,6 +687,17 @@ impl Compositor {
 
     pub fn set_timeline_time(&self, t: Option<f32>) {
         *self.timeline_time.borrow_mut() = t;
+    }
+
+    pub fn set_programme_time(&self, t: Option<f32>) {
+        *self.programme_time.borrow_mut() = t;
+    }
+
+    /// Dernier temps programme reçu : pour que les tests vérifient ce qui atteint vraiment
+    /// `FrameGeometryInput`, pas seulement ce que l'appelant croit envoyer.
+    #[doc(hidden)]
+    pub fn programme_time(&self) -> Option<f32> {
+        *self.programme_time.borrow()
     }
 
     pub fn clear_cursor(&self) {
@@ -1002,7 +1016,8 @@ impl Compositor {
             Some(SceneBackground::Color { color }) => {
                 self.draw_solid(enc, &solid(parse_hex(color).unwrap_or(BLACK)));
             }
-            Some(SceneBackground::Gradient { angle_deg, stops }) => {
+            // Le mouvement ne vaut que pour le fond d'écran : la bulle garde son dégradé immobile.
+            Some(SceneBackground::Gradient { angle_deg, stops, .. }) => {
                 let c0 = stops.first().and_then(|s| parse_hex(s)).unwrap_or(BLACK);
                 let c1 = stops.last().and_then(|s| parse_hex(s)).unwrap_or(c0);
                 // angle CSS → direction unitaire, même convention que le fond d'écran.
@@ -1955,6 +1970,7 @@ impl Compositor {
             scene: scene_ref.as_ref(),
             cursor: cursor_ref.as_ref(),
             timeline_t_override: *self.timeline_time.borrow(),
+            programme_time: *self.programme_time.borrow(),
         });
 
         let cmd_buf = self.gpu.context.new_command_buffer();
@@ -1979,10 +1995,12 @@ impl Compositor {
                     &LayerCB { dst: [0.0, 0.0, 1.0, 1.0], mode: 1.0, color: c, ..Default::default() },
                 );
             }
-            Some(SceneBackground::Gradient { angle_deg, stops }) => {
+            Some(SceneBackground::Gradient { angle_deg, stops, motion }) => {
                 let c0 = stops.first().and_then(|s| parse_hex(s)).unwrap_or(lp.bg_color);
                 let c1 = stops.last().and_then(|s| parse_hex(s)).unwrap_or(c0);
                 let a = angle_deg.to_radians();
+                let (anim, mb) =
+                    crate::frame_geometry::gradient_motion_slots(motion, g.programme_t, rw / rh);
                 self.draw_solid(
                     enc,
                     &LayerCB {
@@ -1990,7 +2008,8 @@ impl Compositor {
                         src: [c1[0], c1[1], c1[2], c1[3]],
                         mode: 5.0,
                         color: c0,
-                        fx: [a.sin(), -a.cos(), 0.0, 0.0],
+                        fx: [a.sin(), -a.cos(), anim[0], anim[1]],
+                        mb,
                         ..Default::default()
                     },
                 );
