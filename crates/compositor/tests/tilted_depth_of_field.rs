@@ -193,22 +193,45 @@ fn the_far_corner_of_a_tilted_screen_is_defocused_and_the_near_one_is_not() {
 /// Coût mesuré, A/B entrelacé : la même frame décodée, recomposée par deux compositeurs qui ne
 /// diffèrent que par le réglage. Le readback synchronise le GPU à chaque tour ; il est payé des
 /// deux côtés, donc l'écart est celui de l'effet.
+///
+/// Trois formes, parce que la pyramide suit la texture SOURCE et non le rendu :
+/// - export : rendu à la taille de sortie, `readback_resized` (ce que fait l'export) ;
+/// - preview : rendu à la taille du panneau (1280×720 ici, cf. `preview_render_size`), lu par
+///   `readback_direct` comme la boucle live — la pyramide y reste pleine taille, donc son coût
+///   pèse relativement plus ;
+/// - 4K : source et sortie 3840×2160, si `OPENSCREEN_DOF_SOURCE_4K` est posée.
 #[test]
 fn depth_of_field_cost_a_b() {
     let (Ok(source), Ok(_)) = (std::env::var("OPENSCREEN_DOF_SOURCE"), std::env::var("OPENSCREEN_DOF_BENCH")) else {
         println!("SKIP: definir OPENSCREEN_DOF_SOURCE et OPENSCREEN_DOF_BENCH.");
         return;
     };
-    for (backend, rounds) in [(Backend::Hardware, 300usize), (Backend::Cpu, 20)] {
+    let source_4k = std::env::var("OPENSCREEN_DOF_SOURCE_4K").ok();
+    let mut cases = vec![
+        (Backend::Hardware, source.clone(), (1920u32, 1080u32), false, 300usize),
+        (Backend::Hardware, source.clone(), (1280, 720), true, 300),
+        (Backend::Cpu, source.clone(), (1920, 1080), false, 20),
+        (Backend::Cpu, source.clone(), (1280, 720), true, 20),
+    ];
+    if let Some(s4) = source_4k {
+        cases.insert(2, (Backend::Hardware, s4, (3840, 2160), false, 150));
+    }
+    for (backend, source, (w, h), preview, rounds) in cases {
         let Ok(gpu) = Gpu::create_backend(backend, false) else {
             println!("{backend:?} indisponible, saute");
             continue;
         };
-        let (w, h) = (1920u32, 1080u32);
         let focus = [0.92, 0.08];
         let on = compositor(&gpu, &source, r#""iso""#, true, focus, w, h);
         let off = compositor(&gpu, &source, r#""iso""#, false, focus, w, h);
         let cfg = cfg();
+        let read = |comp: &Compositor| unsafe {
+            if preview {
+                comp.readback_direct().expect("readback").2
+            } else {
+                comp.readback_resized(w, h).expect("readback")
+            }
+        };
         let (mut t_on, mut t_off) = (0f64, 0f64);
         unsafe {
             let mut player = Player::open(&source, "", &gpu).expect("ouvrir la source");
@@ -216,7 +239,7 @@ fn depth_of_field_cost_a_b() {
             // Chauffe : allocation de la pyramide, caches du pilote.
             for comp in [&on, &off, &on, &off] {
                 player.recompose(comp, &cfg).expect("recomposer");
-                comp.readback_resized(w, h).expect("readback");
+                read(comp);
             }
             for i in 0..rounds {
                 // Ordre alterné : aucun des deux ne profite toujours d'être second.
@@ -224,15 +247,16 @@ fn depth_of_field_cost_a_b() {
                 for (comp, is_on) in pair {
                     let t0 = Instant::now();
                     player.recompose(comp, &cfg).expect("recomposer");
-                    comp.readback_resized(w, h).expect("readback");
+                    read(comp);
                     let dt = t0.elapsed().as_secs_f64() * 1e3;
                     if is_on { t_on += dt } else { t_off += dt }
                 }
             }
         }
         let (a, b) = (t_on / rounds as f64, t_off / rounds as f64);
+        let shape = if preview { "preview (readback_direct)" } else { "export (readback_resized)" };
         println!(
-            "{backend:?} {w}x{h} iso, {rounds} tours : DoF on {a:.2} ms/frame, off {b:.2} ms/frame, surcout {:.2} ms/frame (compose + readback)",
+            "{backend:?} {w}x{h} {shape}, iso, {rounds} tours : DoF on {a:.2} ms/frame, off {b:.2} ms/frame, surcout {:.2} ms/frame",
             a - b
         );
     }
