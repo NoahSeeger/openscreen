@@ -48,16 +48,18 @@ using namespace metal;
 struct Layer
 {
     float4 dst;       // x,y,w,h dans l'espace sortie 0..1 (origine haut-gauche)
-    float4 src;       // u0,v0,u1,v1 dans l'espace source 0..1
+    float4 src;       // u0,v0,u1,v1 dans l'espace source 0..1 ; mode 15 : décalage px du rayon, P, U
     float2 quad_px;   // taille du quad en pixels (pour les SDF)
     float  radius_px; // rayon des coins arrondis en px (0 = aucun)
-    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, ...
-    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a)
-    float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres
-    float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité)
-    float4 dst_prev;  // dst à la frame précédente
-    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé)
+    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, ..., 15 = flèche 3D
+    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : a = opacité
+    float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres ; mode 15 : rotation du plan (rad), tangage
+    float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité) ; mode 15 : hotspot, lacet
+    float4 dst_prev;  // dst à la frame précédente ; modes 13 et 15 : rect de clip
+    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan
 };
+// Mode 15 (flèche modélisée) : le détail des emplacements est dans `frame_geometry.rs`, en tête
+// de la section « Curseur modélisé » (`cursor_model_cb`).
 
 // `layer` est passé en `constant Layer& [[buffer(0)]]` à chaque entry point qui le lit
 // (cf. la note « DIFFÉRENCE STRUCTURELLE » en tête de fichier). Côté Rust, il est lié par
@@ -352,6 +354,238 @@ inline float3 gradient_motion(float2 gp, float2 dir, float denom, float3 c0, flo
     return mix(c0, c1, clamp(0.5 + u + 0.07 * w, 0.0, 1.0));
 }
 
+// ============ Curseur MODÉLISÉ (mode 15) ============
+// Port ligne pour ligne de `cursor_model` (HLSL), dont les commentaires font foi ; seules
+// différences : `layer` arrive en paramètre, `saturate` s'écrit `clamp`, `lerp` s'écrit `mix`.
+// Constantes : miroir exact de `frame_geometry.rs` (ARROW_*, MODEL_*).
+constant float2 ARROW_CORE[10] = {
+    float2(-0.0338, -0.0631),
+    float2( 0.4736,  0.4415),
+    float2( 0.4764,  0.5280),
+    float2( 0.3085,  0.5491),
+    float2( 0.4090,  0.8058),
+    float2( 0.2893,  0.9066),
+    float2( 0.1453,  0.6027),
+    float2( 0.0369,  0.6954),
+    float2(-0.0207,  0.6752),
+    float2(-0.0381,  0.6363)
+};
+constant float ARROW_ROUND = 0.0357;
+constant float ARROW_BAND = 0.0577;
+constant float ARROW_THICK = 0.19;
+constant float ARROW_BEVEL = 0.045;
+constant float3 ARROW_BOX_LO = float3(-0.0738, -0.0988, -0.19);
+constant float3 ARROW_BOX_HI = float3(0.5121, 0.9423, 0.0);
+constant float3 MODEL_LIGHT = float3(-0.4194, -0.5792, 0.6990);
+constant float3 MODEL_BODY = float3(0.035, 0.035, 0.04);
+constant float3 MODEL_RIM = float3(0.97, 0.97, 0.97);
+constant float MODEL_AMBIENT = 0.36;
+constant float MODEL_DIFFUSE = 0.75;
+constant float MODEL_SPECULAR = 0.45;
+constant float MODEL_SOFTNESS = 6.0;
+constant float MODEL_SHADOW_PAD = 0.45;
+constant float MODEL_SHADOW_ALPHA = 0.5;
+constant float MODEL_CONTACT_RADIUS = 0.12;
+constant float MODEL_CONTACT_ALPHA = 0.5;
+
+static float sd_arrow2(float2 p)
+{
+    float d = dot(p - ARROW_CORE[0], p - ARROW_CORE[0]);
+    float s = 1.0;
+    int j = 9;
+    for (int i = 0; i < 10; i++)
+    {
+        float2 vi = ARROW_CORE[i];
+        float2 vj = ARROW_CORE[j];
+        float2 e = vj - vi;
+        float2 w = p - vi;
+        float2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+        d = min(d, dot(b, b));
+        bool c1 = p.y >= vi.y;
+        bool c2 = p.y < vj.y;
+        bool c3 = e.x * w.y > e.y * w.x;
+        if ((c1 && c2 && c3) || (!c1 && !c2 && !c3))
+        {
+            s = -s;
+        }
+        j = i;
+    }
+    return s * sqrt(d) - ARROW_ROUND;
+}
+
+static float sd_arrow(float3 p)
+{
+    float half_t = ARROW_THICK * 0.5;
+    float2 w = float2(sd_arrow2(p.xy) + ARROW_BEVEL, abs(p.z + half_t) - (half_t - ARROW_BEVEL));
+    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - ARROW_BEVEL;
+}
+
+static float3 arrow_normal(float3 p)
+{
+    const float e = 0.002;
+    const float3 ka = float3(1.0, -1.0, -1.0);
+    const float3 kb = float3(-1.0, -1.0, 1.0);
+    const float3 kc = float3(-1.0, 1.0, -1.0);
+    const float3 kd = float3(1.0, 1.0, 1.0);
+    return normalize(ka * sd_arrow(p + ka * e) + kb * sd_arrow(p + kb * e) +
+                     kc * sd_arrow(p + kc * e) + kd * sd_arrow(p + kd * e));
+}
+
+static float2 ray_box(float3 o, float3 d, float3 lo, float3 hi)
+{
+    float3 inv = 1.0 / select(float3(1e-6), d, abs(d) > 1e-6);
+    float3 t0 = (lo - o) * inv;
+    float3 t1 = (hi - o) * inv;
+    float3 tn = min(t0, t1);
+    float3 tf = max(t0, t1);
+    return float2(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
+}
+
+struct ModelFrame
+{
+    float3 c;
+    float3 s;
+    float cp;
+    float sp;
+    float cy;
+    float sy;
+};
+
+static float3 world_to_plane(float3 v, ModelFrame f)
+{
+    float y = v.y * f.c.x + v.z * f.s.x;
+    float z = -v.y * f.s.x + v.z * f.c.x;
+    float x = v.x * f.c.y - z * f.s.y;
+    z = v.x * f.s.y + z * f.c.y;
+    return float3(x * f.c.z + y * f.s.z, -x * f.s.z + y * f.c.z, z);
+}
+
+static float3 model_to_plane(float3 v, ModelFrame f)
+{
+    float y = v.y * f.cp - v.z * f.sp;
+    float z = v.y * f.sp + v.z * f.cp;
+    return float3(v.x * f.cy - y * f.sy, v.x * f.sy + y * f.cy, z);
+}
+
+static float3 plane_to_model(float3 v, ModelFrame f)
+{
+    float x = v.x * f.cy + v.y * f.sy;
+    float y = -v.x * f.sy + v.y * f.cy;
+    return float3(x, y * f.cp + v.z * f.sp, -y * f.sp + v.z * f.cp);
+}
+
+static float arrow_soft_shadow(float3 o, float3 l)
+{
+    float2 tb = ray_box(o, l, ARROW_BOX_LO - MODEL_SHADOW_PAD, ARROW_BOX_HI + MODEL_SHADOW_PAD);
+    if (tb.x >= tb.y || tb.y <= 0.0)
+    {
+        return 1.0;
+    }
+    float res = 1.0;
+    float t = max(tb.x, 0.004);
+    for (int k = 0; k < 32; k++)
+    {
+        float d = sd_arrow(o + l * t);
+        res = min(res, MODEL_SOFTNESS * d / t);
+        if (res < 0.002 || t > tb.y)
+        {
+            break;
+        }
+        t += clamp(d, 0.01, 0.2);
+    }
+    res = clamp(res, 0.0, 1.0);
+    return res * res * (3.0 - 2.0 * res);
+}
+
+static float3 arrow_shade(float3 q, float3 rd, float3 l, float fp)
+{
+    float3 n = arrow_normal(q);
+    float top = smoothstep(0.5, 0.8, n.z);
+    float inlay = top * (1.0 - smoothstep(-ARROW_BAND - fp, -ARROW_BAND + fp, sd_arrow2(q.xy)));
+    float3 albedo = mix(MODEL_RIM, MODEL_BODY, inlay);
+    float diffuse = clamp(dot(n, l), 0.0, 1.0);
+    float gloss = 1.0 - smoothstep(0.97, 0.995, abs(n.z));
+    float spec = gloss * pow(clamp(dot(n, normalize(l - rd)), 0.0, 1.0), 110.0);
+    return albedo * (MODEL_AMBIENT + MODEL_DIFFUSE * diffuse) + MODEL_SPECULAR * spec;
+}
+
+static float4 cursor_model(float2 local, constant Layer &layer)
+{
+    ModelFrame f;
+    f.c = cos(layer.fx.xyz);
+    f.s = sin(layer.fx.xyz);
+    f.cp = cos(layer.fx.w);
+    f.sp = sin(layer.fx.w);
+    f.cy = cos(layer.src_prev.w);
+    f.sy = sin(layer.src_prev.w);
+    float persp = layer.src.z;
+    float unit = layer.src.w;
+    float3 tip = layer.src_prev.xyz;
+
+    float3 dw = float3(local + layer.src.xy, -persp);
+    float dlen = length(dw);
+    float3 ro = plane_to_model((world_to_plane(float3(0.0, 0.0, persp), f) - tip) / unit, f);
+    float3 rd = plane_to_model(world_to_plane(dw / dlen, f), f);
+    float3 l = plane_to_model(world_to_plane(MODEL_LIGHT, f), f);
+    float3 nz = plane_to_model(float3(0.0, 0.0, 1.0), f);
+    float hz = -tip.z / unit;
+
+    float cov = 0.0;
+    float3 rgb = float3(0.0);
+    float2 tb = ray_box(ro, rd, ARROW_BOX_LO - 0.02, ARROW_BOX_HI + 0.02);
+    if (tb.x < tb.y && tb.y > 0.0)
+    {
+        float t = max(tb.x, 0.0);
+        float best = 1e9;
+        float t_best = t;
+        bool hit = false;
+        for (int k = 0; k < 64; k++)
+        {
+            float d = sd_arrow(ro + rd * t);
+            float fp = t / dlen;
+            if (d < 0.1 * fp)
+            {
+                hit = true;
+                t_best = t;
+                break;
+            }
+            if (d / fp < best)
+            {
+                best = d / fp;
+                t_best = t;
+            }
+            t += d;
+            if (t > tb.y)
+            {
+                break;
+            }
+        }
+        cov = hit ? 1.0 : clamp(1.0 - best, 0.0, 1.0);
+        if (cov > 0.0)
+        {
+            rgb = arrow_shade(ro + rd * t_best, rd, l, t_best / dlen);
+        }
+    }
+
+    float shadow = 0.0;
+    float denom = dot(rd, nz);
+    if (cov < 1.0 && denom < -1e-4)
+    {
+        float3 g = ro + rd * ((hz - dot(ro, nz)) / denom);
+        float3 gp = tip + unit * model_to_plane(g, f);
+        float inside = clamp(min(layer.mb.x - abs(gp.x), layer.mb.y - abs(gp.y)) + 0.5, 0.0, 1.0);
+        if (inside > 0.0)
+        {
+            float dropped = 1.0 - arrow_soft_shadow(g, l);
+            float contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_arrow(g));
+            shadow = inside * max(dropped * MODEL_SHADOW_ALPHA, contact * MODEL_CONTACT_ALPHA);
+        }
+    }
+
+    float a = cov * layer.color.a;
+    return float4(rgb * a, a + (1.0 - a) * shadow * layer.color.a); // prémultiplié, ombre noire
+}
+
 fragment float4 ps_main(VSOut i [[stage_in]],
                         constant Layer &layer [[buffer(0)]],
                         texture2d<float, access::sample> texY [[texture(0)]],
@@ -362,8 +596,20 @@ fragment float4 ps_main(VSOut i [[stage_in]],
                         // puisque la branche n'est prise que si layer.fx.z > 0.5.
                         texture2d<float, access::sample> texMask [[texture(3)]])
 {
+    // mode 15 : FLÈCHE MODÉLISÉE (`cursor_model`). Testé en premier : les branches suivantes
+    // n'ont pas de borne haute. dst_prev = rect de clip « Clip to canvas », comme au mode 13.
+    if (layer.mode > 14.5)
+    {
+        if (i.pout.x < layer.dst_prev.x || i.pout.x > layer.dst_prev.x + layer.dst_prev.z ||
+            i.pout.y < layer.dst_prev.y || i.pout.y > layer.dst_prev.y + layer.dst_prev.w)
+        {
+            return float4(0.0, 0.0, 0.0, 0.0);
+        }
+        return cursor_model(i.local, layer);
+    }
+
     // mode 14 : CADRE DE FENÊTRE autour de l'écran, dessiné SOUS lui. Cf. commentaires HLSL.
-    // Testé en premier : la branche du mode 13 n'a pas de borne haute.
+    // Testé avant le mode 13, dont la branche n'a pas de borne haute.
     // fx/src_prev = coins du cadre projeté ; dst_prev = (taille du plan, barre, filet) ;
     // radius_px = rayon extérieur ; color = fond de la barre ; mb = couleur du filet.
     if (layer.mode > 13.5)

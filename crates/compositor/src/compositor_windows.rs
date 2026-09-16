@@ -1558,11 +1558,13 @@ impl Compositor {
     }
 
     /// Sprite de l'état courant (`cursor_type`, ex. `"text"`), à défaut celui de la flèche,
-    /// à défaut le curseur math (dot+ring).
+    /// à défaut le curseur math (dot+ring). Avec `model`, la flèche modélisée (mode 15) à la
+    /// place : elle ne lit aucune texture, `plan_cursor` a déjà vérifié que la flèche est l'état.
     ///
     /// Le repli sur la flèche compte : un thème n'apporte que sa flèche et son pointeur, les
     /// autres états venant de l'art intégrée — mais si un état inconnu apparaît, mieux vaut
     /// une flèche qu'un point dans un cercle.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn draw_cur_themed(
         &self,
         sprites: &HashMap<String, SceneCursorSprite>,
@@ -1571,7 +1573,16 @@ impl Compositor {
         size_px: f32,
         a: f32,
         clip: [f32; 4],
+        model: Option<crate::frame_geometry::CursorPose>,
     ) {
+        if let Some(pose) = model {
+            if let Some(cb) =
+                crate::frame_geometry::cursor_model_cb(placement, size_px, pose, a, clip)
+            {
+                self.draw_solid(&cb);
+            }
+            return;
+        }
         let sprite = cursor_type.and_then(|t| sprites.get(t)).or_else(|| sprites.get("arrow"));
         if let Some(sprite) = sprite {
             if self.draw_cursor_sprite(placement, size_px, a, sprite, clip).is_ok() {
@@ -1980,7 +1991,8 @@ impl Compositor {
                     track,
                     t: self.cursor_t_override.borrow().unwrap_or(frame / FPS),
                 },
-            );
+            )
+            .map(|p| p.for_backend(self.cpu_backend));
             if let Some(plan) = plan {
                 let cursor_sprites: HashMap<String, SceneCursorSprite> = scene_ref
                     .as_ref()
@@ -1995,6 +2007,7 @@ impl Compositor {
                         plan.size_px,
                         plan.alpha,
                         plan.clip,
+                        plan.model,
                     );
                 } else {
                     // Flou RÉEL, pas des copies discrètes : accumule les N échantillons dans un
@@ -2012,6 +2025,7 @@ impl Compositor {
                             plan.size_px,
                             plan.alpha,
                             plan.clip,
+                            plan.model,
                         );
                     }
                     // composite le buffer accumulé sur la scène (blend "over" normal, prémultiplié).

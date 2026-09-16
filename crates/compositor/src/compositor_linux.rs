@@ -43,8 +43,8 @@ pub use crate::frame_geometry::{
     live_params_from_scene, webcam_shape_code, FIXTURE_FRAMES, LayerCB, LiveParams, OUT_H, OUT_W,
 };
 use crate::frame_geometry::{
-    cursor_sprite_cb, cursor_sprite_dst, parse_hex, plan_cursor, plan_frame, CursorPlacement,
-    CursorPlanInput, FrameGeometryInput, ShadowCaster,
+    cursor_model_cb, cursor_sprite_cb, cursor_sprite_dst, parse_hex, plan_cursor, plan_frame,
+    CursorPlacement, CursorPlanInput, FrameGeometryInput, ShadowCaster,
 };
 use crate::scene::{Scene, SceneBackground};
 
@@ -2678,9 +2678,9 @@ impl Compositor {
             }
         }
 
-        // Curseur thematise : sprite RGBA droit (mode 7) ou pose sur le plan
-        // incline (mode 13) selon ce que `plan_cursor` a resolu.
-        // `_tex`/`_view`/`_bufs` gardent le sprite et les uniformes en vie
+        // Curseur thematise : sprite RGBA droit (mode 7), pose sur le plan
+        // incline (mode 13) ou fleche modelisee (mode 15) selon ce que
+        // `plan_cursor` a resolu. `_tex`/`_bufs` gardent le sprite et les uniformes en vie
         // pendant le pass. Miroir de la branche curseur de `compositor_macos`.
         //
         // TRAINEE (`plan.taps > 1`) : `binds` porte une copie par echantillon,
@@ -2689,8 +2689,8 @@ impl Compositor {
         // fois -- cf. le commentaire au point de dessin.
         struct CursorDraw {
             _bufs: Vec<wgpu::Buffer>,
-            _tex: wgpu::Texture,
-            _view: wgpu::TextureView,
+            /// Le sprite ; `None` pour la fleche modelisee, qui ne lit aucune texture.
+            _tex: Option<(wgpu::Texture, wgpu::TextureView)>,
             binds: Vec<wgpu::BindGroup>,
         }
         let cursor_draw: Option<CursorDraw> = (|| {
@@ -2710,7 +2710,47 @@ impl Compositor {
                         .borrow()
                         .unwrap_or(frame / crate::frame_geometry::FPS),
                 },
-            )?;
+            )?
+            .for_backend(self.gpu.backend == crate::d3d::Backend::Cpu);
+
+            // `taps == 1` : un seul placement, celui de l'instant rendu -- le
+            // chemin net d'avant, inchange. Au-dela, on echelonne les copies
+            // regulierement de `prev_placement` (inclus) au placement courant
+            // (inclus) : c'est ce que font les deux autres backends, et inclure
+            // les deux bornes est ce qui fait que la trainee touche a la fois
+            // l'endroit d'ou le curseur vient et celui ou il est.
+            //
+            // On interpole des PLACEMENTS et non des centres : `lerp` sait
+            // traiter le cas incline, si bien qu'une trainee sous zoom incline
+            // reste dans le plan au lieu de repasser par un centre 2D qui
+            // l'aplatirait.
+            let placements: Vec<CursorPlacement> = if plan.taps <= 1 {
+                vec![plan.placement]
+            } else {
+                (0..plan.taps)
+                    .map(|k| {
+                        let f = k as f32 / (plan.taps - 1) as f32;
+                        plan.prev_placement.lerp(plan.placement, f)
+                    })
+                    .collect()
+            };
+            let (mut bufs, mut binds) = (Vec::new(), Vec::new());
+
+            // Fleche modelisee (mode 15) : pas de sprite a charger, `plan_cursor` a
+            // deja verifie que la fleche est l'etat. Parite Windows/macOS.
+            if let Some(pose) = plan.model {
+                for placement in placements {
+                    let Some(cb) =
+                        cursor_model_cb(placement, plan.size_px, pose, plan.alpha, plan.clip)
+                    else {
+                        continue;
+                    };
+                    let (buf, bind) = self.make_bind(&cb, None, &dummy);
+                    bufs.push(buf);
+                    binds.push(bind);
+                }
+                return (!binds.is_empty()).then_some(CursorDraw { _bufs: bufs, _tex: None, binds });
+            }
 
             let sprites = scene_ref
                 .as_ref()
@@ -2737,29 +2777,7 @@ impl Compositor {
                 (plan.size_px * ar, plan.size_px)
             };
             let hotspot = [sprite.hotspot_x, sprite.hotspot_y];
-            // `taps == 1` : un seul placement, celui de l'instant rendu -- le
-            // chemin net d'avant, inchange. Au-dela, on echelonne les copies
-            // regulierement de `prev_placement` (inclus) au placement courant
-            // (inclus) : c'est ce que font les deux autres backends, et inclure
-            // les deux bornes est ce qui fait que la trainee touche a la fois
-            // l'endroit d'ou le curseur vient et celui ou il est.
-            //
-            // On interpole des PLACEMENTS et non des centres : `lerp` sait
-            // traiter le cas incline, si bien qu'une trainee sous zoom incline
-            // reste dans le plan au lieu de repasser par un centre 2D qui
-            // l'aplatirait.
-            let placements: Vec<CursorPlacement> = if plan.taps <= 1 {
-                vec![plan.placement]
-            } else {
-                (0..plan.taps)
-                    .map(|k| {
-                        let f = k as f32 / (plan.taps - 1) as f32;
-                        plan.prev_placement.lerp(plan.placement, f)
-                    })
-                    .collect()
-            };
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let (mut bufs, mut binds) = (Vec::new(), Vec::new());
             for placement in placements {
                 // Geometrie partagee avec Windows et macOS (`cursor_sprite_cb`) :
                 // mode 7 droit, ou mode 13 pose sur le plan -- le clip vit alors
@@ -2777,7 +2795,7 @@ impl Compositor {
                 bufs.push(buf);
                 binds.push(bind);
             }
-            Some(CursorDraw { _bufs: bufs, _tex: tex, _view: view, binds })
+            Some(CursorDraw { _bufs: bufs, _tex: Some((tex, view)), binds })
         })();
         // Bind group de la passe de composition d'`accum` (layout du blur :
         // uniform + texture + sampler). Construit hors de la pass, comme les
@@ -4731,6 +4749,172 @@ mod tests {
             assert!(bright(&light) > 10_000, "{name}: barre claire absente ({} px)", bright(&light));
             assert!(differing(&none, &dark) > 10_000, "{name}: cadre sombre absent");
             assert!(differing(&light, &dark) > 10_000, "{name}: les deux themes se confondent");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Flèche modélisée (mode 15) : pendant de `tests/cursor_model_render.rs` (Windows).
+    // -----------------------------------------------------------------------
+
+    /// Écran seul (bleu strié) sous un zoom 1 porteur de `rotation`, curseur par défaut à la
+    /// taille 3 avec la flèche livrée. `model3d` : `None` = clé absente.
+    fn model_scene_json(rotation: &str, model3d: Option<bool>, theme: &str, show: bool) -> String {
+        let model3d = model3d.map(|m| format!(r#","model3d":{m}"#)).unwrap_or_default();
+        let arrow = concat!(env!("CARGO_MANIFEST_DIR"), "/../../public/cursors/default/arrow.png")
+            .replace('\\', "/");
+        format!(
+            r##"{{"clips":[{{"screenPath":"/s.mp4","webcamPath":"","sourceStartSec":0,"sourceEndSec":10,"webcamOffsetSec":0,"hasAudio":false}}],
+                "layout":{{"preset":"no-webcam","webcamSize":1,"webcamShape":"rounded","webcamMirror":false,"webcamPosition":null,"webcamReactiveZoom":false,
+                           "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
+                "effects":{{"padding":0.2,"blur":false,"shadow":0,"roundnessFrac":0.03,"motionBlur":0}},
+                "background":{{"kind":"gradient","angleDeg":135,"stops":["#5b6ee1","#e8a0bf"]}},
+                "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":1,"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":{rotation}}}],
+                "annotations":[],
+                "cursor":{{"show":{show},"size":3,"smoothing":0,"motionBlur":0,"clickBounce":2.5{model3d},"clipToBounds":false,"theme":"{theme}",
+                           "cursorSprites":{{"arrow":{{"path":"{arrow}","hotspotX":0.119,"hotspotY":0.0874}}}}}},
+                "cropByClip":[null],
+                "output":{{"width":1280,"height":720,"fps":30}}}}"##
+        )
+    }
+
+    /// Une frame bleue striée de barres sombres : rien de NEUTRE, donc un pixel gris est la
+    /// flèche, un pixel bleu assombri son ombre.
+    fn model_screen_planes() -> (Vec<u8>, Vec<u8>) {
+        let (w, h) = (640u32, 360u32);
+        let y = (0..w * h)
+            .map(|i| {
+                let (col, row) = (i % w, i / w);
+                if row % 24 >= 8 && row % 24 < 12 && (col / 40) % 3 != 2 { 90 } else { 150 }
+            })
+            .collect();
+        let uv = (0..w * (h / 2)).map(|i| if i % 2 == 0 { 150 } else { 120 }).collect();
+        (y, uv)
+    }
+
+    fn compose_model(
+        comp: &Compositor,
+        screen: &FakeFrame,
+        json: &str,
+        track: &crate::cursor::CursorTrack,
+    ) -> Vec<u8> {
+        let scene = crate::scene::Scene::from_json(json).expect("scene json");
+        comp.set_live_params(live_params_from_scene(&scene));
+        comp.set_has_webcam(false);
+        comp.set_scene(Some(scene));
+        comp.set_cursor(track.clone());
+        comp.set_cursor_time(Some(2.0));
+        comp.set_timeline_time(Some(2.0));
+        let mut cfg = crate::config::Cfg::c8();
+        cfg.bg_blur = false;
+        cfg.zoom = false;
+        cfg.layout_anim = false;
+        cfg.cursor = true;
+        cfg.mblur_n = 1;
+        cfg.shadow = false;
+        unsafe {
+            comp.compose_frame(screen.as_ptr(), screen.as_ptr(), 0.0, &cfg).expect("compose_frame");
+            comp.readback_direct().expect("readback_direct").2
+        }
+    }
+
+    /// Ce qui distingue la frame avec flèche de la même sans : pixels de la flèche (neutres),
+    /// d'ombre (le bleu assombri, hors frange antialiasée), leurs centroïdes, et la distance de
+    /// l'ombre la plus proche de l'apex (le pixel de flèche le plus haut).
+    struct ModelSplit {
+        white: usize,
+        black: usize,
+        shadow: usize,
+        body_c: [f32; 2],
+        shadow_c: [f32; 2],
+        near_apex: f32,
+    }
+
+    fn model_split(with: &[u8], without: &[u8]) -> ModelSplit {
+        let (w, h) = (1280i32, 720i32);
+        let at = |buf: &[u8], x: i32, y: i32| {
+            let i = ((y * w + x) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2]]
+        };
+        let neutral = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap() < 12;
+        let body = |x: i32, y: i32| {
+            x >= 0 && y >= 0 && x < w && y < h && at(with, x, y) != at(without, x, y) && neutral(at(with, x, y))
+        };
+        let luma = |p: [u8; 3]| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+        let mut s = ModelSplit { white: 0, black: 0, shadow: 0, body_c: [0.0; 2], shadow_c: [0.0; 2], near_apex: f32::MAX };
+        let (mut nb, mut apex) = (0usize, [0i32, i32::MAX]);
+        let mut shadows = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let (a, b) = (at(with, x, y), at(without, x, y));
+                if a == b {
+                    continue;
+                }
+                if neutral(a) {
+                    nb += 1;
+                    s.white += a.iter().all(|&c| c > 200) as usize;
+                    s.black += a.iter().all(|&c| c < 45) as usize;
+                    s.body_c = [s.body_c[0] + x as f32, s.body_c[1] + y as f32];
+                    if y < apex[1] {
+                        apex = [x, y];
+                    }
+                } else if luma(a) < luma(b) - 6.0
+                    && !(-2..=2).any(|dy| (-2..=2).any(|dx| body(x + dx, y + dy)))
+                {
+                    shadows.push([x as f32, y as f32]);
+                }
+            }
+        }
+        s.shadow = shadows.len();
+        s.body_c = [s.body_c[0] / nb.max(1) as f32, s.body_c[1] / nb.max(1) as f32];
+        for p in &shadows {
+            s.shadow_c = [s.shadow_c[0] + p[0], s.shadow_c[1] + p[1]];
+            s.near_apex = s.near_apex.min((p[0] - apex[0] as f32).hypot(p[1] - apex[1] as f32));
+        }
+        s.shadow_c = [s.shadow_c[0] / s.shadow.max(1) as f32, s.shadow_c[1] / s.shadow.max(1) as f32];
+        s
+    }
+
+    #[test]
+    fn the_modelled_arrow_casts_its_shadow_and_touches_the_screen() {
+        let Some(gpu) = gpu() else { return };
+        let comp = Compositor::new_sized(&gpu, 1280, 720).expect("Compositor::new_sized");
+        let (y, uv) = model_screen_planes();
+        let screen = FakeFrame::from_planes(&gpu, 640, 360, &y, &uv);
+        let samples = vec![(0.0, 0.45, 0.45), (9.0, 0.45, 0.45)];
+        let still = crate::cursor::CursorTrack::new(samples.clone(), vec![], vec![]);
+        // Un clic au creux de `tap` avant l'instant rendu : la flèche est posée.
+        let clicked = crate::cursor::CursorTrack::new(samples, vec![2.0 - 0.0495], vec![]);
+        let out_dir = std::env::var("OPENSCREEN_CURSOR3D_OUT").ok();
+        for (name, rotation) in [("flat", "null"), ("iso", r#""iso""#)] {
+            let json = |m: Option<bool>, theme: &str, show: bool| model_scene_json(rotation, m, theme, show);
+            let bare = compose_model(&comp, &screen, &json(Some(true), "default", false), &still);
+            let absent = compose_model(&comp, &screen, &json(None, "default", true), &still);
+            let off = compose_model(&comp, &screen, &json(Some(false), "default", true), &still);
+            let other = compose_model(&comp, &screen, &json(Some(true), "other", true), &still);
+            let hover = compose_model(&comp, &screen, &json(Some(true), "default", true), &still);
+            let touch = compose_model(&comp, &screen, &json(Some(true), "default", true), &clicked);
+            if let Some(dir) = &out_dir {
+                for (case, rgba) in [("hover", &hover), ("touch", &touch)] {
+                    let path = format!("{dir}/linux-{name}-{case}.png");
+                    image::RgbaImage::from_raw(1280, 720, rgba.clone())
+                        .expect("dimensions du readback")
+                        .save(&path)
+                        .unwrap_or_else(|e| panic!("ecriture {path} : {e}"));
+                }
+            }
+            assert!(absent == off && absent == other, "{name}: le chemin plat a change");
+            assert!(absent != hover, "{name}: le reglage allume ne change rien");
+            let (a, b) = (model_split(&hover, &bare), model_split(&touch, &bare));
+            println!(
+                "{name} : blanc {}, noir {}, ombre {} (apex a {:.1} px, posee {:.1} px), centroides {:?} / {:?}",
+                a.white, a.black, a.shadow, a.near_apex, b.near_apex, a.body_c, a.shadow_c
+            );
+            // Taille 3 en 1280x720 : ~50 a 60 px de haut, ~1000 px de silhouette.
+            assert!(a.white > 150 && a.black > 250, "{name}: matieres absentes");
+            assert!(a.shadow > 300, "{name}: pas d'ombre");
+            assert!(a.shadow_c[0] > a.body_c[0] && a.shadow_c[1] > a.body_c[1], "{name}: ombre pas en bas a droite");
+            assert!(b.near_apex < 8.0, "{name}: posee, l'ombre est a {:.1} px de l'apex", b.near_apex);
+            assert!(a.near_apex > 12.0, "{name}: en l'air, l'ombre touche l'apex ({:.1} px)", a.near_apex);
         }
     }
 }
