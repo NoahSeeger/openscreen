@@ -14,6 +14,7 @@ function makeV2Project(overrides: Partial<EditorProjectData> = {}): EditorProjec
 		media: { screenVideoPath: "/recordings/screen.webm" },
 		editor: {
 			wallpaper: "/wallpapers/wallpaper1.jpg",
+			wallpaperMotion: "none",
 			shadowIntensity: 0,
 			showBlur: false,
 			motionBlurAmount: 0,

@@ -1,5 +1,6 @@
 export interface ProjectAppearanceDefaults {
 	wallpaper: string;
+	wallpaperMotion: "none" | "drift" | "aurora" | "waves";
 	aspectRatio: `${number}:${number}` | "native";
 	shadowIntensity: number;
 	showBlur: boolean;
@@ -32,6 +33,7 @@ export interface ProjectAppearanceDefaults {
 /** The factory appearance every new project starts from. */
 export const DEFAULT_PROJECT_APPEARANCE: ProjectAppearanceDefaults = {
 	wallpaper: "/wallpapers/wallpaper1.jpg",
+	wallpaperMotion: "none",
 	aspectRatio: "16:9",
 	shadowIntensity: 0.2,
 	showBlur: false,
