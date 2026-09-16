@@ -276,7 +276,8 @@ pub struct ZoomState {
     pub focus: [f32; 2],
     pub rotation: [f32; 3],
     /// À quel point un préset 3D est installé (0..1) : la force de la région quand elle en porte
-    /// un, 0 sinon ; interpolé entre deux régions chaînées. C'est la porte de `dynamic_tilt`.
+    /// un, 0 sinon ; interpolé entre deux régions chaînées, et refermé en milieu de course
+    /// quand leurs présets diffèrent. C'est la porte de `dynamic_tilt`.
     pub tilt: f32,
 }
 
@@ -433,11 +434,18 @@ pub fn zoom_state_at(regions: &[SceneZoomRegion], t: f32, cursor: Option<&Cursor
         let (cur, next) = (&regions[ci], &regions[ni]);
         let cur_focus = resolve_focus(cur, t, cursor);
         let next_focus = resolve_focus(next, t, cursor);
+        // Entre deux présets DIFFÉRENTS, la base traverse des poses qu'aucun préset ne valide
+        // (left→right passe par Y = 0) : la marge que l'échelle gelée laissait au budget n'y est
+        // plus. La porte se ferme donc en milieu de course et ne se rouvre qu'au ras des bouts —
+        // 1 − 4p(1−p) vaut 1 en p = 0 et p = 1, donc aucun saut avec la région d'avant ni avec
+        // le palier d'après. Cf. `the_chained_sweep_keeps_every_edge_off_axis_and_inside`.
+        let (cur_rot, next_rot) = (rotation3d_for(&cur.rotation), rotation3d_for(&next.rotation));
+        let crossing = if cur_rot == next_rot { 1.0 } else { 1.0 - 4.0 * progress * (1.0 - progress) };
         return ZoomState {
             scale: lerp(cur.scale, next.scale, progress),
             focus: [lerp(cur_focus[0], next_focus[0], progress), lerp(cur_focus[1], next_focus[1], progress)],
-            rotation: lerp_rotation3d(rotation3d_for(&cur.rotation), rotation3d_for(&next.rotation), progress),
-            tilt: lerp(has_tilt(cur), has_tilt(next), progress),
+            rotation: lerp_rotation3d(cur_rot, next_rot, progress),
+            tilt: lerp(has_tilt(cur), has_tilt(next), progress) * crossing,
         };
     }
 
@@ -1282,6 +1290,69 @@ mod tilt_tests {
                             "{name} {w}x{h} force {strength} dyn {d:?} : ({mx:.1}, {my:.1})"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Même double règle pendant une transition CHAÎNÉE, par le vrai `zoom_state_at` : entre
+    /// deux présets différents, la base traverse des poses qu'aucun préset ne valide
+    /// (left→right passe par Y = 0), et l'échelle gelée n'y laisse plus de marge. C'est la
+    /// porte (`ZoomState::tilt`) qui doit tenir le budget à l'écart.
+    #[test]
+    fn the_chained_sweep_keeps_every_edge_off_axis_and_inside() {
+        let region = |rotation: Option<&str>, start: f64, end: f64| SceneZoomRegion {
+            id: "z".into(),
+            clip_index: None,
+            start_sec: start,
+            end_sec: end,
+            scale: 2.0,
+            focus_x: 0.5,
+            focus_y: 0.5,
+            focus_mode: None,
+            rotation: rotation.map(Into::into),
+            under_trim: false,
+            hide_cursor: false,
+        };
+        let presets = [None, Some("iso"), Some("left"), Some("right")];
+        for a in presets {
+            for b in presets {
+                // Transition chaînée sur [4, 5] s.
+                let regions = [region(a, 1.0, 4.0), region(b, 4.5, 8.0)];
+                for k in 0..=200 {
+                    let t = 4.0 + k as f32 / 200.0;
+                    let state = zoom_state_at(&regions, t, None);
+                    let base = state.rotation;
+                    let gate = smoothstep(PARALLAX_GATE_START, 1.0, state.tilt);
+                    for (w, h) in [(1920.0f32, 1080.0f32), (1080.0, 1920.0), (800.0, 800.0)] {
+                        let still = rotated_quad_corners_px(w, h, base, [0.0; 3]).corners;
+                        let floor = min_edge_angle(&still).min(2.0);
+                        // La boucle de containment s'arrête à `fit >= 0.999` : la base seule peut
+                        // déjà dépasser d'un pixel. On juge la part dynamique, pas cette tolérance.
+                        let (sx, sy) = projected_extents(&still);
+                        let (lx, ly) = (sx.max(w * 0.5) + 0.5, sy.max(h * 0.5) + 0.5);
+                        for d in budget_sweep(gate) {
+                            let c = rotated_quad_corners_px(w, h, base, d).corners;
+                            let (mx, my) = projected_extents(&c);
+                            assert!(
+                                mx <= lx && my <= ly,
+                                "{a:?}→{b:?} {w}x{h} t {t} dyn {d:?} : ({mx:.1}, {my:.1})"
+                            );
+                            // La règle des 2° n'est posée qu'en 16:9, comme pour les présets.
+                            if w <= h {
+                                continue;
+                            }
+                            let angle = min_edge_angle(&c);
+                            assert!(
+                                angle >= floor - 1e-4,
+                                "{a:?}→{b:?} {w}x{h} t {t} dyn {d:?} : arête à {angle:.3}°, plancher {floor:.3}°"
+                            );
+                        }
+                    }
+                }
+                // Garde : entre deux présets identiques, la porte reste ouverte tout du long.
+                if a.is_some() && a == b {
+                    assert_eq!(zoom_state_at(&regions, 4.5, None).tilt, 1.0, "{a:?}");
                 }
             }
         }

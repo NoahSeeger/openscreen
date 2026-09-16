@@ -1258,16 +1258,18 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let cut = cover(screen_source_rect(u_max, v_max, active_crop, 1.0, p.focus));
         let s_dst = remap_box(s_base, cut_ref, cut);
         // Parallaxe : calculée ici, une fois la coupe connue — elle mesure la vitesse du curseur
-        // en coupes visibles par seconde. La coupe passe au repère normalisé du curseur.
+        // en coupes VISIBLES par seconde. La coupe visible est `cut_ref`, zoom compris : `cut`
+        // ne porte plus que le crop depuis #179, et sous un x2 le même geste traverse deux fois
+        // plus d'écran. La coupe passe au repère normalisé du curseur.
         // Curseur masqué → pas de parallaxe : l'export ne charge la piste que si le curseur est
         // affiché (`timeline_walk`), la preview toujours. Sans cette porte, la preview pencherait
         // un plan que l'export laisse immobile.
         let parallax_track = cursor_for_zoom.filter(|_| scene.is_some_and(|s| s.cursor.show));
         let cut_norm = [
-            cut[0] / u_max.max(1e-6),
-            cut[1] / v_max.max(1e-6),
-            cut[2] / u_max.max(1e-6),
-            cut[3] / v_max.max(1e-6),
+            cut_ref[0] / u_max.max(1e-6),
+            cut_ref[1] / v_max.max(1e-6),
+            cut_ref[2] / u_max.max(1e-6),
+            cut_ref[3] / v_max.max(1e-6),
         ];
         let zoom_rotation_dyn =
             crate::regions::dynamic_tilt(source_t, parallax_track, cut_norm, zoom_tilt);
@@ -1973,6 +1975,32 @@ mod tests {
 
         let flat = plan_frame(&with_track(&zoomed_golden_scene()));
         assert_eq!(flat.zoom_rotation_dyn, [0.0; 3], "sans préset");
+    }
+
+    /// La vitesse se mesure dans la coupe VISIBLE, zoom compris : sous un x2, le même geste
+    /// traverse deux fois plus d'écran et penche donc plus le plan (hors saturation).
+    #[test]
+    fn the_parallax_speed_is_measured_in_the_zoomed_cut() {
+        let cfg = crate::config::all().pop().expect("au moins une config");
+        let track: &'static crate::cursor::CursorTrack = Box::leak(Box::new(
+            crate::cursor::CursorTrack::new(
+                (0..=90).map(|i| (i as f32 / 30.0, 0.05 + 0.1 * i as f32 / 30.0, 0.3)).collect(),
+                vec![],
+                vec![],
+            ),
+        ));
+        let lean = |scale: &str| {
+            let json = zoomed_golden_scene_json()
+                .replace(r#""rotation":"none""#, r#""rotation":"iso""#)
+                .replace(r#""scale":2.0"#, scale);
+            let scene = Scene::from_json(&json).expect("scène");
+            plan_frame(&FrameGeometryInput { cursor: Some(track), ..golden_input(&scene, &cfg) })
+                .zoom_rotation_dyn[1]
+        };
+        let (flat, zoomed) = (lean(r#""scale":1.0"#), lean(r#""scale":2.0"#));
+        let budget = crate::regions::DYNAMIC_TILT_BUDGET[1];
+        assert!(flat > 0.1 && zoomed < budget * 0.9, "garde, hors saturation : {flat} {zoomed}");
+        assert!(zoomed > flat * 1.4, "zoom x2 : {zoomed} devrait dépasser {flat} nettement");
     }
 
     /// Sous un préset 3D, le masque est le quad du contenu, warpé comme le mode 8 le dessine.
