@@ -1569,6 +1569,11 @@ const CURSOR_VOLUME_FLAT_FRAC: f32 = 3.0 / 34.0;
 const CURSOR_VOLUME_MAX_TAPS: u32 = 16;
 
 /// L'extrusion du curseur et son ombre de contact, calculées une fois pour les trois backends.
+///
+/// Limites connues, assumées puisque le réglage part de 0 : un pack dont le PNG peint déjà une
+/// ombre la voit extrudée avec le reste (ombre doublée) ; le curseur math de secours (mode 4,
+/// Windows) reste plat ; et sans sprite il n'y a plus rien à extruder — macOS, qui n'a pas de
+/// repli, ne dessine alors ni curseur ni volume.
 #[derive(Clone, Copy)]
 pub struct CursorVolume {
     /// Où tombent les faces arrière par rapport à la face avant, en px de sortie. Le shader le
