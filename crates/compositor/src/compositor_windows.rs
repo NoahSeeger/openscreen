@@ -1538,7 +1538,6 @@ impl Compositor {
         a: f32,
         sprite: &SceneCursorSprite,
         clip: [f32; 4],
-        volume: Option<&crate::frame_geometry::CursorVolume>,
     ) -> Result<()> {
         let path = sprite.path.as_str();
         let (srv, iw, ih) = self.cached_image(path)?;
@@ -1551,7 +1550,6 @@ impl Compositor {
             a,
             clip,
             [self.rw(), self.rh()],
-            volume,
         );
         self.upload_cb(&cb);
         self.ctx.PSSetShaderResources(2, Some(&[Some(srv)]));
@@ -1565,7 +1563,6 @@ impl Compositor {
     /// Le repli sur la flèche compte : un thème n'apporte que sa flèche et son pointeur, les
     /// autres états venant de l'art intégrée — mais si un état inconnu apparaît, mieux vaut
     /// une flèche qu'un point dans un cercle.
-    #[allow(clippy::too_many_arguments)]
     unsafe fn draw_cur_themed(
         &self,
         sprites: &HashMap<String, SceneCursorSprite>,
@@ -1574,17 +1571,16 @@ impl Compositor {
         size_px: f32,
         a: f32,
         clip: [f32; 4],
-        volume: Option<&crate::frame_geometry::CursorVolume>,
     ) {
         let sprite = cursor_type.and_then(|t| sprites.get(t)).or_else(|| sprites.get("arrow"));
         if let Some(sprite) = sprite {
-            if self.draw_cursor_sprite(placement, size_px, a, sprite, clip, volume).is_ok() {
+            if self.draw_cursor_sprite(placement, size_px, a, sprite, clip).is_ok() {
                 return;
             }
         }
         // Le repli math reste droit même sur un plan incliné : il ne devrait plus apparaître
         // maintenant que l'art par défaut existe, et lui donner sa propre passe de warp pour
-        // un cas de secours ne se justifie pas. Il n'a donc pas de volume non plus.
+        // un cas de secours ne se justifie pas.
         self.draw_cursor(placement.upright_center(), size_px, a, clip);
     }
 
@@ -1991,17 +1987,6 @@ impl Compositor {
                     .map(|s| s.cursor.cursor_sprites.clone())
                     .unwrap_or_default();
                 let cursor_type = plan.cursor_type.as_deref();
-                let volume = plan.volume.as_ref();
-                // Ombre de contact du volume : une fois, sur la scène, SOUS le curseur et sa
-                // traînée — et seulement si le sprite existe (le repli math n'a pas de volume).
-                if let Some(v) = volume {
-                    let sprite = cursor_type
-                        .and_then(|t| cursor_sprites.get(t))
-                        .or_else(|| cursor_sprites.get("arrow"));
-                    if sprite.is_some_and(|s| self.cached_image(&s.path).is_ok()) {
-                        self.draw_solid(&v.shadow);
-                    }
-                }
                 if plan.taps <= 1 {
                     self.draw_cur_themed(
                         &cursor_sprites,
@@ -2010,7 +1995,6 @@ impl Compositor {
                         plan.size_px,
                         plan.alpha,
                         plan.clip,
-                        volume,
                     );
                 } else {
                     // Flou RÉEL, pas des copies discrètes : accumule les N échantillons dans un
@@ -2028,7 +2012,6 @@ impl Compositor {
                             plan.size_px,
                             plan.alpha,
                             plan.clip,
-                            volume,
                         );
                     }
                     // composite le buffer accumulé sur la scène (blend "over" normal, prémultiplié).

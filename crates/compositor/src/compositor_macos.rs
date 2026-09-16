@@ -1930,7 +1930,6 @@ impl Compositor {
         a: f32,
         sprite: &crate::scene::SceneCursorSprite,
         clip: [f32; 4],
-        volume: Option<&crate::frame_geometry::CursorVolume>,
     ) -> Result<()> {
         let (tex, iw, ih) = self.cached_image(sprite.path.as_str())?;
         let (rw, rh) = (self.render_w as f32, self.render_h as f32);
@@ -1943,7 +1942,6 @@ impl Compositor {
             a,
             clip,
             [rw, rh],
-            volume,
         );
         enc.set_fragment_texture(2, Some(&tex));
         self.draw_solid(enc, &cb);
@@ -1955,8 +1953,7 @@ impl Compositor {
     /// Le repli « dot + ring » mathématique (mode 4) du chemin Windows n'est pas porté :
     /// l'app résout toujours un jeu de sprites, et l'art intégré couvre les états qu'un
     /// thème ne fournit pas. S'il n'y a vraiment aucun sprite, ne rien dessiner est plus
-    /// honnête qu'un curseur qui ne ressemble à aucun réglage. Le volume disparaît avec lui :
-    /// sans sprite, pas de silhouette à extruder ni d'ombre de contact.
+    /// honnête qu'un curseur qui ne ressemble à aucun réglage.
     #[allow(clippy::too_many_arguments)]
     unsafe fn draw_cur_themed(
         &self,
@@ -1967,13 +1964,10 @@ impl Compositor {
         size_px: f32,
         a: f32,
         clip: [f32; 4],
-        volume: Option<&crate::frame_geometry::CursorVolume>,
     ) {
         let sprite = cursor_type.and_then(|t| sprites.get(t)).or_else(|| sprites.get("arrow"));
         if let Some(sprite) = sprite {
-            if let Err(e) =
-                self.draw_cursor_sprite(enc, placement, size_px, a, sprite, clip, volume)
-            {
+            if let Err(e) = self.draw_cursor_sprite(enc, placement, size_px, a, sprite, clip) {
                 eprintln!("[compositor] sprite curseur \"{}\" : {e:#}", sprite.path);
             }
         }
@@ -2225,17 +2219,6 @@ impl Compositor {
                     .map(|s| s.cursor.cursor_sprites.clone())
                     .unwrap_or_default();
                 let kind = plan.cursor_type.as_deref();
-                let volume = plan.volume.as_ref();
-                // Ombre de contact du volume : une fois, sur la scène, SOUS le curseur et sa
-                // traînée — et seulement si le sprite existe. Parité `compositor_windows.rs`.
-                if let Some(v) = volume {
-                    let sprite = kind.and_then(|t| sprites.get(t)).or_else(|| sprites.get("arrow"));
-                    if sprite.is_some_and(|s| self.cached_image(s.path.as_str()).is_ok()) {
-                        let e = self.begin_pass(cmd_buf, &self.rt, None, &self.pipeline_main)?;
-                        self.draw_solid(e, &v.shadow);
-                        e.end_encoding();
-                    }
-                }
                 if plan.taps <= 1 {
                     let e = self.begin_pass(cmd_buf, &self.rt, None, &self.pipeline_main)?;
                     self.draw_cur_themed(
@@ -2246,7 +2229,6 @@ impl Compositor {
                         plan.size_px,
                         plan.alpha,
                         plan.clip,
-                        volume,
                     );
                     e.end_encoding();
                 } else {
@@ -2272,7 +2254,6 @@ impl Compositor {
                             plan.size_px,
                             plan.alpha,
                             plan.clip,
-                            volume,
                         );
                     }
                     e.end_encoding();
