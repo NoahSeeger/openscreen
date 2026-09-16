@@ -86,4 +86,47 @@ describe("FloatingInspector", () => {
 		fireEvent.click(closeBtn);
 		expect(clearSelection).toHaveBeenCalledTimes(1);
 	});
+
+	describe("click impact checkbox", () => {
+		const zoomTl = (region: Record<string, unknown>) => {
+			const updateZoomClickImpact = vi.fn();
+			const tl = {
+				...defaultProps.tl,
+				selection: { kind: "zoom", id: "z" },
+				zoomRegions: [
+					{ id: "z", startMs: 0, endMs: 1000, depth: 3, focus: { cx: 0.5, cy: 0.5 }, ...region },
+				],
+				updateZoomClickImpact,
+			} as unknown as React.ComponentProps<typeof FloatingInspector>["tl"];
+			return { tl, updateZoomClickImpact };
+		};
+
+		it("is off by default and disabled with its reason when there is no 3D preset", () => {
+			const { tl } = zoomTl({});
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const box = screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" });
+			expect(box).not.toBeChecked();
+			expect(box).toBeDisabled();
+			expect(screen.getByText("settings.zoom.clickImpact.needsRotation")).toBeInTheDocument();
+		});
+
+		it("is disabled with its reason when the region hides the cursor", () => {
+			const { tl } = zoomTl({ rotationPreset: "iso", hideCursor: true });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			expect(
+				screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" }),
+			).toBeDisabled();
+			expect(screen.getByText("settings.zoom.clickImpact.needsCursor")).toBeInTheDocument();
+		});
+
+		it("toggles the region's clickImpact under a 3D preset", () => {
+			const { tl, updateZoomClickImpact } = zoomTl({ rotationPreset: "iso" });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const box = screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" });
+			expect(box).toBeEnabled();
+			expect(screen.getByText("settings.zoom.clickImpact.description")).toBeInTheDocument();
+			fireEvent.click(box);
+			expect(updateZoomClickImpact).toHaveBeenCalledWith("z", true);
+		});
+	});
 });
