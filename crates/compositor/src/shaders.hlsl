@@ -224,7 +224,7 @@ float3 blur_webcam_bg(float2 uv, float intensity, float2 qpx, float2 local_px)
 }
 
 // Curseur EN VOLUME (mode 13, mb.z > 1) : extrusion par répétition, sans maillage. La silhouette
-// alpha du sprite est rééchantillonnée `mb.z` fois (≤ 16), chaque copie translatée d'une fraction
+// alpha du sprite est rééchantillonnée `mb.z` fois (≤ 48), chaque copie translatée d'une fraction
 // de `mb.xy` — le vecteur d'extrusion `e` en px, déjà projeté côté CPU
 // (`frame_geometry::cursor_extrusion_px`). Une translation est la même dans tous les repères,
 // donc `local - e·f` retombe sur la copie f sans autre calcul. La copie 0 est la face avant,
@@ -236,9 +236,9 @@ float3 blur_webcam_bg(float2 uv, float intensity, float2 qpx, float2 local_px)
 // Alpha DROIT comme le mode 13 plat : on prémultiplie ici.
 float4 cursor_extruded(float2 local)
 {
-    int taps = min((int) mb.z, 16);
+    int taps = min((int) mb.z, 48);
     float4 acc = 0.0;
-    [loop] for (int k = 0; k < 16; k++)
+    [loop] for (int k = 0; k < 48; k++)
     {
         if (k >= taps || acc.a > 0.999) break;
         float f = (float) k / (float) (taps - 1);

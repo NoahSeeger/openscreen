@@ -1565,8 +1565,10 @@ const CURSOR_VOLUME_DEPTH_FRAC: f32 = 0.6;
 /// Écran droit : la normale se projette sur un point, l'extrusion ne se verrait pas. On la
 /// remplace par un décalage bas-droite de 3 px pour un sprite de 34 px (volume 1).
 const CURSOR_VOLUME_FLAT_FRAC: f32 = 3.0 / 34.0;
-/// Plafond de copies de la silhouette : la borne de boucle des trois shaders.
-const CURSOR_VOLUME_MAX_TAPS: u32 = 16;
+/// Plafond de copies de la silhouette : la borne de boucle des trois shaders. À la taille par
+/// défaut, `iso` extrude ~37 px en 4K : 48 garde l'écart entre copies sous 1 px. Seuls les
+/// pixels de flanc paient la boucle — la face avant opaque sort dès la copie 0.
+const CURSOR_VOLUME_MAX_TAPS: u32 = 48;
 
 /// L'extrusion du curseur et son ombre de contact, calculées une fois pour les trois backends.
 ///
@@ -2905,6 +2907,20 @@ mod tests {
         // Moitié de volume, moitié d'épaisseur.
         let half = plan_with(ISO, 0.5).volume.expect("volume").extrude_px;
         assert!((half[0] * 2.0 - iso[0]).abs() < 1e-3, "{half:?} / {iso:?}");
+    }
+
+    /// Une copie par pixel d'extrusion jusqu'en 4K : au-delà de 1 px d'écart, les flancs se
+    /// lisent en marches. `plan_with` rend en 1080p à la taille 1 ; l'éditeur part de la taille 3
+    /// (`DEFAULT_CURSOR_SIZE`), et la 4K double encore `size_px` (et donc `e`).
+    #[test]
+    fn cursor_volume_copies_stay_under_a_pixel_apart_in_4k() {
+        let plan = plan_with(ISO, 1.0);
+        for size_px in [plan.size_px * 3.0, plan.size_px * 6.0] {
+            let v = cursor_volume(ISO, plan.placement, size_px, 1.0, 1.0).expect("volume");
+            let len = v.extrude_px[0].hypot(v.extrude_px[1]);
+            let gap = len / (v.taps - 1) as f32;
+            assert!(gap <= 1.0, "|e| {len} px, {} copies : écart {gap} px", v.taps);
+        }
     }
 
     /// À rotation nulle, le quad identité rend EXACTEMENT le rect du mode 7 : passer le curseur

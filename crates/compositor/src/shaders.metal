@@ -293,9 +293,9 @@ inline float3 blur_webcam_bg(float2 uv, float intensity, float2 qpx, float2 loca
 static float4 cursor_extruded(float2 local, constant Layer &layer,
                               texture2d<float, access::sample> texImg)
 {
-    int taps = min((int) layer.mb.z, 16);
+    int taps = min((int) layer.mb.z, 48);
     float4 acc = float4(0.0);
-    for (int k = 0; k < 16; k++)
+    for (int k = 0; k < 48; k++)
     {
         if (k >= taps || acc.a > 0.999) break;
         float f = (float) k / (float) (taps - 1);

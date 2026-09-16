@@ -269,13 +269,13 @@ fn blur_webcam_bg(uv: vec2<f32>, intensity: f32, qpx: vec2<f32>, local_px: vec2<
 
 // Curseur EN VOLUME (mode 13, mb.z > 1). Port ligne pour ligne de `cursor_extruded`
 // (HLSL), dont les commentaires font foi : la silhouette est reechantillonnee `mb.z`
-// fois (<= 16), translatee d'une fraction de `mb.xy` ; copie 0 = face avant intacte,
+// fois (<= 48), translatee d'une fraction de `mb.xy` ; copie 0 = face avant intacte,
 // les suivantes = flancs assombris, composes avant->arriere. `textureSampleLevel` a
 // LOD 0 : pas de gradient implicite dans une boucle, et la texture n'a qu'un niveau.
 fn cursor_extruded(local: vec2<f32>) -> vec4<f32> {
-    let taps = min(i32(layer.mb.z), 16);
+    let taps = min(i32(layer.mb.z), 48);
     var acc = vec4<f32>(0.0);
-    for (var k: i32 = 0; k < 16; k = k + 1) {
+    for (var k: i32 = 0; k < 48; k = k + 1) {
         if k >= taps || acc.a > 0.999 {
             break;
         }
