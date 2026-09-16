@@ -799,32 +799,18 @@ describe("useTimeline zoom modifiers (rotation + focus mode)", () => {
 		});
 	});
 
-	it("composes a camera motion with the attitude instead of replacing it", async () => {
+	it("stores a moving camera in the same field as the fixed angles", async () => {
+		// One control, one field: a moving camera replaces a fixed angle instead of stacking on it.
 		const { result } = renderTimeline();
 		await act(async () => {
 			await result.current.updateZoomRotation("zoom_a", "iso");
 		});
 		await act(async () => {
-			await result.current.updateZoomCameraMotion("zoom_a", "follow");
+			await result.current.updateZoomRotation("zoom_a", "follow-cursor");
 		});
-		expect(useProjectStore.getState().document?.zoomRanges[0]).toMatchObject({
-			rotationPreset: "iso",
-			cameraMotion: "follow",
-		});
-	});
-
-	it('writes sway by ABSENCE, like the rotation\'s "none"', async () => {
-		// `sway` is the render from before the field existed, so the document must not
-		// carry it: `migrate.ts` drops falsy values and `regions.rs` falls back to it.
-		const { result } = renderTimeline();
-		await act(async () => {
-			await result.current.updateZoomCameraMotion("zoom_a", "flip");
-		});
-		expect(useProjectStore.getState().document?.zoomRanges[0].cameraMotion).toBe("flip");
-		await act(async () => {
-			await result.current.updateZoomCameraMotion("zoom_a", undefined);
-		});
-		expect(useProjectStore.getState().document?.zoomRanges[0].cameraMotion).toBeUndefined();
+		const zoom = useProjectStore.getState().document?.zoomRanges[0];
+		expect(zoom?.rotationPreset).toBe("follow-cursor");
+		expect(zoom).not.toHaveProperty("cameraMotion");
 	});
 
 	it("updates hideCursor on a zoom region", async () => {

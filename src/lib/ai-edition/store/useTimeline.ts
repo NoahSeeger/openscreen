@@ -9,7 +9,7 @@ import { toFileUrl } from "@/components/video-editor/projectPersistence";
 import type {
 	AnnotationRegion,
 	AnnotationType,
-	CameraMotion,
+	Rotation3DPreset,
 } from "@/components/video-editor/types";
 import { useScopedT } from "@/contexts/I18nContext";
 import {
@@ -728,30 +728,12 @@ export function useTimeline() {
 	// `undefined` clears the preset back to a flat frame; `migrate.ts` already drops the field
 	// when it is falsy, so absent and "no rotation" are the same state.
 	const updateZoomRotation = useCallback(
-		async (id: string, rotationPreset: "iso" | "left" | "right" | undefined) => {
+		async (id: string, rotationPreset: Rotation3DPreset | undefined) => {
 			if (!document) return;
 			const next: AxcutDocument = {
 				...document,
 				zoomRanges: patchPillById(document.zoomRanges, id, {
 					rotationPreset,
-				}) as AxcutDocument["zoomRanges"],
-			};
-			await saveDocument(next, { history: true });
-		},
-		[document, saveDocument],
-	);
-
-	// The camera motion COMPOSES with the attitude instead of replacing it, so it is a
-	// second field and not a fourth preset. `undefined` writes `sway`, i.e. removes the
-	// key: `migrate.ts` drops falsy values, and `regions.rs::motion_for` falls back to
-	// `sway` for anything it does not know.
-	const updateZoomCameraMotion = useCallback(
-		async (id: string, cameraMotion: CameraMotion | undefined) => {
-			if (!document) return;
-			const next: AxcutDocument = {
-				...document,
-				zoomRanges: patchPillById(document.zoomRanges, id, {
-					cameraMotion,
 				}) as AxcutDocument["zoomRanges"],
 			};
 			await saveDocument(next, { history: true });
@@ -1558,7 +1540,6 @@ export function useTimeline() {
 		commitZoomFocus,
 		updateZoomDepth,
 		updateZoomRotation,
-		updateZoomCameraMotion,
 		updateZoomFocusMode,
 		updateZoomHideCursor,
 		updateZoomClickImpact,

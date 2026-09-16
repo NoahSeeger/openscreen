@@ -75,7 +75,29 @@ export const DEFAULT_ROTATION_3D: Rotation3D = {
 	rotationZ: 0,
 };
 
-export type Rotation3DPreset = "iso" | "left" | "right";
+/** A fixed 3D angle: the screen holds one pose for the whole zoom. */
+export const FIXED_ROTATION_3D_PRESETS = ["iso", "left", "right"] as const;
+export type FixedRotation3DPreset = (typeof FIXED_ROTATION_3D_PRESETS)[number];
+
+/**
+ * A moving 3D camera: the pose follows the cursor, turns to each click, or orbits over the
+ * zoom. The native compositor animates it (`regions.rs::camera_pose`); it needs the cursor
+ * track, which the export only loads while the cursor is shown.
+ */
+export const MOVING_ROTATION_3D_PRESETS = ["follow-cursor", "swing-clicks", "orbit"] as const;
+export type MovingRotation3DPreset = (typeof MOVING_ROTATION_3D_PRESETS)[number];
+
+/** The zoom's "3D camera": absent means a flat screen. */
+export type Rotation3DPreset = FixedRotation3DPreset | MovingRotation3DPreset;
+
+export const ROTATION_3D_PRESET_ORDER: Rotation3DPreset[] = [
+	...FIXED_ROTATION_3D_PRESETS,
+	...MOVING_ROTATION_3D_PRESETS,
+];
+
+export function isRotation3DPreset(value: unknown): value is Rotation3DPreset {
+	return typeof value === "string" && (ROTATION_3D_PRESET_ORDER as string[]).includes(value);
+}
 
 // Every preset carries all three components on purpose. With a single-axis rotation the projected
 // quad keeps an edge exactly parallel to the frame — both vertical edges for a pure Y rotation,
@@ -83,26 +105,17 @@ export type Rotation3DPreset = "iso" | "left" | "right";
 // indistinguishable from `overflow: hidden`. That is what got reported three times as "the
 // recording is truncated" while the plane was in fact drawn whole. `regions.rs` holds the same
 // numbers and a test asserting no edge comes within 2° of an axis.
+//
+// The moving cameras have no single pose. Their entry is the centre of their path
+// (`camera_pose(0, 0)` in `regions.rs`): what a renderer without the cursor track draws.
 export const ROTATION_3D_PRESETS: Record<Rotation3DPreset, Rotation3D> = {
 	iso: { rotationX: -12, rotationY: -18, rotationZ: -2 },
 	left: { rotationX: -8, rotationY: -16, rotationZ: -1 },
 	right: { rotationX: -8, rotationY: 16, rotationZ: 1 },
+	"follow-cursor": { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
+	"swing-clicks": { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
+	orbit: { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
 };
-
-export const ROTATION_3D_PRESET_ORDER: Rotation3DPreset[] = ["iso", "left", "right"];
-
-/**
- * How the camera behaves during a zoom, ON TOP of the attitude above. The preset says
- * where the plane leans, this says what animates it — so each attitude gains all four
- * motions instead of twelve presets recopying one attitude. Absent means `sway`, which is
- * the render from before the field existed (`regions.rs::CameraMotion`).
- */
-export const CAMERA_MOTIONS = ["still", "sway", "follow", "flip"] as const;
-export type CameraMotion = (typeof CAMERA_MOTIONS)[number];
-
-export function isCameraMotion(value: unknown): value is CameraMotion {
-	return typeof value === "string" && (CAMERA_MOTIONS as readonly string[]).includes(value);
-}
 
 /** Perspective distance in CSS px is this factor times min(viewport w, h). Same
  * factor in preview and export so the look matches at any canvas resolution.
@@ -136,9 +149,6 @@ export interface ZoomRegion {
 	hideCursor?: boolean;
 	/** When true, each click presses the tilted plane (needs `rotationPreset`). Omitted when off. */
 	clickImpact?: true;
-	/** How the camera moves while the tilt is installed. Omitted when `sway`, which is the
-	 *  historical render — an absent field is not a missing choice, and needs no migration. */
-	cameraMotion?: CameraMotion;
 }
 
 export function getRotation3D(region: Pick<ZoomRegion, "rotationPreset">): Rotation3D {

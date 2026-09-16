@@ -33,7 +33,7 @@ import {
 	DEFAULT_WEBCAM_REACTIVE_ZOOM,
 	DEFAULT_ZOOM_DEPTH,
 	DEFAULT_ZOOM_MOTION_BLUR,
-	isCameraMotion,
+	isRotation3DPreset,
 	isWallpaperMotion,
 	MAX_BLUR_BLOCK_SIZE,
 	MAX_BLUR_INTENSITY,
@@ -259,13 +259,9 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					const startMs = Math.max(0, Math.min(rawStart, rawEnd));
 					const endMs = Math.max(startMs + 1, rawEnd);
 
-					const validPreset =
-						region.rotationPreset === "iso" ||
-						region.rotationPreset === "left" ||
-						region.rotationPreset === "right"
-							? region.rotationPreset
-							: undefined;
-					const validMotion = isCameraMotion(region.cameraMotion) ? region.cameraMotion : undefined;
+					const validPreset = isRotation3DPreset(region.rotationPreset)
+						? region.rotationPreset
+						: undefined;
 					return {
 						id: region.id,
 						startMs,
@@ -278,7 +274,6 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 						focusMode: region.focusMode === "auto" ? "auto" : "manual",
 						source: region.source === "auto" ? "auto" : "manual",
 						...(validPreset ? { rotationPreset: validPreset } : {}),
-						...(validMotion ? { cameraMotion: validMotion } : {}),
 						...(region.clickImpact === true ? { clickImpact: true as const } : {}),
 					};
 				})

@@ -17,6 +17,7 @@
 
 import type {
 	CameraFullscreenRegion,
+	Rotation3DPreset,
 	SpeedRegion,
 	WallpaperMotion,
 	WebcamBackgroundMode,
@@ -82,12 +83,9 @@ export interface SceneZoomRegion {
 	focusY: number;
 	/** "auto" follows cursor telemetry instead of the fixed focus point. */
 	focusMode: "manual" | "auto" | null;
-	/** Optional rotation preset for the zoom. */
-	rotation: "iso" | "left" | "right" | null;
-	/** Optional camera motion on that attitude. `null` = the historical `sway`; the
-	 *  native side has the same fallback for an unknown value, so a scene written by a
-	 *  newer app never breaks an older binary. */
-	cameraMotion: "still" | "sway" | "follow" | "flip" | null;
+	/** The zoom's 3D camera: a fixed angle or a moving camera (`regions.rs::camera_for`).
+	 *  `null` = flat; the native side also renders an unknown value flat. */
+	rotation: Rotation3DPreset | null;
 	/** Index of the clip (within `SceneDescription.clips`) whose source time this region's
 	 *  `startSec`/`endSec` are expressed in — disambiguates clips whose source windows
 	 *  numerically overlap (same or different asset). Unset only for a region that
@@ -1120,7 +1118,6 @@ export function buildSceneDescription(
 			// button a one-click "make every zoom follow the cursor".
 			focusMode: settings.autoFocusAll ? "auto" : (region.focusMode ?? null),
 			rotation: region.rotationPreset ?? null,
-			cameraMotion: region.cameraMotion ?? null,
 			clipIndex: region.clipIndex,
 			...(region.underTrim ? { underTrim: true } : {}),
 			...(region.hideCursor ? { hideCursor: true } : {}),

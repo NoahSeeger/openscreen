@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AxcutDocument } from "@/lib/ai-edition/schema";
+import { createEmptyDocument } from "@/lib/ai-edition/schema";
+import { useProjectStore } from "@/lib/ai-edition/store/projectStore";
 
 vi.mock("@/contexts/I18nContext", () => ({
 	useScopedT: (scope: string) => (key: string) => `${scope}.${key}`,
@@ -130,48 +133,69 @@ describe("FloatingInspector", () => {
 		});
 	});
 
-	describe("camera motion select", () => {
+	describe("3D camera select", () => {
 		const zoomTl = (region: Record<string, unknown>) => {
-			const updateZoomCameraMotion = vi.fn();
+			const updateZoomRotation = vi.fn();
 			const tl = {
 				...defaultProps.tl,
 				selection: { kind: "zoom", id: "z" },
 				zoomRegions: [
 					{ id: "z", startMs: 0, endMs: 1000, depth: 3, focus: { cx: 0.5, cy: 0.5 }, ...region },
 				],
-				updateZoomCameraMotion,
+				updateZoomRotation,
 			} as unknown as React.ComponentProps<typeof FloatingInspector>["tl"];
-			return { tl, updateZoomCameraMotion };
+			return { tl, updateZoomRotation };
 		};
 
-		it("shows the historical sway when the region carries no motion", () => {
-			const { tl } = zoomTl({ rotationPreset: "iso" });
-			render(<FloatingInspector {...defaultProps} tl={tl} />);
-			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
-			expect(select).toHaveValue("sway");
-			expect(select).toBeEnabled();
+		afterEach(() => {
+			useProjectStore.setState({ document: null });
 		});
 
-		it("is disabled with its reason while the frame is flat", () => {
+		it("is the only 3D select, off by default, and says what off does", () => {
 			const { tl } = zoomTl({});
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
-			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
-			expect(select).toBeDisabled();
-			expect(select).toHaveAttribute("title", "settings.zoom.cameraMotion.needsRotation");
+			const select = screen.getByRole("combobox", { name: "settings.zoom.camera.title" });
+			expect(select).toHaveValue("off");
+			expect(screen.getByText("settings.zoom.camera.description.off")).toBeInTheDocument();
+			expect(screen.queryByRole("combobox", { name: /cameraMotion|threeD/ })).toBeNull();
 		});
 
-		it("writes a motion, and clears back to sway by absence", () => {
-			const { tl, updateZoomCameraMotion } = zoomTl({
-				rotationPreset: "iso",
-				cameraMotion: "flip",
-			});
+		it("groups the fixed angles apart from the moving cameras", () => {
+			const { tl } = zoomTl({});
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
-			const select = screen.getByRole("combobox", { name: "settings.zoom.cameraMotion.title" });
-			expect(select).toHaveValue("flip");
-			fireEvent.change(select, { target: { value: "follow" } });
-			expect(updateZoomCameraMotion).toHaveBeenCalledWith("z", "follow");
-			fireEvent.change(select, { target: { value: "sway" } });
-			expect(updateZoomCameraMotion).toHaveBeenLastCalledWith("z", undefined);
+			const select = screen.getByRole("combobox", { name: "settings.zoom.camera.title" });
+			const groups = [...select.querySelectorAll("optgroup")].map((g) => [
+				g.label,
+				[...g.querySelectorAll("option")].map((o) => o.value),
+			]);
+			expect(groups).toEqual([
+				["settings.zoom.camera.fixed", ["iso", "left", "right"]],
+				["settings.zoom.camera.moving", ["follow-cursor", "swing-clicks", "orbit"]],
+			]);
+		});
+
+		it("writes a moving camera into rotationPreset, and off by absence", () => {
+			const { tl, updateZoomRotation } = zoomTl({ rotationPreset: "swing-clicks" });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			const select = screen.getByRole("combobox", { name: "settings.zoom.camera.title" });
+			expect(select).toHaveValue("swing-clicks");
+			expect(screen.getByText("settings.zoom.camera.description.swingClicks")).toBeInTheDocument();
+			fireEvent.change(select, { target: { value: "follow-cursor" } });
+			expect(updateZoomRotation).toHaveBeenCalledWith("z", "follow-cursor");
+			fireEvent.change(select, { target: { value: "off" } });
+			expect(updateZoomRotation).toHaveBeenLastCalledWith("z", undefined);
+		});
+
+		it("says a cursor-driven camera has nothing to follow while the cursor is hidden", () => {
+			useProjectStore.setState({
+				document: {
+					...createEmptyDocument({ title: "T", projectId: "p" }),
+					legacyEditor: { cursorShow: false },
+				} as unknown as AxcutDocument,
+			});
+			const { tl } = zoomTl({ rotationPreset: "follow-cursor" });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			expect(screen.getByText("settings.zoom.camera.needsCursor")).toBeInTheDocument();
 		});
 	});
 });

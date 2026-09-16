@@ -17,8 +17,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { parseCustomPlaybackSpeedInput } from "@/components/video-editor/customPlaybackSpeed";
 import {
-	type CameraMotion,
+	FIXED_ROTATION_3D_PRESETS,
+	isRotation3DPreset,
 	MAX_PLAYBACK_SPEED,
+	MOVING_ROTATION_3D_PRESETS,
+	type Rotation3DPreset,
 	SPEED_OPTIONS,
 	ZOOM_DEPTH_SCALES,
 } from "@/components/video-editor/types";
@@ -304,6 +307,16 @@ function paneRow(label: string, control: React.ReactNode) {
 	);
 }
 
+/** Clé i18n (`zoom.camera.preset.*` / `zoom.camera.description.*`) de chaque caméra 3D. */
+const CAMERA_KEYS: Record<Rotation3DPreset, string> = {
+	iso: "iso",
+	left: "left",
+	right: "right",
+	"follow-cursor": "followCursor",
+	"swing-clicks": "swingClicks",
+	orbit: "orbit",
+};
+
 /** « Click impact » : une case à cocher, et dessous ce qu'elle fait — ou pourquoi elle ne peut
  *  rien faire ici. */
 function ClickImpactToggle({
@@ -581,56 +594,55 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 							))}
 						</select>,
 					)}
-					{paneRow(
-						ts("zoom.threeD.title"),
-						<select
-							value={region.rotationPreset ?? "none"}
-							onChange={(e) =>
-								void tl.updateZoomRotation(
-									region.id,
-									// "none" is the absence of a preset, not a fourth preset — the schema field
-									// is optional and `migrate.ts` drops it when falsy.
-									e.target.value === "none"
-										? undefined
-										: (e.target.value as "iso" | "left" | "right"),
-								)
+					<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+						{paneRow(
+							ts("zoom.camera.title"),
+							// ONE control for the whole 3D camera: a fixed angle and a moving camera are
+							// alternatives, not two settings to combine.
+							<select
+								aria-label={ts("zoom.camera.title")}
+								value={region.rotationPreset ?? "off"}
+								onChange={(e) =>
+									void tl.updateZoomRotation(
+										region.id,
+										// "off" is the absence of a preset — the schema field is optional and
+										// `migrate.ts` drops it when falsy.
+										isRotation3DPreset(e.target.value) ? e.target.value : undefined,
+									)
+								}
+								style={selectStyle}
+							>
+								<option value="off">{ts("zoom.camera.off")}</option>
+								<optgroup label={ts("zoom.camera.fixed")}>
+									{FIXED_ROTATION_3D_PRESETS.map((preset) => (
+										<option key={preset} value={preset}>
+											{ts(`zoom.camera.preset.${CAMERA_KEYS[preset]}`)}
+										</option>
+									))}
+								</optgroup>
+								<optgroup label={ts("zoom.camera.moving")}>
+									{MOVING_ROTATION_3D_PRESETS.map((preset) => (
+										<option key={preset} value={preset}>
+											{ts(`zoom.camera.preset.${CAMERA_KEYS[preset]}`)}
+										</option>
+									))}
+								</optgroup>
+							</select>,
+						)}
+						<p style={{ margin: 0, font: "400 11px/1.45 var(--font-sans)", color: "var(--fg-2)" }}>
+							{
+								// A moving camera reads the cursor track, which the export only loads while the
+								// cursor is shown: say so rather than offer a camera that silently holds still.
+								!settings.cursorShow &&
+								(region.rotationPreset === "follow-cursor" ||
+									region.rotationPreset === "swing-clicks")
+									? ts("zoom.camera.needsCursor")
+									: ts(
+											`zoom.camera.description.${region.rotationPreset ? CAMERA_KEYS[region.rotationPreset] : "off"}`,
+										)
 							}
-							style={selectStyle}
-						>
-							<option value="none">{ts("zoom.threeD.none")}</option>
-							<option value="iso">{ts("zoom.threeD.preset.iso")}</option>
-							<option value="left">{ts("zoom.threeD.preset.left")}</option>
-							<option value="right">{ts("zoom.threeD.preset.right")}</option>
-						</select>,
-					)}
-					{paneRow(
-						ts("zoom.cameraMotion.title"),
-						// Composes with the attitude above instead of replacing it — and needs one: a
-						// flat plane has nothing to animate, so the control greys out with its reason
-						// attached, the same rule as the click impact below.
-						<select
-							aria-label={ts("zoom.cameraMotion.title")}
-							value={region.cameraMotion ?? "sway"}
-							disabled={!region.rotationPreset}
-							title={region.rotationPreset ? undefined : ts("zoom.cameraMotion.needsRotation")}
-							onChange={(e) =>
-								void tl.updateZoomCameraMotion(
-									region.id,
-									e.target.value === "sway" ? undefined : (e.target.value as CameraMotion),
-								)
-							}
-							style={
-								region.rotationPreset
-									? selectStyle
-									: { ...selectStyle, opacity: 0.5, cursor: "not-allowed" }
-							}
-						>
-							<option value="sway">{ts("zoom.cameraMotion.sway")}</option>
-							<option value="still">{ts("zoom.cameraMotion.still")}</option>
-							<option value="follow">{ts("zoom.cameraMotion.follow")}</option>
-							<option value="flip">{ts("zoom.cameraMotion.flip")}</option>
-						</select>,
-					)}
+						</p>
+					</div>
 					<ClickImpactToggle
 						checked={region.clickImpact === true}
 						// The click presses the TILTED plane and follows the visible pointer: without a

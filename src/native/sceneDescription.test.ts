@@ -695,7 +695,6 @@ describe("buildSceneDescription.zoomRegions with an earlier trim", () => {
 				focusY: 0.5,
 				focusMode: null,
 				rotation: null,
-				cameraMotion: null,
 				clipIndex: 1,
 			},
 		]);
@@ -738,7 +737,6 @@ describe("buildSceneDescription.zoomRegions with an earlier trim", () => {
 				focusY: 0.5,
 				focusMode: null,
 				rotation: null,
-				cameraMotion: null,
 				clipIndex: 0,
 				underTrim: true,
 			},
