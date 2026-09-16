@@ -11,6 +11,7 @@ import {
 
 const APPEARANCE: StylePresetAppearance = {
 	wallpaper: "#000000",
+	frame: "none",
 	aspectRatio: "16:9",
 	shadowIntensity: 0.2,
 	showBlur: false,

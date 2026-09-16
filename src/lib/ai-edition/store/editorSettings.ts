@@ -20,7 +20,11 @@ import {
 	type WebcamPosition,
 	type WebcamSizePreset,
 } from "@/components/video-editor/types";
-import { DEFAULT_PROJECT_APPEARANCE } from "@/lib/projectDefaults";
+import {
+	DEFAULT_PROJECT_APPEARANCE,
+	isRecordingFrame,
+	type RecordingFrame,
+} from "@/lib/projectDefaults";
 import type { AspectRatio } from "@/utils/aspectRatioUtils";
 import { clamp01 } from "@/utils/math";
 import type { AxcutDocument } from "../schema";
@@ -72,6 +76,8 @@ const DEFAULT_CROP_PAN: CropPan = { x: 0.5, y: 0.5 };
 
 export interface EditorSettingsSnapshot {
 	wallpaper: string;
+	/** The frame drawn around the recording (window chrome), or "none". */
+	frame: RecordingFrame;
 	aspectRatio: AspectRatio;
 	shadowIntensity: number;
 	showBlur: boolean;
@@ -115,6 +121,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettingsSnapshot = {
 
 interface LegacyShape {
 	wallpaper?: string;
+	frame?: RecordingFrame;
 	aspectRatio?: AspectRatio;
 	shadowIntensity?: number;
 	showBlur?: boolean;
@@ -187,6 +194,8 @@ export function getEditorSettings(doc: AxcutDocument | null | undefined): Editor
 
 	return {
 		wallpaper: str(legacy?.wallpaper, DEFAULT_EDITOR_SETTINGS.wallpaper),
+		// An unknown value (a frame a newer build added) reads as no frame, like the compositor.
+		frame: isRecordingFrame(legacy?.frame) ? legacy.frame : DEFAULT_EDITOR_SETTINGS.frame,
 		aspectRatio: legacy?.aspectRatio ?? DEFAULT_EDITOR_SETTINGS.aspectRatio,
 		shadowIntensity: num(legacy?.shadowIntensity, DEFAULT_EDITOR_SETTINGS.shadowIntensity),
 		showBlur: bool(legacy?.showBlur, DEFAULT_EDITOR_SETTINGS.showBlur),
@@ -230,6 +239,7 @@ export function getEditorSettings(doc: AxcutDocument | null | undefined): Editor
 }
 export interface EditorSettingsPatch {
 	wallpaper?: string;
+	frame?: RecordingFrame;
 	aspectRatio?: AspectRatio;
 	shadowIntensity?: number;
 	showBlur?: boolean;

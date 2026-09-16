@@ -15,6 +15,7 @@ import {
 function appearance(overrides: Partial<StylePresetAppearance> = {}): StylePresetAppearance {
 	return {
 		wallpaper: "/wallpapers/wallpaper3.jpg",
+		frame: "window-dark",
 		aspectRatio: "16:9",
 		shadowIntensity: 0.2,
 		showBlur: false,
@@ -75,6 +76,14 @@ describe("parseStylePresetAppearance", () => {
 				cursor: { ...appearance().cursor, size: 11 },
 			}),
 		).toThrow(/cursor\.size/);
+	});
+
+	it("reads a preset saved before the frame existed as frameless, and rejects an unknown frame", () => {
+		const { frame: _frame, ...older } = appearance();
+		expect(parseStylePresetAppearance(older).frame).toBe("none");
+		expect(() => parseStylePresetAppearance({ ...appearance(), frame: "window-sepia" })).toThrow(
+			/frame/,
+		);
 	});
 
 	it("falls back to the default cursor theme for an id this build does not ship", () => {

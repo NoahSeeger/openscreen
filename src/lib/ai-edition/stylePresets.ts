@@ -19,6 +19,7 @@ import type {
 } from "../../components/video-editor/types";
 import { type AspectRatio, isAspectRatio } from "../../utils/aspectRatioUtils";
 import { CURSOR_THEME_IDS, DEFAULT_CURSOR_THEME_ID } from "../cursor/cursorThemes";
+import { isRecordingFrame, type RecordingFrame } from "../projectDefaults";
 
 export const STYLE_PRESET_FILE_EXTENSION = ".openscreenpreset";
 export const STYLE_PRESET_FORMAT = "openscreen-style-preset";
@@ -34,6 +35,7 @@ const CSS_WALLPAPER_MAX_LENGTH = 10_000;
 /** The appearance fields of `EditorSettingsSnapshot`, in the snapshot's own shape. */
 export interface StylePresetAppearance {
 	wallpaper: string;
+	frame: RecordingFrame;
 	aspectRatio: AspectRatio;
 	shadowIntensity: number;
 	showBlur: boolean;
@@ -146,6 +148,20 @@ function readEnum<T extends string>(source: Fields, key: string, allowed: readon
 	return value as T;
 }
 
+/**
+ * The one field a version-1 preset may omit: every preset written before the frame existed
+ * lacks it, and "no frame" is exactly what those presets looked like. A value that IS there
+ * must be one this build knows.
+ */
+function readFrame(source: Fields): RecordingFrame {
+	const value = source.frame;
+	if (value === undefined) return "none";
+	if (!isRecordingFrame(value)) {
+		throw new TypeError("Style preset frame must be one of: none, window-light, window-dark.");
+	}
+	return value;
+}
+
 const HEX_COLOR_RE = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const COLOR_FUNCTION_RE = /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(.*\)$/i;
 const GRADIENT_RE = /^(?:repeating-)?(?:linear|radial|conic)-gradient\(.*\)$/i;
@@ -203,8 +219,9 @@ export function parseStylePresetWallpaper(value: unknown, key = "wallpaper"): st
  * guessing a factory value for it would apply something the author never chose. The one
  * lenient field is `cursorTheme`: themes come and go between builds, so an id this build
  * does not ship falls back to the default cursor instead of rejecting a preset that is
- * otherwise sound (the editor does the same when it renders one). Unknown extra keys are
- * dropped.
+ * otherwise sound (the editor does the same when it renders one). `frame` may be absent: it
+ * postdates version 1, and a preset saved before it had no frame (see `readFrame`). Unknown
+ * extra keys are dropped.
  */
 export function parseStylePresetAppearance(value: unknown): StylePresetAppearance {
 	if (!isRecord(value)) {
@@ -222,6 +239,7 @@ export function parseStylePresetAppearance(value: unknown): StylePresetAppearanc
 	}
 	return {
 		wallpaper: parseStylePresetWallpaper(value.wallpaper),
+		frame: readFrame(value),
 		aspectRatio: value.aspectRatio,
 		shadowIntensity: readNumber(value, "shadowIntensity", NUMBER_RANGES.shadowIntensity),
 		showBlur: readBoolean(value, "showBlur"),

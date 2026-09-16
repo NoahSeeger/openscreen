@@ -15,6 +15,7 @@ export function stylePresetAppearanceFromSettings(
 ): StylePresetAppearance {
 	return {
 		wallpaper: settings.wallpaper,
+		frame: settings.frame,
 		aspectRatio: settings.aspectRatio,
 		shadowIntensity: settings.shadowIntensity,
 		showBlur: settings.showBlur,
@@ -57,6 +58,7 @@ export function factoryStylePresetAppearance(): StylePresetAppearance {
 export function stylePresetPatch(appearance: StylePresetAppearance): EditorSettingsPatch {
 	return {
 		wallpaper: appearance.wallpaper,
+		frame: appearance.frame,
 		aspectRatio: appearance.aspectRatio,
 		shadowIntensity: appearance.shadowIntensity,
 		showBlur: appearance.showBlur,
