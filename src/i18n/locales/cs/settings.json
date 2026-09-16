@@ -392,6 +392,9 @@
 	"cursor": {
 		"smoothing": "Vyhlazení",
 		"clickBounce": "Odraz při kliknutí",
+		"model3d": "3D kurzor",
+		"model3dHint": "Jen klasická šipka: ostatní tvary kurzoru zůstanou ploché.",
+		"model3dNeedsCursor": "Zapněte „Zobrazit kurzor“, abyste mohli použít 3D kurzor.",
 		"help": "Renderování kurzoru ze zaznamenané telemetrie: motiv, velikost, vyhlazení, pohybové rozmazání a zdůraznění odrazu při kliknutí.",
 		"clipToBoundsDescription": "Udržuje kurzor uvnitř rámce videa. Vypněte, pokud chcete, aby kurzor přesahoval okraje, což se hodí při přiblížení nebo posunu.",
 		"size": "Velikost",

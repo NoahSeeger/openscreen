@@ -859,6 +859,8 @@ pub struct LiveParams {
     /// vélocité), pas par un flou gaussien variable comme le canvas web — plus simple à
     /// réutiliser côté GPU, effet de streak équivalent.
     pub cursor_motion_blur: f32,
+    /// Flèche modélisée en 3D (mode 15, cf. `plan_cursor`). `false` = le sprite plat d'avant.
+    pub cursor_model3d: bool,
     /// Masquage auto du curseur en cas d'inactivité.
     pub cursor_auto_hide: bool,
     /// False when the "webcam" decoder is actually just the screen video again (the TS side
@@ -938,6 +940,7 @@ impl Default for LiveParams {
             cursor_size_scale: 1.0,
             cursor_bounce_scale: 1.0,
             cursor_motion_blur: 0.0,
+            cursor_model3d: false,
             cursor_auto_hide: false,
             has_webcam: true,
         }
@@ -976,6 +979,7 @@ pub fn live_params_from_scene(s: &crate::scene::Scene) -> LiveParams {
         cursor_size_scale: s.cursor.size,
         cursor_bounce_scale: s.cursor.click_bounce,
         cursor_motion_blur: s.cursor.motion_blur,
+        cursor_model3d: s.cursor.model3d,
         cursor_auto_hide: s.cursor.auto_hide,
         ..LiveParams::default()
     }

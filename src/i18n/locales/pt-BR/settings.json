@@ -392,6 +392,9 @@
 	"cursor": {
 		"smoothing": "Suavização",
 		"clickBounce": "Rebote ao clicar",
+		"model3d": "Cursor 3D",
+		"model3dHint": "Apenas a seta clássica: as outras formas de cursor continuam planas.",
+		"model3dNeedsCursor": "Ative “Mostrar cursor” para usar o cursor 3D.",
 		"help": "Renderização do cursor a partir da telemetria gravada: tema, tamanho, suavização, desfoque de movimento e salto ao clicar.",
 		"clipToBoundsDescription": "Mantém o cursor dentro do quadro do vídeo. Desative para permitir que o cursor ultrapasse as bordas — útil ao aplicar zoom ou ao deslocar.",
 		"size": "Tamanho",

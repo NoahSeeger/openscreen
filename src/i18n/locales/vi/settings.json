@@ -392,6 +392,9 @@
 	"cursor": {
 		"smoothing": "Làm mượt",
 		"clickBounce": "Nảy khi nhấp",
+		"model3d": "Con trỏ 3D",
+		"model3dHint": "Chỉ mũi tên cổ điển: các hình dạng con trỏ khác vẫn phẳng.",
+		"model3dNeedsCursor": "Bật “Hiện con trỏ” để dùng con trỏ 3D.",
 		"help": "Cách vẽ con trỏ từ dữ liệu đã ghi: chủ đề, kích thước, làm mượt, mờ chuyển động và hiệu ứng nảy khi nhấp.",
 		"clipToBoundsDescription": "Giữ con trỏ bên trong khung hình video. Tắt để cho phép con trỏ vượt ra ngoài mép — hữu ích khi phóng to hoặc lia máy.",
 		"size": "Kích thước",

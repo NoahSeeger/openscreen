@@ -392,6 +392,9 @@
 	"cursor": {
 		"smoothing": "平滑",
 		"clickBounce": "點擊彈跳",
+		"model3d": "3D 游標",
+		"model3dHint": "僅限經典箭頭：其他游標形狀維持平面。",
+		"model3dNeedsCursor": "開啟「顯示游標」後才能使用 3D 游標。",
 		"help": "根據錄製的遙測資料繪製游標：主題、大小、平滑、動態模糊與點擊回彈。",
 		"clipToBoundsDescription": "讓游標保持在影片畫面內。關閉後游標可超出邊緣——在縮放或平移時很有用。",
 		"size": "大小",

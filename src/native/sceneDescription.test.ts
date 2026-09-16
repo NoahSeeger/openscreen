@@ -1075,6 +1075,12 @@ describe("buildSceneDescription.settings mapping", () => {
 		expect(buildSceneDescription(high).layout.webcamSize).toBeCloseTo(0.5, 5);
 	});
 
+	it("keeps the flat cursor for an older project and carries the 3D cursor switch", () => {
+		expect(buildSceneDescription(makeDoc({ legacyEditor: {} })).cursor.model3d).toBe(false);
+		const on = makeDoc({ legacyEditor: { cursorModel3d: true } });
+		expect(buildSceneDescription(on).cursor.model3d).toBe(true);
+	});
+
 	it("carries depth of field: on by default, off when the project turns it off", () => {
 		expect(buildSceneDescription(makeDoc({})).effects.depthOfField).toBe(true);
 		const off = makeDoc({ legacyEditor: { depthOfField: false } });

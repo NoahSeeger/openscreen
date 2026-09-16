@@ -37,6 +37,7 @@ export function stylePresetAppearanceFromSettings(
 			smoothing: settings.cursor.smoothing,
 			motionBlur: settings.cursor.motionBlur,
 			clickBounce: settings.cursor.clickBounce,
+			model3d: settings.cursor.model3d,
 			clipToBounds: settings.cursor.clipToBounds,
 		},
 		cursorShow: settings.cursorShow,

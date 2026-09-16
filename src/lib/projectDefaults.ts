@@ -40,6 +40,7 @@ export interface ProjectAppearanceDefaults {
 		smoothing: number;
 		motionBlur: number;
 		clickBounce: number;
+		model3d: boolean;
 		clipToBounds: boolean;
 		autoHide: boolean;
 	};
@@ -76,6 +77,7 @@ export const DEFAULT_PROJECT_APPEARANCE: ProjectAppearanceDefaults = {
 		smoothing: 0.67,
 		motionBlur: 0.35,
 		clickBounce: 2.5,
+		model3d: false,
 		clipToBounds: false,
 		autoHide: false,
 	},

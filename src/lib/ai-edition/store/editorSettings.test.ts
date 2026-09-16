@@ -132,6 +132,14 @@ describe("patchEditorSettings", () => {
 		expect(snap.cursor.smoothing).toBe(0.9);
 	});
 
+	it("switches the 3D cursor without clobbering its siblings, off by default", () => {
+		expect(getEditorSettings(baseDoc).cursor.model3d).toBe(false);
+		const seed = patchEditorSettings(baseDoc, { cursor: { size: 4 } });
+		const on = getEditorSettings(patchEditorSettings(seed, { cursor: { model3d: true } }));
+		expect(on.cursor.model3d).toBe(true);
+		expect(on.cursor.size).toBe(4);
+	});
+
 	it("toggles cursorAutoHide on and off via patch", () => {
 		const enabled = patchEditorSettings(baseDoc, { cursorAutoHide: true });
 		expect(getEditorSettings(enabled).cursorAutoHide).toBe(true);

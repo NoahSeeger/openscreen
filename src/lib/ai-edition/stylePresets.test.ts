@@ -37,6 +37,7 @@ function appearance(overrides: Partial<StylePresetAppearance> = {}): StylePreset
 			smoothing: 0.67,
 			motionBlur: 0.35,
 			clickBounce: 2.5,
+			model3d: false,
 			clipToBounds: false,
 		},
 		cursorShow: true,
@@ -112,6 +113,25 @@ describe("parseStylePresetAppearance", () => {
 			cursor: { ...appearance().cursor, volume: 0.6, hover: 0.4 },
 		};
 		expect(parseStylePresetAppearance(older).cursor).toEqual(appearance().cursor);
+	});
+
+	it("reads a preset written before the 3D cursor as a flat cursor, and type-checks it", () => {
+		const { model3d: _model3d, ...flat } = appearance().cursor;
+		expect(parseStylePresetAppearance({ ...appearance(), cursor: flat }).cursor.model3d).toBe(
+			false,
+		);
+		expect(
+			parseStylePresetAppearance({
+				...appearance(),
+				cursor: { ...appearance().cursor, model3d: true },
+			}).cursor.model3d,
+		).toBe(true);
+		expect(() =>
+			parseStylePresetAppearance({
+				...appearance(),
+				cursor: { ...appearance().cursor, model3d: 1 },
+			}),
+		).toThrow(/cursor\.model3d/);
 	});
 
 	it("reads a preset saved before the frame existed as frameless, and rejects an unknown frame", () => {

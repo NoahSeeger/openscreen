@@ -71,6 +71,7 @@ describe("right-rail panes are localized", () => {
 		expect(screen.getByText("Lissage")).toBeInTheDocument();
 		expect(screen.getByText("Rebond au clic")).toBeInTheDocument();
 		expect(screen.getByText("Masquer si inactif")).toBeInTheDocument();
+		expect(screen.getByText("Curseur 3D")).toBeInTheDocument();
 	});
 
 	it("falls back to English when the locale is English", () => {

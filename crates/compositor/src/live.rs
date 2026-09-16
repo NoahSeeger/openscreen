@@ -657,6 +657,8 @@ struct InspectorParams {
     cursor_smoothing: f32,
     /// 0..1 : force du flou de mouvement DU CURSEUR (indépendant du motion blur écran).
     cursor_motion_blur: f32,
+    /// Flèche modélisée en 3D (mode 15).
+    cursor_model3d: bool,
     cursor_auto_hide: bool,
 }
 
@@ -677,6 +679,7 @@ impl Default for InspectorParams {
             cursor_bounce_scale: 1.0,
             cursor_smoothing: 0.0,
             cursor_motion_blur: 0.0,
+            cursor_model3d: false,
             cursor_auto_hide: false,
         }
     }
@@ -934,6 +937,7 @@ impl LiveView {
                 "webcamMirror" => p.webcam_mirror = value,
                 "cursorShow" => p.cursor_show = value,
                 "cursorAutoHide" => p.cursor_auto_hide = value,
+                "cursorModel3d" => p.cursor_model3d = value,
                 _ => {}
             }
         }
@@ -1556,6 +1560,7 @@ unsafe fn render_thread(
             cursor_size_scale: ip.cursor_size_scale,
             cursor_bounce_scale: ip.cursor_bounce_scale,
             cursor_motion_blur: ip.cursor_motion_blur,
+            cursor_model3d: ip.cursor_model3d,
             cursor_auto_hide: ip.cursor_auto_hide,
             has_webcam: has_real_webcam,
         });

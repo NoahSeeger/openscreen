@@ -3453,6 +3453,30 @@ export function CursorPane() {
 					onChange={(v) => void set({ cursor: { clipToBounds: v } })}
 				/>
 			</div>
+			{/* One switch for the modelled arrow. A hidden cursor has nothing to model, so the
+			    row is disabled then and both its hint and its tooltip say why. */}
+			<div
+				className={styles.paneRow}
+				title={settings.cursorShow ? undefined : ts("cursor.model3dNeedsCursor")}
+			>
+				<span className={styles.label}>
+					{ts("cursor.model3d")}
+					<span className={styles.info}>
+						{settings.cursorShow ? ts("cursor.model3dHint") : ts("cursor.model3dNeedsCursor")}
+					</span>
+				</span>
+				<Toggle
+					ariaLabel={ts("cursor.model3d")}
+					checked={settings.cursor.model3d}
+					disabled={!hasDocument || !settings.cursorShow}
+					onChange={(v) => {
+						void set({ cursor: { model3d: v } });
+						if (isNativeCompositorActive()) {
+							setNativeParam("cursorModel3d", v);
+						}
+					}}
+				/>
+			</div>
 			<div className={styles.sectionLabel}>{ts("cursor.theme")}</div>
 			<div className={styles.cursorGrid}>
 				{cursorThemeOptions.map((option) => {

@@ -230,8 +230,9 @@ export function parseStylePresetWallpaper(value: unknown, key = "wallpaper"): st
  * does not ship falls back to the default cursor instead of rejecting a preset that is
  * otherwise sound (the editor does the same when it renders one). The others postdate the
  * first version-1 files, so a preset saved before one of them existed carries no choice about
- * it and gets the value that means "unchanged": `wallpaperMotion` may be absent (a still
- * wallpaper, which is exactly what "none" means), `frame` as well (no frame, see `readFrame`), and `depthOfField` keeps the factory
+ * it and gets the value that means "unchanged": `cursor.model3d` may be absent (the flat
+ * cursor), `wallpaperMotion` too (a still wallpaper, which is exactly what "none" means),
+ * `frame` as well (no frame, see `readFrame`), and `depthOfField` keeps the factory
  * value (on). A present but ill-typed value is still refused. Unknown extra keys are dropped.
  */
 export function parseStylePresetAppearance(value: unknown): StylePresetAppearance {
@@ -279,6 +280,8 @@ export function parseStylePresetAppearance(value: unknown): StylePresetAppearanc
 			smoothing: readNumber(cursor, "smoothing", CURSOR_NUMBER_RANGES.smoothing, "cursor."),
 			motionBlur: readNumber(cursor, "motionBlur", CURSOR_NUMBER_RANGES.motionBlur, "cursor."),
 			clickBounce: readNumber(cursor, "clickBounce", CURSOR_NUMBER_RANGES.clickBounce, "cursor."),
+			// Presets written before the 3D cursor existed meant the flat one.
+			model3d: cursor.model3d === undefined ? false : readBoolean(cursor, "model3d", "cursor."),
 			clipToBounds: readBoolean(cursor, "clipToBounds", "cursor."),
 		},
 		cursorShow: readBoolean(value, "cursorShow"),
