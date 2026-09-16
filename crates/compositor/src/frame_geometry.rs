@@ -808,7 +808,8 @@ pub struct FrameGeometry {
     /// (`privacy_mask`).
     ///
     /// C'est `s_dst` avant le `remap_box` du zoom, donc le rect que l'app a résolu
-    /// (`layout.screenRect`) et que l'overlay web reçoit comme conteneur. Le contrat de
+    /// (`layout.screenRect`, rétréci par `fitInWindowFrame` sous un cadre) et que l'overlay web
+    /// reçoit comme conteneur. Le contrat de
     /// `SceneAnnotation` est explicite : « deliberately NOT affected by the zoom crop — the
     /// overlay is a sibling of the element carrying the zoom transform, so annotations hold
     /// still while the content zooms underneath them ». Tant que le zoom vivait dans la
@@ -1579,10 +1580,11 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         cut,
         s_dst,
         s_dst_prev,
-        // La boîte écran telle qu'elle serait sans zoom : `remap_box` n'est PAS appliqué. Ni le
-        // cadre : c'est le rect que l'overlay web reçoit (`layout.screenRect`), et les
-        // annotations doivent rester sous les poignées qui les déplacent.
-        s_ann: s_box,
+        // La boîte écran telle qu'elle serait sans zoom : `remap_box` n'est PAS appliqué. Le
+        // cadre, lui, l'est : c'est le rect du CONTENU, celui où l'overlay web pose ses poignées
+        // (`fitInWindowFrame` côté TS, même calcul), et sans quoi un flou tracé sur un secret
+        // tombait une barre de titre plus haut que ce qu'il devait couvrir.
+        s_ann: s_base,
         s_radius,
         frame_min_px,
         w_dst,
@@ -2001,6 +2003,43 @@ mod tests {
             // Sans zoom, l'ancre des annotations reste la boîte écran.
             let rest = framed_plan(&framed_scene(r#","frame":"none""#, rotation, 1.0, false));
             assert_eq!(rest.s_ann, rest.s_dst);
+            // Et cette boîte est celle que la scène a résolue, au bit près : sans cadre, rien ne
+            // la rétrécit. Épinglé sur l'entrée, pas sur une mesure du code.
+            let want: [f32; 4] = [0.1, 0.1, 0.8, 0.8];
+            assert_eq!(rest.s_dst.map(f32::to_bits), want.map(f32::to_bits));
+            assert_eq!(rest.s_ann.map(f32::to_bits), want.map(f32::to_bits));
+            assert_eq!(rest.s_radius.to_bits(), (0.03f32 * 1080.0).to_bits());
+        }
+    }
+
+    /// Sous un cadre, le masque de confidentialité couvre le rect que l'overlay web montre à
+    /// l'utilisateur : l'overlay pose ses poignées sur `fitInWindowFrame(screenRect)` (TS), le
+    /// portage de `fit_in_window_frame`. Ancré sur la boîte non rétrécie, le masque tombait une
+    /// barre de titre plus bas que le secret tracé, et en laissait une bande lisible.
+    #[test]
+    fn a_framed_privacy_mask_covers_what_the_overlay_shows() {
+        // A plat seulement : incliné, le contenu ne tombe plus dans un rect droit, et l'overlay
+        // web ne s'incline pas non plus (limite antérieure au cadre).
+        {
+            let rotation = "null";
+            let g = framed_plan(&framed_scene(r#","frame":"window-light""#, rotation, 1.0, false));
+            // Valeurs épinglées aussi dans `compositeLayout.test.ts` : les deux portages
+            // doivent rendre ce rect-là.
+            let overlay = fit_in_window_frame([0.1, 0.1, 0.8, 0.8], RENDER, false).0;
+            let want = [223.6416 / 1920.0, 142.56 / 1080.0, 1472.7168 / 1920.0, 828.4032 / 1080.0];
+            for k in 0..4 {
+                assert!((overlay[k] - want[k]).abs() < 1e-5, "{overlay:?} au lieu de {want:?}");
+            }
+            assert_eq!(g.s_ann, overlay, "{rotation}: l'ancre n'est pas le rect de l'overlay");
+            for (x, y) in [(0.0, 0.0), (0.62, 0.18), (0.8, 0.9)] {
+                let mut a = blur_annotation("");
+                (a.x, a.y) = (x, y);
+                let drawn = annotation_dst_in(overlay, a.x, a.y, a.w, a.h);
+                let m = g.privacy_mask(&a, RENDER).expect("masque");
+                assert!(contains(m.dst, drawn, 1e-6), "{rotation}: masque {:?} / tracé {drawn:?}", m.dst);
+                // Et il ne déborde que de sa marge d'un pixel.
+                assert!((m.dst[1] - drawn[1]).abs() * RENDER[1] < 1.01);
+            }
         }
     }
 

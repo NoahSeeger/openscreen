@@ -106,7 +106,9 @@ fn the_window_frame_renders_flat_and_tilted_in_both_themes() {
     let get = |t: &str, f: &str| &renders.iter().find(|((a, b), _)| *a == t && *b == f).unwrap().1;
 
     for tilt in ["flat", "iso", "left"] {
-        // `"none"` et la clé absente : le même rendu, à l'octet.
+        // `"none"` et la clé absente : le même rendu, à l'octet. Les deux se lisent
+        // `SceneFrame::None`, donc ce n'est qu'un garde-fou de désérialisation : la preuve que le
+        // chemin sans cadre n'a pas bougé est `no_frame_leaves_the_geometry_untouched`.
         assert!(get(tilt, "none") == get(tilt, "absent"), "{tilt}: frame none != payload sans cadre");
         // Le cadre se voit, et ses deux thèmes aussi.
         let light = differing(get(tilt, "none"), get(tilt, "light"), 8);
