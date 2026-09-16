@@ -2,8 +2,9 @@
 //! web (`zoomRegionUtils.ts` / `cameraFullscreenUtils.ts`) vers le natif, pour que le timing
 //! des transitions soit identique en preview ET en export. Inclut le "connected zoom pan"
 //! (chaînage lissé entre deux régions rapprochées), le focus "auto" (suivi de la télémétrie
-//! curseur) et la rotation 3D (présets iso/left/right, cf. `compositor.rs` pour le rendu du
-//! tilt perspective — ce module ne fait que le calcul temporel, pas le rendu GPU).
+//! curseur) et la rotation 3D (angles fixes iso/left/right et caméras mobiles, cf.
+//! `camera_pose` ; le rendu du tilt perspective est dans les backends — ce module ne fait que
+//! le calcul temporel et la géométrie, pas le rendu GPU).
 
 use crate::cursor::CursorTrack;
 use crate::scene::{SceneCameraFullscreenRegion, SceneSpeedRegion, SceneZoomRegion};
@@ -347,40 +348,13 @@ pub struct ZoomState {
     /// interpolé entre deux régions chaînées. Ne suffit pas seul : l'impact passe aussi par la
     /// porte de `tilt` (`dynamic_tilt`), donc rien sans préset.
     pub click_impact: f32,
-    /// Ce que la caméra fait de son attitude pendant le zoom (`cameraMotion`). `Sway` quand la
-    /// région n'en déclare pas : c'est le rendu d'avant le réglage.
-    pub motion: CameraMotion,
-}
-
-/// Comment la caméra bouge pendant un zoom, sur une attitude donnée (`rotationPreset`).
-///
-/// Le préset dit OÙ penche le plan, ceci dit ce qui l'anime. Les deux sont indépendants, donc
-/// chaque attitude gagne les quatre mouvements sans dupliquer de préset — et un document sans
-/// `cameraMotion` retombe sur `Sway`, qui est le rendu existant, à l'octet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CameraMotion {
-    /// Aucune part dynamique : l'attitude tient. L'impact du clic reste actif — il a son propre
-    /// réglage ; `still` dit que la caméra ne dérive pas, pas que le plan est inerte.
-    Still,
-    /// La parallaxe de vitesse : le plan se penche vers le geste, et revient au repos à l'arrêt.
-    /// Le défaut, et le rendu d'avant ce réglage.
-    Sway,
-    /// La POSITION du curseur dans la coupe : le plan s'oriente vers l'endroit où pointe le
-    /// pointeur. Nul en focus `auto`, où la caméra cadre déjà le curseur (cf. `follow_tilt`).
-    Follow,
-    /// L'attitude s'inverse quand le pointeur change de moitié de coupe (cf. `camera_base`).
-    Flip,
-}
-
-/// Le mouvement déclaré par une région. `None` et toute valeur inconnue retombent sur `Sway` :
-/// un document écrit avant le réglage, ou par une version plus récente, rend comme avant.
-fn motion_for(motion: &Option<String>) -> CameraMotion {
-    match motion.as_deref() {
-        Some("still") => CameraMotion::Still,
-        Some("follow") => CameraMotion::Follow,
-        Some("flip") => CameraMotion::Flip,
-        _ => CameraMotion::Sway,
-    }
+    /// Poids de la parallaxe de vitesse (0..1) : 1 sous un angle fixe, 0 sous une caméra mobile,
+    /// dont la pose bouge déjà. Interpolé entre deux régions chaînées, donc sans saut.
+    pub parallax: f32,
+    /// Poids de la caméra mobile (0..1) : la force de la région quand elle en porte une, 0
+    /// sinon. Fixe l'enveloppe sur laquelle l'échelle de containment est gelée
+    /// (`tilted_quad`) — c'est ce qui empêche le plan de respirer pendant que la pose bouge.
+    pub moving: f32,
 }
 
 const IDENTITY_ZOOM: ZoomState = ZoomState {
@@ -389,12 +363,108 @@ const IDENTITY_ZOOM: ZoomState = ZoomState {
     rotation: [0.0, 0.0, 0.0],
     tilt: 0.0,
     click_impact: 0.0,
-    motion: CameraMotion::Sway,
+    parallax: 1.0,
+    moving: 0.0,
 };
+
+/// Ce que le champ `rotation` d'une région demande à la caméra.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Camera {
+    /// Pas de préset (ou un préset inconnu) : écran droit.
+    Flat,
+    /// Un angle fixe : `iso`, `left`, `right`.
+    Fixed([f32; 3]),
+    /// `follow-cursor` : la pose suit la position lissée du curseur (cf. `follow_uv`).
+    FollowCursor,
+    /// `swing-clicks` : la pose pivote vers chaque clic (cf. `swing_uv`).
+    SwingClicks,
+    /// `orbit` : la pose balaie d'un côté à l'autre pendant le zoom (cf. `orbit_uv`).
+    Orbit,
+}
+
+fn camera_for(rotation: &Option<String>) -> Camera {
+    match rotation.as_deref() {
+        Some("follow-cursor") => Camera::FollowCursor,
+        Some("swing-clicks") => Camera::SwingClicks,
+        Some("orbit") => Camera::Orbit,
+        _ => match rotation3d_for(rotation) {
+            r if is_identity_rotation(r) => Camera::Flat,
+            r => Camera::Fixed(r),
+        },
+    }
+}
+
+/// La pose d'une région à un instant : un angle, ou un point `(u, v)` du chemin des caméras
+/// mobiles (`camera_pose`).
+#[derive(Debug, Clone, Copy)]
+enum Attitude {
+    Fixed([f32; 3]),
+    Moving([f32; 2]),
+}
+
+impl Attitude {
+    fn rotation(self) -> [f32; 3] {
+        match self {
+            Attitude::Fixed(r) => r,
+            Attitude::Moving([u, v]) => camera_pose(u, v),
+        }
+    }
+
+    /// Entre deux caméras mobiles, on interpole `(u, v)` et non les angles : la pose reste sur
+    /// le chemin validé, donc hors de la bande des 2° et dans l'échelle gelée. Tout autre couple
+    /// s'interpole en angles, comme entre deux présets fixes.
+    fn lerp(a: Attitude, b: Attitude, p: f32) -> Attitude {
+        match (a, b) {
+            (Attitude::Moving(x), Attitude::Moving(y)) => {
+                Attitude::Moving([lerp(x[0], y[0], p), lerp(x[1], y[1], p)])
+            }
+            _ => Attitude::Fixed(lerp_rotation3d(a.rotation(), b.rotation(), p)),
+        }
+    }
+}
+
+/// Ce que les caméras mobiles lisent de la scène : la piste curseur (celle de la parallaxe,
+/// donc `None` curseur masqué, comme à l'export), le recadrage du clip actif dans le repère
+/// normalisé du curseur (`[x0, y0, x1, y1]`) et sa fenêtre source `[début, fin)`.
+#[derive(Clone, Copy)]
+pub struct CameraFrame<'a> {
+    pub track: Option<&'a CursorTrack>,
+    pub crop: [f32; 4],
+    pub window: [f32; 2],
+}
+
+impl CameraFrame<'static> {
+    /// Sans piste : les caméras mobiles tiennent leur pose de repli.
+    pub const NONE: CameraFrame<'static> = CameraFrame {
+        track: None,
+        crop: [0.0, 0.0, 1.0, 1.0],
+        window: [f32::NEG_INFINITY, f32::INFINITY],
+    };
+}
+
+fn attitude_at(region: &SceneZoomRegion, t: f32, frame: &CameraFrame) -> Attitude {
+    match camera_for(&region.rotation) {
+        Camera::Flat => Attitude::Fixed([0.0; 3]),
+        Camera::Fixed(r) => Attitude::Fixed(r),
+        Camera::FollowCursor => Attitude::Moving(follow_uv(t, frame)),
+        Camera::SwingClicks => Attitude::Moving(swing_uv(t, frame, region.start_sec as f32)),
+        Camera::Orbit => {
+            Attitude::Moving(orbit_uv(t, frame, region.start_sec as f32, region.end_sec as f32))
+        }
+    }
+}
 
 /// 1 si la région porte un préset 3D, 0 sinon.
 fn has_tilt(region: &SceneZoomRegion) -> f32 {
-    if is_identity_rotation(rotation3d_for(&region.rotation)) { 0.0 } else { 1.0 }
+    if camera_for(&region.rotation) == Camera::Flat { 0.0 } else { 1.0 }
+}
+
+/// 1 si la région porte une caméra mobile, 0 sinon.
+fn moving_flag(region: &SceneZoomRegion) -> f32 {
+    match camera_for(&region.rotation) {
+        Camera::FollowCursor | Camera::SwingClicks | Camera::Orbit => 1.0,
+        Camera::Flat | Camera::Fixed(_) => 0.0,
+    }
 }
 
 /// 1 si la région active l'impact du clic, 0 sinon.
@@ -532,7 +602,20 @@ fn connected_pairs(regions: &[SceneZoomRegion]) -> Vec<(usize, usize, f32, f32)>
 /// `findDominantRegion` (TS) : régions chaînées d'abord (transition puis
 /// hold), sinon la région "dominante" indépendante la plus forte (ties → la plus récente).
 /// Hors de toute région → identité (échelle 1, focus centre, tilt nul).
+///
+/// Sans piste pour les caméras mobiles : elles tiennent leur pose de repli. Le rendu passe par
+/// `zoom_state_in`, qui leur donne la piste, le recadrage et la fenêtre du clip.
 pub fn zoom_state_at(regions: &[SceneZoomRegion], t: f32, cursor: Option<&CursorTrack>) -> ZoomState {
+    zoom_state_in(regions, t, cursor, &CameraFrame::NONE)
+}
+
+/// `zoom_state_at`, avec ce que lisent les caméras mobiles (`CameraFrame`).
+pub fn zoom_state_in(
+    regions: &[SceneZoomRegion],
+    t: f32,
+    cursor: Option<&CursorTrack>,
+    frame: &CameraFrame,
+) -> ZoomState {
     if regions.is_empty() {
         return IDENTITY_ZOOM;
     }
@@ -552,15 +635,22 @@ pub fn zoom_state_at(regions: &[SceneZoomRegion], t: f32, cursor: Option<&Cursor
         // plus. La porte se ferme donc en milieu de course et ne se rouvre qu'au ras des bouts —
         // 1 − 4p(1−p) vaut 1 en p = 0 et p = 1, donc aucun saut avec la région d'avant ni avec
         // le palier d'après. Cf. `the_chained_sweep_keeps_every_edge_off_axis_and_inside`.
-        let (cur_rot, next_rot) = (rotation3d_for(&cur.rotation), rotation3d_for(&next.rotation));
-        let crossing = if cur_rot == next_rot { 1.0 } else { 1.0 - 4.0 * progress * (1.0 - progress) };
+        // Deux caméras mobiles restent sur leur chemin validé (`Attitude::lerp`) : pas de porte.
+        let (cur_att, next_att) = (attitude_at(cur, t, frame), attitude_at(next, t, frame));
+        let both_moving = moving_flag(cur) * moving_flag(next) > 0.0;
+        let crossing = if both_moving || camera_for(&cur.rotation) == camera_for(&next.rotation) {
+            1.0
+        } else {
+            1.0 - 4.0 * progress * (1.0 - progress)
+        };
         return ZoomState {
             scale: lerp(cur.scale, next.scale, progress),
             focus: [lerp(cur_focus[0], next_focus[0], progress), lerp(cur_focus[1], next_focus[1], progress)],
-            rotation: lerp_rotation3d(cur_rot, next_rot, progress),
+            rotation: Attitude::lerp(cur_att, next_att, progress).rotation(),
             tilt: lerp(has_tilt(cur), has_tilt(next), progress) * crossing,
             click_impact: lerp(impact_flag(cur), impact_flag(next), progress),
-            motion: motion_for(&cur.camera_motion),
+            parallax: lerp(1.0 - moving_flag(cur), 1.0 - moving_flag(next), progress),
+            moving: lerp(moving_flag(cur), moving_flag(next), progress),
         };
     }
 
@@ -572,10 +662,11 @@ pub fn zoom_state_at(regions: &[SceneZoomRegion], t: f32, cursor: Option<&Cursor
             return ZoomState {
                 scale: next.scale,
                 focus: resolve_focus(next, t, cursor),
-                rotation: rotation3d_for(&next.rotation),
+                rotation: attitude_at(next, t, frame).rotation(),
                 tilt: has_tilt(next),
                 click_impact: impact_flag(next),
-                motion: motion_for(&next.camera_motion),
+                parallax: 1.0 - moving_flag(next),
+                moving: moving_flag(next),
             };
         }
     }
@@ -619,10 +710,11 @@ pub fn zoom_state_at(regions: &[SceneZoomRegion], t: f32, cursor: Option<&Cursor
             ZoomState {
                 scale,
                 focus: [ease(focus[0]), ease(focus[1])],
-                rotation: lerp_rotation3d([0.0, 0.0, 0.0], rotation3d_for(&r.rotation), strength),
+                rotation: lerp_rotation3d([0.0, 0.0, 0.0], attitude_at(r, t, frame).rotation(), strength),
                 tilt: has_tilt(r) * strength,
                 click_impact: impact_flag(r),
-                motion: motion_for(&r.camera_motion),
+                parallax: 1.0 - moving_flag(r),
+                moving: moving_flag(r) * strength,
             }
         }
         None => IDENTITY_ZOOM,
@@ -809,7 +901,98 @@ pub fn rotated_quad_corners_px(
     rot: [f32; 3],
     rot_dyn: [f32; 3],
 ) -> TiltedQuad {
+    tilted_quad(width, height, rot, rot_dyn, 0.0)
+}
+
+/// `rotated_quad_corners_px`, sous une caméra mobile de poids `moving` (`ZoomState::moving`).
+///
+/// La base bouge alors à chaque frame : l'échelle mesurée sur elle seule ferait respirer le
+/// plan. Elle est donc aussi bornée par celle de TOUTE l'enveloppe du chemin
+/// (`moving_envelope_scale`), qui ne dépend que du ratio de la boîte et du poids — constante
+/// pendant le zoom. À `moving = 0`, c'est exactement `rotated_quad_corners_px`.
+pub fn tilted_quad(
+    width: f32,
+    height: f32,
+    rot: [f32; 3],
+    rot_dyn: [f32; 3],
+    moving: f32,
+) -> TiltedQuad {
     let perspective = width.min(height) * PERSPECTIVE_FACTOR;
+    let (half_w, half_h) = (width * 0.5, height * 0.5);
+    let Some((mut scale, mut corners)) = contain_scale(width, height, rot, perspective) else {
+        // Un coin derrière le plan de fuite : on rend le quad non tourné plutôt qu'une projection
+        // absurde (même repli qu'avant).
+        return TiltedQuad {
+            corners: [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)],
+            scale: 1.0,
+            depth_k: (0.0, 0.0),
+        };
+    };
+    if moving > 0.0 {
+        let frozen = moving_envelope_scale(width, height, moving, perspective);
+        if frozen < scale {
+            if let Some(c) = project_scaled_corners(width, height, frozen, rot, perspective) {
+                (scale, corners) = (frozen, c);
+            }
+        }
+    }
+    // La profondeur suit l'angle RÉELLEMENT dessiné (base + dynamique), sinon le flou se
+    // décollerait du plan pendant la parallaxe.
+    let mut drawn = rot;
+    if rot_dyn != [0.0; 3] {
+        let full = [rot[0] + rot_dyn[0], rot[1] + rot_dyn[1], rot[2] + rot_dyn[2]];
+        // Un coin qui passerait derrière le plan de fuite : on garde la pose de base.
+        if let Some(c) = project_scaled_corners(width, height, scale, full, perspective) {
+            corners = c;
+            drawn = full;
+        }
+    }
+    TiltedQuad { corners, scale, depth_k: depth_coefficients(drawn) }
+}
+
+/// La plus petite échelle de containment de l'enveloppe des caméras mobiles au poids `w` :
+/// les poses `camera_pose(u, v)·w` aux bouts et au milieu de la course, chacune poussée aux
+/// quatre coins de l'impact du clic tel que `dynamic_tilt` le laisse passer (porte comprise).
+/// Les extrêmes du chemin sont là (`u = ±1`, `v = ±1`) ; `the_moving_sweep_*` vérifient la
+/// grille fine contre cette échelle.
+///
+/// 80 containments : le dernier résultat est gardé (une entrée par thread), puisqu'une frame
+/// appelle `tilted_quad` plusieurs fois avec la même boîte et le même poids.
+fn moving_envelope_scale(width: f32, height: f32, w: f32, perspective: f32) -> f32 {
+    thread_local! {
+        static LAST: std::cell::Cell<([u32; 3], f32)> =
+            const { std::cell::Cell::new(([u32::MAX; 3], 1.0)) };
+    }
+    let key = [width.to_bits(), height.to_bits(), w.to_bits()];
+    let (last_key, last) = LAST.get();
+    if last_key == key {
+        return last;
+    }
+    let impact = CLICK_IMPACT_DEG * smoothstep(PARALLAX_GATE_START, 1.0, w);
+    let mut scale = 1.0f32;
+    for u in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+        for v in [-1.0, 1.0] {
+            let p = camera_pose(u, v);
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                let r = [p[0] * w + dx * impact, p[1] * w + dy * impact, p[2] * w];
+                if let Some((s, _)) = contain_scale(width, height, r, perspective) {
+                    scale = scale.min(s);
+                }
+            }
+        }
+    }
+    LAST.set((key, scale));
+    scale
+}
+
+/// L'échelle de containment de la pose `rot` et ses coins à cette échelle ; `None` si un coin
+/// part derrière le plan de fuite dès l'échelle 1.
+fn contain_scale(
+    width: f32,
+    height: f32,
+    rot: [f32; 3],
+    perspective: f32,
+) -> Option<(f32, [(f32, f32); 4])> {
     let (half_w, half_h) = (width * 0.5, height * 0.5);
 
     // BUG corrigé : l'échelle de containment était calculée en projetant les coins PLEINE TAILLE,
@@ -822,23 +1005,7 @@ pub fn rotated_quad_corners_px(
     // l'échelle par le facteur de débordement observé. Ça converge en deux ou trois tours ; huit
     // est une borne large qui coûte quelques multiplications une fois par frame.
     let mut scale = 1.0f32;
-    let mut corners = match project_scaled_corners(width, height, scale, rot, perspective) {
-        Some(c) => c,
-        // Un coin derrière le plan de fuite : on rend le quad non tourné plutôt qu'une projection
-        // absurde (même repli qu'avant).
-        None => {
-            return TiltedQuad {
-                corners: [
-                    (-half_w, -half_h),
-                    (half_w, -half_h),
-                    (half_w, half_h),
-                    (-half_w, half_h),
-                ],
-                scale: 1.0,
-                depth_k: (0.0, 0.0),
-            };
-        }
-    };
+    let mut corners = project_scaled_corners(width, height, scale, rot, perspective)?;
     for _ in 0..8 {
         let (max_x, max_y) = projected_extents(&corners);
         if max_x <= 0.0 || max_y <= 0.0 {
@@ -856,18 +1023,7 @@ pub fn rotated_quad_corners_px(
             None => break,
         }
     }
-    // La profondeur suit l'angle RÉELLEMENT dessiné (base + dynamique), sinon le flou se
-    // décollerait du plan pendant la parallaxe.
-    let mut drawn = rot;
-    if rot_dyn != [0.0; 3] {
-        let full = [rot[0] + rot_dyn[0], rot[1] + rot_dyn[1], rot[2] + rot_dyn[2]];
-        // Un coin qui passerait derrière le plan de fuite : on garde la pose de base.
-        if let Some(c) = project_scaled_corners(width, height, scale, full, perspective) {
-            corners = c;
-            drawn = full;
-        }
-    }
-    TiltedQuad { corners, scale, depth_k: depth_coefficients(drawn) }
+    Some((scale, corners))
 }
 
 /// Amplitude maximale de la part dynamique du tilt, en degrés X/Y/Z. Partagée par tout ce qui
@@ -907,70 +1063,122 @@ const PARALLAX_DEG_PER_SPEED: f32 = 5.0;
 /// la moyenner sur 200 ms la rend continue.
 const PARALLAX_VELOCITY_HALF_WINDOW_S: f32 = 0.1;
 
-/// Budget du mouvement `follow`, en degrés pour un pointeur posé sur le BORD de la coupe
-/// (`rel` = ±1). C'est une amplitude, pas un budget à partager : les mouvements ne tournent
-/// jamais ensemble — `follow` remplace la vitesse de `sway`, il ne s'y ajoute pas. L'impact du
-/// clic, lui, s'ajoute toujours (c'est un réglage à part), et la SOMME reste bornée par
-/// `clamp_dynamic_tilt`.
-const FOLLOW_DEG: [f32; 2] = [DYNAMIC_TILT_BUDGET[0], DYNAMIC_TILT_BUDGET[1]];
-
-/// Le tilt du mouvement `follow` : la position du pointeur dans la coupe, en [−1, 1]², 0 au
-/// centre. Même origine et mêmes signes que la vitesse de `sway` (droite → +Y, bas → −X), donc
-/// la même famille de poses — mais c'est la position qui commande, pas le geste.
+/// Le chemin de poses des caméras mobiles, en degrés X/Y/Z, pour `(u, v)` ∈ [−1, 1]² : `u` le
+/// côté (−1 gauche, +1 droite), `v` la hauteur (−1 haut, +1 bas) de ce qui commande la caméra.
 ///
-/// Réponse LINÉAIRE, sans la saturation douce de `sway` : la position est déjà bornée par la
-/// coupe, il n'y a rien à écraser aux extrémités. Le plan pointe exactement là où pointe le
-/// pointeur, et revient au centre avec lui.
+/// - Y = 16·u : l'écran se tourne VERS ce côté, sur toute l'amplitude des présets fixes (à
+///   droite, le bord droit recule, comme `right` ; à gauche, comme `left`).
+/// - X = −3 − 2,5·v : même logique en hauteur, l'écran se tourne vers le bas quand le curseur
+///   est bas (plongée plus marquée, −5,5°) et se redresse quand il est haut (−0,5°).
+/// - Z = −(5,5 + 3·u²) : un roulis anti-horaire, du signe d'`iso`, qui ne change JAMAIS de
+///   signe et grandit vers les bords (−8,5° à u = ±1).
 ///
-/// En focus `auto`, la caméra cadre déjà le curseur : le pointeur est au centre de la coupe,
-/// `rel ≈ 0`, et le mouvement ne fait presque rien. C'est le prix de la position, et la raison
-/// pour laquelle `sway` existe : `follow` est un mouvement de zoom MANUEL.
-fn follow_tilt(p: (f32, f32), cut: [f32; 4]) -> [f32; 3] {
-    let (cx, cy) = ((cut[0] + cut[2]) * 0.5, (cut[1] + cut[3]) * 0.5);
-    let (hw, hh) = (((cut[2] - cut[0]) * 0.5).max(1e-3), ((cut[3] - cut[1]) * 0.5).max(1e-3));
-    let (rx, ry) = (((p.0 - cx) / hw).clamp(-1.0, 1.0), ((p.1 - cy) / hh).clamp(-1.0, 1.0));
-    [-FOLLOW_DEG[0] * ry, FOLLOW_DEG[1] * rx, 0.0]
+/// Le roulis n'est pas un choix de style, c'est ce que la règle des 2° impose dès que Y change
+/// de signe. Tant qu'aucune arête ne franchit son axe, le signe de l'angle de chaque arête est
+/// constant le long du chemin. Or à Y = 0 les deux arêtes horizontales ont le signe de Z (une
+/// rotation X seule les laisse horizontales), alors qu'à |Y| = 16 avec un petit Z elles ont des
+/// signes opposés, et opposés dans l'autre sens de l'autre côté (`left` : haut −, bas + ;
+/// `right` : haut +, bas −). Aucun chemin continu ne relie `left` à `right` sans qu'une arête
+/// horizontale passe par 0° — la bascule sèche de l'ancien `flip`. La seule famille qui franchit
+/// Y = 0 est celle où Z domine TOUTES les fuites (les deux horizontales et les deux verticales
+/// du même signe, celui du roulis), d'où |Z| ≥ ~5,5 au centre et ~8,5 aux bords, impact du clic
+/// compris, et une plongée X modeste (la fuite verticale qu'elle crée doit rester sous le
+/// roulis). Mesuré en 16:9 à l'échelle gelée : ≥ 2,4° partout (`the_moving_sweep_*`).
+pub fn camera_pose(u: f32, v: f32) -> [f32; 3] {
+    let (u, v) = (u.clamp(-1.0, 1.0), v.clamp(-1.0, 1.0));
+    [-3.0 - 2.5 * v, 16.0 * u, -(5.5 + 3.0 * u * u)]
 }
 
-/// La pose miroir d'une attitude : X garde son signe, Y ET Z s'inversent.
-///
-/// C'est la conjugaison de la rotation par la réflexion du plan vertical de la caméra
-/// (`M·R·M` pour `M = diag(−1, 1, 1)`) : elle laisse `rotateX` intacte et retourne `rotateY`
-/// comme `rotateZ`. Le quad projeté du miroir est donc l'image du quad d'origine par un miroir
-/// horizontal — les mêmes angles arête/axe au signe près, donc la règle des 2° est préservée
-/// sans nouveau calcul (cf. `the_flipped_pose_is_the_mirror_of_its_preset`).
-///
-/// `iso` [−12, −18, −2] a pour miroir [−12, +18, +2], et `left` [−8, −16, −1] donne `right`.
-pub fn flip_mirror(rot: [f32; 3]) -> [f32; 3] {
-    [rot[0], -rot[1], -rot[2]]
+/// Où tombe la position curseur `p` dans le recadrage `crop` (repère normalisé du curseur),
+/// ramenée à [−1, 1] par axe : la bande 15 %..85 % de l'image parcourt la course en douceur
+/// (smoothstep), les bords la saturent. « Le curseur dans la partie droite » donne donc déjà
+/// presque toute la pose de droite (0,89 à 75 %).
+fn aim_uv(p: (f32, f32), crop: [f32; 4]) -> [f32; 2] {
+    let axis = |x: f32, a: f32, b: f32| {
+        2.0 * smoothstep(0.15, 0.85, (x - a) / (b - a).max(1e-6)) - 1.0
+    };
+    [axis(p.0, crop[0], crop[2]), axis(p.1, crop[1], crop[3])]
 }
 
-/// La rotation de BASE au temps `t` : l'attitude, sauf au mouvement `flip`, où elle prend la
-/// pose miroir selon la moitié de coupe où se trouve le pointeur.
-///
-/// La bascule est SÈCHE, jamais interpolée. Passer de `left` à `right` en douceur traverse
-/// Y = 0, une pose où une paire d'arêtes redevient parallèle à un axe de l'image — le défaut
-/// rapporté trois fois comme « la troncature de l'enregistrement ». Le plan saute donc d'une
-/// pose sûre à son miroir, qui l'est exactement autant, et l'échelle de containment ne bouge
-/// pas non plus : la projection du miroir a les mêmes étendues.
-///
-/// Aucune mémoire d'une frame à l'autre (même exigence que `dynamic_tilt`) : le côté est celui
-/// du pointeur LISSÉ (`follow_at`), donc il ne clignote que si le curseur traverse vraiment
-/// l'axe de la coupe.
-pub fn camera_base(
-    base: [f32; 3],
-    motion: CameraMotion,
-    track: Option<&CursorTrack>,
-    cut: [f32; 4],
-    t: f32,
-) -> [f32; 3] {
-    if motion != CameraMotion::Flip {
-        return base;
+fn in_crop(p: (f32, f32), crop: [f32; 4]) -> bool {
+    (crop[0]..=crop[2]).contains(&p.0) && (crop[1]..=crop[3]).contains(&p.1)
+}
+
+/// Durée de la moyenne glissante de `follow-cursor` : une fenêtre de Hann de 1,4 s, dont le
+/// centre de gravité est 0,7 s dans le passé — le retard d'un cadreur, pas d'un asservissement.
+const FOLLOW_WINDOW_S: f32 = 1.4;
+const FOLLOW_TAPS: usize = 24;
+
+/// `follow-cursor` : la position du curseur dans l'IMAGE SOURCE (recadrage compris, pas la
+/// coupe zoomée — un zoom en focus auto centre la coupe sur le curseur, qui ne s'y déplacerait
+/// plus), moyennée sur une fenêtre de Hann glissante. Aucune mémoire d'une frame à l'autre :
+/// une somme pondérée d'échantillons de la piste, donc une pure fonction de `t`, et continue.
+/// Les échantillons ne sortent pas de la fenêtre du clip, pour ne jamais lire une portion coupée.
+/// Sans piste : `(0, 0)`, la pose de face.
+fn follow_uv(t: f32, frame: &CameraFrame) -> [f32; 2] {
+    let Some(track) = frame.track else { return [0.0; 2] };
+    let (mut sx, mut sy, mut sw) = (0.0f32, 0.0f32, 0.0f32);
+    for k in 0..FOLLOW_TAPS {
+        let e = (k as f32 + 0.5) / FOLLOW_TAPS as f32;
+        let w = 1.0 - (std::f32::consts::TAU * e).cos();
+        let s = (t - e * FOLLOW_WINDOW_S).max(frame.window[0]).min(frame.window[1]);
+        if let Some((x, y)) = track.at(s) {
+            (sx, sy, sw) = (sx + w * x, sy + w * y, sw + w);
+        }
     }
-    match track.and_then(|tr| tr.follow_at(t)) {
-        Some(p) if p.0 > (cut[0] + cut[2]) * 0.5 => flip_mirror(base),
-        _ => base,
+    if sw <= 0.0 {
+        return [0.0; 2];
     }
+    aim_uv((sx / sw, sy / sw), frame.crop)
+}
+
+/// Durée du pivot de `swing-clicks`, en secondes (smoothstep : départ et arrivée en douceur).
+const SWING_S: f32 = 0.7;
+
+/// `swing-clicks` : la pose tient, et à chaque clic du zoom pivote en `SWING_S` vers la pose
+/// de l'endroit cliqué (`aim_uv`, comme `follow-cursor`). Avant le premier clic : la pose du
+/// curseur au début du zoom.
+///
+/// Pure fonction de `t` : on rejoue les clics depuis `start` à chaque frame. Un clic qui tombe
+/// en plein pivot repart de la pose atteinte à cet instant, jamais de la cible précédente —
+/// aucun saut. Les clics hors de la fenêtre du clip (portion coupée) ou hors du recadrage sont
+/// ignorés, comme par `click_impact`. On interpole `(u, v)`, jamais les angles : chaque frame
+/// reste sur le chemin validé.
+fn swing_uv(t: f32, frame: &CameraFrame, start: f32) -> [f32; 2] {
+    let Some(track) = frame.track else { return [0.0; 2] };
+    let ease = |from: [f32; 2], to: [f32; 2], x: f32| {
+        let k = smoothstep(0.0, 1.0, x);
+        [lerp(from[0], to[0], k), lerp(from[1], to[1], k)]
+    };
+    let first = track
+        .at(start.max(frame.window[0]).min(frame.window[1]))
+        .map(|p| aim_uv(p, frame.crop))
+        .unwrap_or([0.0; 2]);
+    let (mut from, mut to, mut t0) = (first, first, start);
+    for &tc in track.clicks_between(start, t) {
+        if tc < frame.window[0] || tc >= frame.window[1] {
+            continue;
+        }
+        let Some(p) = track.at(tc).filter(|&p| in_crop(p, frame.crop)) else { continue };
+        from = ease(from, to, (tc - t0) / SWING_S);
+        to = aim_uv(p, frame.crop);
+        t0 = tc;
+    }
+    ease(from, to, (t - t0) / SWING_S)
+}
+
+/// `orbit` : la caméra balaie d'un bord du chemin à l'autre pendant la région (`start` →
+/// `end`, smoothstep), en partant du côté où est le curseur au début du zoom — deux zooms de
+/// suite ne tournent donc pas forcément dans le même sens. Hauteur neutre (`v = 0`). Sans
+/// piste : départ à gauche.
+fn orbit_uv(t: f32, frame: &CameraFrame, start: f32, end: f32) -> [f32; 2] {
+    let side = match frame.track.and_then(|tr| tr.at(start.max(frame.window[0]).min(frame.window[1])))
+    {
+        Some(p) if aim_uv(p, frame.crop)[0] > 0.0 => 1.0,
+        _ => -1.0,
+    };
+    let k = smoothstep(start, start + (end - start).max(1e-3), t);
+    [side * (1.0 - 2.0 * k), 0.0]
 }
 
 /// La part dynamique du tilt au temps `t`, en degrés X/Y/Z, à AJOUTER à la rotation de base
@@ -979,23 +1187,20 @@ pub fn camera_base(
 ///
 /// - `track` : la piste curseur ; `None` (pas de sidecar) → rotation nulle.
 /// - `cut` : la coupe visible, dans le repère NORMALISÉ du curseur (`[x0, y0, x1, y1]`). La
-///   vitesse de `sway` s'y mesure en coupes par seconde, la position de `follow` en fractions
-///   de coupe depuis son centre — ce que voit le spectateur. L'impact du clic visera depuis ce
-///   même point.
+///   vitesse s'y mesure en coupes par seconde — ce que voit le spectateur.
 /// - `strength` : à quel point le tilt est installé (0..1, cf. `ZoomState::tilt`). Rien sous
 ///   `PARALLAX_GATE_START` : pendant l'ease-in la base est encore dans (ou près de) la bande
 ///   des 2°, y ajouter du mouvement ferait longer un axe à une arête.
-/// - `motion` : quel mouvement anime la base. `still` et `flip` ne contribuent RIEN ici — le
-///   `flip` agit sur la base (`camera_base`), `still` ne fait rien par définition. L'impact du
-///   clic, lui, s'applique aux quatre mouvements.
+/// - `parallax` : le poids de la parallaxe de vitesse (`ZoomState::parallax`) — 1 sous un angle
+///   fixe, 0 sous une caméra mobile, dont la pose bouge déjà. L'impact du clic, lui, s'applique
+///   à tous les présets.
 ///
 /// La vitesse est prise sur la piste de SUIVI (`follow_at`, déjà lissée), jamais sur `at()`, et
 /// par différence centrée : aucune intégration d'une frame à l'autre, la frame reste une pure
 /// fonction de `t` (cf. `smooth_follow_samples`).
 ///
 /// Sens : le plan se penche vers le geste — curseur vers la droite → le bord droit recule
-/// (+Y), vers le bas → le bord bas recule (−X). Même convention pour `follow`, et pour
-/// l'impact du clic.
+/// (+Y), vers le bas → le bord bas recule (−X). Même convention pour l'impact du clic.
 ///
 /// `impact` : l'impact du clic (`click_impact`), déjà pondéré par ses propres portes. Il
 /// s'ADDITIONNE au mouvement, la somme est bornée au budget, puis la porte d'ease-in
@@ -1006,20 +1211,15 @@ pub fn dynamic_tilt(
     cut: [f32; 4],
     strength: f32,
     impact: [f32; 3],
-    motion: CameraMotion,
+    parallax: f32,
 ) -> [f32; 3] {
     let gate = smoothstep(PARALLAX_GATE_START, 1.0, strength);
     if gate <= 0.0 {
         return [0.0; 3];
     }
     let h = PARALLAX_VELOCITY_HALF_WINDOW_S;
-    let camera = match (motion, track) {
-        // `flip` n'ajoute rien ici : sa bascule est dans la base, une frame l'a ou ne l'a pas.
-        (CameraMotion::Still | CameraMotion::Flip, _) => [0.0; 3],
-        (CameraMotion::Follow, Some(tr)) => {
-            tr.follow_at(t).map(|p| follow_tilt(p, cut)).unwrap_or([0.0; 3])
-        }
-        (CameraMotion::Sway, Some(tr)) => match (tr.follow_at(t - h), tr.follow_at(t + h)) {
+    let camera = match track.filter(|_| parallax > 0.0) {
+        Some(tr) => match (tr.follow_at(t - h), tr.follow_at(t + h)) {
             (Some(a), Some(b)) => {
                 let (cw, ch) = ((cut[2] - cut[0]).max(1e-3), (cut[3] - cut[1]).max(1e-3));
                 let (vx, vy) = ((b.0 - a.0) / (2.0 * h * cw), (b.1 - a.1) / (2.0 * h * ch));
@@ -1027,11 +1227,11 @@ pub fn dynamic_tilt(
                 // rapide.
                 let soft = |v: f32, budget: f32| budget * (PARALLAX_DEG_PER_SPEED * v / budget).tanh();
                 let b = DYNAMIC_TILT_BUDGET;
-                [soft(-vy, b[0]), soft(vx, b[1]), 0.0]
+                [soft(-vy, b[0]) * parallax, soft(vx, b[1]) * parallax, 0.0]
             }
             _ => [0.0; 3],
         },
-        _ => [0.0; 3],
+        None => [0.0; 3],
     };
     let sum = [camera[0] + impact[0], camera[1] + impact[1], camera[2] + impact[2]];
     clamp_dynamic_tilt(sum).map(|d| d * gate)
@@ -1172,7 +1372,6 @@ mod zoom_focus_tests {
             focus_y: 0.5,
             focus_mode: Some("manual".into()),
             rotation: None,
-            camera_motion: None,
             under_trim: false,
             hide_cursor: false,
             click_impact: false,
@@ -1676,7 +1875,7 @@ mod tilt_tests {
     }
 
     /// Plus petit écart d'une arête du quad à son axe, en degrés.
-    fn min_edge_angle(c: &[(f32, f32); 4]) -> f32 {
+    pub(super) fn min_edge_angle(c: &[(f32, f32); 4]) -> f32 {
         let h = |p: (f32, f32), q: (f32, f32)| (q.1 - p.1).atan2(q.0 - p.0).to_degrees().abs();
         let v = |p: (f32, f32), q: (f32, f32)| (q.0 - p.0).atan2(q.1 - p.1).to_degrees().abs();
         h(c[0], c[1]).min(h(c[3], c[2])).min(v(c[0], c[3])).min(v(c[1], c[2]))
@@ -1783,12 +1982,14 @@ mod tilt_tests {
             focus_y: 0.5,
             focus_mode: None,
             rotation: rotation.map(Into::into),
-            camera_motion: None,
             under_trim: false,
             hide_cursor: false,
             click_impact: false,
         };
-        let presets = [None, Some("iso"), Some("left"), Some("right")];
+        // Les caméras mobiles, sans piste, tiennent une pose du chemin (face, ou le départ
+        // gauche de l'orbite) : c'est ce qui se chaîne avec les présets fixes.
+        let presets =
+            [None, Some("iso"), Some("left"), Some("right"), Some("follow-cursor"), Some("orbit")];
         for a in presets {
             for b in presets {
                 // Transition chaînée sur [4, 5] s.
@@ -1798,15 +1999,20 @@ mod tilt_tests {
                     let state = zoom_state_at(&regions, t, None);
                     let base = state.rotation;
                     let gate = smoothstep(PARALLAX_GATE_START, 1.0, state.tilt);
+                    // Sous une caméra mobile, la vitesse pèse `parallax` ; l'impact du clic
+                    // (±`CLICK_IMPACT_DEG`) passe toujours. Le reste du budget Y ne sert pas.
+                    let y_room = ((state.parallax * DYNAMIC_TILT_BUDGET[1] + CLICK_IMPACT_DEG)
+                        / DYNAMIC_TILT_BUDGET[1])
+                        .min(1.0);
                     for (w, h) in [(1920.0f32, 1080.0f32), (1080.0, 1920.0), (800.0, 800.0)] {
-                        let still = rotated_quad_corners_px(w, h, base, [0.0; 3]).corners;
+                        let still = tilted_quad(w, h, base, [0.0; 3], state.moving).corners;
                         let floor = min_edge_angle(&still).min(2.0);
                         // La boucle de containment s'arrête à `fit >= 0.999` : la base seule peut
                         // déjà dépasser d'un pixel. On juge la part dynamique, pas cette tolérance.
                         let (sx, sy) = projected_extents(&still);
                         let (lx, ly) = (sx.max(w * 0.5) + 0.5, sy.max(h * 0.5) + 0.5);
-                        for d in budget_sweep(gate) {
-                            let c = rotated_quad_corners_px(w, h, base, d).corners;
+                        for d in budget_sweep(gate).map(|d| [d[0], d[1] * y_room, d[2]]) {
+                            let c = tilted_quad(w, h, base, d, state.moving).corners;
                             let (mx, my) = projected_extents(&c);
                             assert!(
                                 mx <= lx && my <= ly,
@@ -1869,7 +2075,7 @@ mod tilt_tests {
 
     #[test]
     fn no_track_means_no_dynamic_tilt() {
-        assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway), [0.0; 3]);
+        assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, 1.0, [0.0; 3], 1.0), [0.0; 3]);
     }
 
     #[test]
@@ -1878,23 +2084,23 @@ mod tilt_tests {
         for k in 0..=85 {
             let strength = k as f32 / 100.0;
             assert_eq!(
-                dynamic_tilt(1.0, Some(&track), FULL_CUT, strength, [0.0; 3], CameraMotion::Sway),
+                dynamic_tilt(1.0, Some(&track), FULL_CUT, strength, [0.0; 3], 1.0),
                 [0.0; 3],
                 "force {strength}"
             );
         }
-        assert_ne!(dynamic_tilt(1.0, Some(&track), FULL_CUT, 0.95, [0.0; 3], CameraMotion::Sway), [0.0; 3]);
+        assert_ne!(dynamic_tilt(1.0, Some(&track), FULL_CUT, 0.95, [0.0; 3], 1.0), [0.0; 3]);
     }
 
     /// Le geste penche le plan dans son sens, puis le plan revient à la pose du préset au repos.
     #[test]
     fn the_plane_leans_into_the_gesture_and_settles_at_rest() {
         let track = swipe(0.5, 1.5);
-        let moving = dynamic_tilt(1.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway);
+        let moving = dynamic_tilt(1.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], 1.0);
         assert!(moving[1] > 0.5, "vers la droite → +Y : {moving:?}");
         assert!(moving[0].abs() < 1e-3 && moving[2] == 0.0, "{moving:?}");
         // La piste de suivi rattrape en quelques centaines de ms.
-        let rest = dynamic_tilt(4.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway);
+        let rest = dynamic_tilt(4.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], 1.0);
         assert!(rest[1].abs() < 0.05, "au repos : {rest:?}");
         // Vers le bas → le bord bas recule (−X).
         let down = CursorTrack::new(
@@ -1902,7 +2108,7 @@ mod tilt_tests {
             vec![],
             vec![],
         );
-        assert!(dynamic_tilt(1.0, Some(&down), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway)[0] < -0.5);
+        assert!(dynamic_tilt(1.0, Some(&down), FULL_CUT, 1.0, [0.0; 3], 1.0)[0] < -0.5);
     }
 
     /// Quelle que soit la vitesse, la parallaxe reste dans le budget. Une coupe serrée (crop
@@ -1913,11 +2119,11 @@ mod tilt_tests {
         for speed in [0.1f32, 1.0, 10.0, 1000.0, -1000.0] {
             let track = swipe(speed, 9.0);
             for cut in [FULL_CUT, [0.4, 0.4, 0.45, 0.45]] {
-                let d = dynamic_tilt(1.0, Some(&track), cut, 1.0, [0.0; 3], CameraMotion::Sway);
+                let d = dynamic_tilt(1.0, Some(&track), cut, 1.0, [0.0; 3], 1.0);
                 assert!(d[0].abs() <= b[0] && d[1].abs() <= b[1] && d[2] == 0.0, "{speed} {d:?}");
             }
         }
-        let fast = dynamic_tilt(1.0, Some(&swipe(1000.0, 9.0)), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway);
+        let fast = dynamic_tilt(1.0, Some(&swipe(1000.0, 9.0)), FULL_CUT, 1.0, [0.0; 3], 1.0);
         assert!(fast[1] > 2.9, "saturation au budget : {fast:?}");
     }
 
@@ -1925,7 +2131,7 @@ mod tilt_tests {
     #[test]
     fn the_dynamic_tilt_is_a_pure_function_of_time() {
         let track = swipe(0.7, 2.0);
-        let at = |i: usize| dynamic_tilt(i as f32 / 30.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway);
+        let at = |i: usize| dynamic_tilt(i as f32 / 30.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], 1.0);
         let forward: Vec<_> = (0..90).map(at).collect();
         for i in (0..90).rev() {
             assert_eq!(at(i), forward[i]);
@@ -2025,7 +2231,7 @@ mod tilt_tests {
         assert_eq!(click_impact(t, &track, [0.0, 1.0], full_aim), [0.0; 3], "fin exclusive");
         assert_ne!(click_impact(t, &track, [1.0, 9.0], full_aim), [0.0; 3], "début inclus");
         assert_eq!(click_impact(t, &track, WHOLE, |_| None), [0.0; 3], "hors coupe");
-        assert_eq!(dynamic_tilt(t, None, FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway), [0.0; 3]);
+        assert_eq!(dynamic_tilt(t, None, FULL_CUT, 1.0, [0.0; 3], 1.0), [0.0; 3]);
     }
 
     /// L'axe est visé à l'instant du clic : un glisser qui suit ne le fait pas vaciller.
@@ -2059,16 +2265,16 @@ mod tilt_tests {
         let impact = [-CLICK_IMPACT_DEG, CLICK_IMPACT_DEG, 0.0];
         for k in 0..=85 {
             let strength = k as f32 / 100.0;
-            assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, strength, impact, CameraMotion::Sway), [0.0; 3]);
+            assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, strength, impact, 1.0), [0.0; 3]);
         }
-        assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, 1.0, impact, CameraMotion::Sway), impact);
+        assert_eq!(dynamic_tilt(1.0, None, FULL_CUT, 1.0, impact, 1.0), impact);
         let b = DYNAMIC_TILT_BUDGET;
         assert!(CLICK_IMPACT_DEG <= b[0] && CLICK_IMPACT_DEG <= b[1]);
         // Parallaxe saturée dans le même sens : la SOMME est bornée.
         let fast = swipe(1000.0, 9.0);
-        let d = dynamic_tilt(1.0, Some(&fast), FULL_CUT, 1.0, impact, CameraMotion::Sway);
+        let d = dynamic_tilt(1.0, Some(&fast), FULL_CUT, 1.0, impact, 1.0);
         assert!(d[1] <= b[1] && d[1] > b[1] - 1e-3, "{d:?}");
-        let d = dynamic_tilt(1.0, Some(&fast), FULL_CUT, 0.95, impact, CameraMotion::Sway);
+        let d = dynamic_tilt(1.0, Some(&fast), FULL_CUT, 0.95, impact, 1.0);
         let gate = smoothstep(PARALLAX_GATE_START, 1.0, 0.95);
         assert!(d[1] <= b[1] * gate + 1e-5 && d[0].abs() <= b[0] * gate + 1e-5, "{d:?}");
     }
@@ -2105,7 +2311,6 @@ mod tilt_tests {
             focus_y: 0.5,
             focus_mode: None,
             rotation: Some("iso".into()),
-            camera_motion: None,
             under_trim: false,
             hide_cursor: false,
             click_impact,
@@ -2128,7 +2333,6 @@ mod tilt_tests {
             focus_y: 0.5,
             focus_mode: None,
             rotation: rotation.map(Into::into),
-            camera_motion: None,
             under_trim: false,
             hide_cursor: false,
             click_impact: false,
@@ -2404,240 +2608,329 @@ mod programme_clock {
 }
 
 #[cfg(test)]
-mod camera_motion_tests {
+mod moving_camera_tests {
+    use super::tilt_tests::min_edge_angle;
     use super::*;
     use crate::cursor::CursorTrack;
     use crate::scene::SceneZoomRegion;
 
-    const FULL_CUT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-
-    fn preset(name: &str) -> [f32; 3] {
-        rotation3d_for(&Some(name.into()))
-    }
-
-    /// Une piste IMMOBILE en `p` : le lissage n'a rien à rattraper (le premier échantillon passe
-    /// au travers, et les suivants ont un delta nul), donc `follow_at` rend exactement `p`.
-    fn parked(p: (f32, f32)) -> CursorTrack {
-        CursorTrack::new((0..=90).map(|i| (i as f32 / 30.0, p.0, p.1)).collect(), vec![], vec![])
-    }
-
-    fn region(motion: Option<&str>) -> SceneZoomRegion {
+    fn region(rotation: &str, start: f64, end: f64) -> SceneZoomRegion {
         SceneZoomRegion {
             id: "z".into(),
             clip_index: None,
-            start_sec: 2.0,
-            end_sec: 8.0,
+            start_sec: start,
+            end_sec: end,
             scale: 2.0,
             focus_x: 0.5,
             focus_y: 0.5,
             focus_mode: Some("manual".into()),
-            rotation: Some("iso".into()),
-            camera_motion: motion.map(Into::into),
+            rotation: Some(rotation.into()),
             under_trim: false,
             hide_cursor: false,
             click_impact: false,
         }
     }
 
-    /// Le document d'avant le réglage, et une valeur qu'on ne connaît pas, rendent tous les deux
-    /// le mouvement historique. C'est la garantie qu'aucun projet existant ne change.
-    #[test]
-    fn an_absent_or_unknown_motion_is_the_historical_sway() {
-        assert_eq!(motion_for(&None), CameraMotion::Sway);
-        assert_eq!(motion_for(&Some("nope".into())), CameraMotion::Sway);
-        assert_eq!(motion_for(&Some("still".into())), CameraMotion::Still);
-        assert_eq!(motion_for(&Some("follow".into())), CameraMotion::Follow);
-        assert_eq!(motion_for(&Some("flip".into())), CameraMotion::Flip);
-        for m in [None, Some("nope")] {
-            assert_eq!(zoom_state_at(&[region(m)], 5.0, None).motion, CameraMotion::Sway);
-        }
-        assert_eq!(
-            zoom_state_at(&[region(Some("follow"))], 5.0, None).motion,
-            CameraMotion::Follow
-        );
-        assert_eq!(zoom_state_at(&[], 5.0, None).motion, CameraMotion::Sway);
+    /// Une piste de 20 s échantillonnée à 30 Hz, position donnée par `at(t)`.
+    fn track(at: impl Fn(f32) -> (f32, f32), clicks: Vec<f32>) -> CursorTrack {
+        CursorTrack::new(
+            (0..=600).map(|i| {
+                let t = i as f32 / 30.0;
+                let (x, y) = at(t);
+                (t, x, y)
+            }).collect(),
+            clicks,
+            vec![],
+        )
     }
 
-    /// `still` : l'attitude tient, quelle que soit l'agitation du pointeur — mais l'impact du
-    /// clic, qui a son propre réglage, passe toujours.
-    #[test]
-    fn still_holds_the_plane_and_lets_the_click_through() {
-        let track = parked((0.9, 0.9));
-        assert_eq!(
-            dynamic_tilt(3.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Still),
-            [0.0; 3]
-        );
-        let impact = [1.2, -0.7, 0.0];
-        assert_eq!(
-            dynamic_tilt(3.0, Some(&track), FULL_CUT, 1.0, impact, CameraMotion::Still),
-            impact
-        );
+    fn whole(track: &CursorTrack) -> CameraFrame<'_> {
+        CameraFrame { track: Some(track), crop: [0.0, 0.0, 1.0, 1.0], window: [0.0, 100.0] }
     }
 
-    /// `follow` : le plan pointe là où pointe le pointeur. Signes de la famille `sway`
-    /// (droite → +Y, bas → −X), amplitude pleine au bord de la coupe, nulle au centre.
-    #[test]
-    fn follow_points_the_plane_where_the_pointer_is() {
-        let at = |p: (f32, f32)| follow_tilt(p, FULL_CUT);
-        assert_eq!(at((0.5, 0.5)), [0.0, 0.0, 0.0]);
-        let right = at((0.75, 0.5));
-        assert!(right[1] > 0.0 && right[0].abs() < 1e-6, "{right:?}");
-        let down = at((0.5, 0.75));
-        assert!(down[0] < 0.0 && down[1].abs() < 1e-6, "{down:?}");
-        // Un pointeur au bord de la coupe penche du budget plein, pas plus.
-        assert!((at((1.0, 0.5))[1] - FOLLOW_DEG[1]).abs() < 1e-5);
-        assert!((at((0.5, 1.0))[0] + FOLLOW_DEG[0]).abs() < 1e-5);
-        // La réponse est linéaire entre les deux (contrairement à `sway`, qui sature).
-        assert!((at((0.75, 0.5))[1] - FOLLOW_DEG[1] * 0.5).abs() < 1e-5);
-        // Une coupe serrée (crop utilisateur) : même position, même amplitude relative.
-        let tight = follow_tilt((0.55, 0.5), [0.4, 0.4, 0.6, 0.6]);
-        assert!((tight[1] - FOLLOW_DEG[1] * 0.5).abs() < 1e-5, "{tight:?}");
-    }
-
-    /// Hors de la coupe (crop qui a coupé le pointeur, ou télémétrie aberrante) : borné, jamais
-    /// extrapolé.
-    #[test]
-    fn follow_is_bounded_by_its_budget_everywhere() {
-        let b = DYNAMIC_TILT_BUDGET;
-        for p in [(-5.0f32, -5.0), (2.0, 2.0), (0.0, 1.0), (1.0, 0.0), (0.5, 0.5)] {
-            let d = follow_tilt(p, FULL_CUT);
-            assert!(d[0].abs() <= b[0] + 1e-5 && d[1].abs() <= b[1] + 1e-5, "{p:?} → {d:?}");
-        }
-        // Et la somme avec un impact au maximum reste dans le budget.
-        let track = parked((1.0, 1.0));
-        let d = dynamic_tilt(
-            3.0,
-            Some(&track),
-            FULL_CUT,
-            1.0,
-            [b[0], b[1], 0.0],
-            CameraMotion::Follow,
-        );
-        assert!(d[0].abs() <= b[0] + 1e-5 && d[1].abs() <= b[1] + 1e-5, "{d:?}");
-    }
-
-    /// Même porte d'ease-in que la parallaxe : rien tant que l'attitude n'est pas installée, rien
-    /// sans piste curseur. C'est ce qui empêche « le plan part vers le pointeur » pendant une
-    /// transition où il est encore à plat.
-    #[test]
-    fn follow_passes_through_the_same_gate_as_the_sway() {
-        let track = parked((1.0, 0.5));
-        for k in 0..=85 {
-            let strength = k as f32 / 100.0;
-            assert_eq!(
-                dynamic_tilt(3.0, Some(&track), FULL_CUT, strength, [0.0; 3], CameraMotion::Follow),
-                [0.0; 3],
-                "force {strength}"
-            );
-        }
-        assert_ne!(
-            dynamic_tilt(3.0, Some(&track), FULL_CUT, 0.95, [0.0; 3], CameraMotion::Follow),
-            [0.0; 3]
-        );
-        assert_eq!(
-            dynamic_tilt(3.0, None, FULL_CUT, 1.0, [0.0; 3], CameraMotion::Follow),
-            [0.0; 3]
-        );
-    }
-
-    /// `follow` remplace la vitesse, il ne s'y ajoute pas : sur la MÊME piste, `sway` suit le
-    /// geste et `follow` la position.
-    #[test]
-    fn follow_ignores_the_velocity_and_sway_ignores_the_position() {
-        // Un pointeur qui balaie, puis s'arrête : à l'arrêt `follow` reste braqué sur lui, `sway`
-        // est retombé.
-        let track = CursorTrack::new(
-            (0..=120)
-                .map(|i| {
-                    let t = i as f32 / 30.0;
-                    (t, 0.1 + 0.2 * (t / 2.0).min(1.0), 0.5)
+    /// La grille fine du chemin (41 × 9), chaque pose poussée par l'impact du clic sur 5 × 5
+    /// valeurs de [−A, A]² — la part dynamique que `dynamic_tilt` peut encore y ajouter.
+    fn sweep() -> impl Iterator<Item = ([f32; 3], [f32; 3])> {
+        (0..=40).flat_map(|i| {
+            (0..=8).flat_map(move |j| {
+                let pose = camera_pose(i as f32 / 20.0 - 1.0, j as f32 / 4.0 - 1.0);
+                (-2..=2).flat_map(move |a| {
+                    (-2..=2).map(move |b| {
+                        let k = CLICK_IMPACT_DEG / 2.0;
+                        (pose, [a as f32 * k, b as f32 * k, 0.0])
+                    })
                 })
-                .collect(),
-            vec![],
-            vec![],
-        );
-        let sway = dynamic_tilt(4.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Sway);
-        let follow = dynamic_tilt(4.0, Some(&track), FULL_CUT, 1.0, [0.0; 3], CameraMotion::Follow);
-        assert!(sway[1].abs() < 0.05, "au repos, sway est retombé : {sway:?}");
-        assert!(follow[1] < -0.5, "follow reste braqué : {follow:?}");
+            })
+        })
     }
 
-    /// Le miroir est une SYMÉTRIE, pas une rotation : le quad miroir est l'image exacte du quad
-    /// d'origine par un miroir horizontal, à la même échelle de containment. C'est ce qui
-    /// transporte la règle des 2° dans `flip` sans la revérifier : une arête à `a` degrés d'un
-    /// axe reste à `a` degrés de son axe miroir.
+    /// La règle des 2° sur TOUT le chemin des caméras mobiles, impact du clic compris, à
+    /// l'échelle gelée — en 16:9 comme les présets fixes, et sur les autres ratios d'écran
+    /// paysage courants (16:10, 21:9, 4:3).
     #[test]
-    fn the_flipped_pose_is_the_mirror_of_its_preset() {
-        let (w, h) = (1920.0f32, 1080.0f32);
-        for name in ["iso", "left", "right"] {
-            let base = preset(name);
-            let a = rotated_quad_corners_px(w, h, base, [0.0; 3]);
-            let b = rotated_quad_corners_px(w, h, flip_mirror(base), [0.0; 3]);
-            // Coins TL, TR, BR, BL : le miroir échange les paires de côté.
-            for (i, j) in [(0, 1), (1, 0), (2, 3), (3, 2)] {
-                let (x, y) = b.corners[i];
-                let (ex, ey) = a.corners[j];
+    fn the_moving_sweep_keeps_every_edge_off_axis() {
+        for (w, h) in [(1920.0f32, 1080.0f32), (1920.0, 1200.0), (2560.0, 1080.0), (1440.0, 1080.0)] {
+            let mut worst = f32::MAX;
+            for (pose, d) in sweep() {
+                let a = min_edge_angle(&tilted_quad(w, h, pose, d, 1.0).corners);
+                assert!(a >= 2.0, "{w}x{h} pose {pose:?} impact {d:?} : arête à {a:.3}°");
+                worst = worst.min(a);
+            }
+            // Garde : la marge n'est pas énorme — un chemin plus plat la mangerait.
+            assert!(worst < 3.0, "{w}x{h} : {worst}");
+        }
+    }
+
+    /// UNE échelle pour tout le chemin : le plan ne respire pas pendant que la pose bouge, et
+    /// aucune pose (impact compris) ne sort du rect d'origine à cette échelle.
+    #[test]
+    fn the_moving_sweep_stays_inside_at_one_frozen_scale() {
+        for (w, h) in [(1920.0f32, 1080.0f32), (1080.0, 1920.0), (800.0, 800.0), (1920.0, 1200.0), (2560.0, 1080.0)] {
+            let frozen = tilted_quad(w, h, camera_pose(0.0, 0.0), [0.0; 3], 1.0).scale;
+            for (pose, d) in sweep() {
+                let q = tilted_quad(w, h, pose, d, 1.0);
+                assert_eq!(q.scale, frozen, "{w}x{h} {pose:?} : l'échelle respire");
+                let (mx, my) = projected_extents(&q.corners);
                 assert!(
-                    (x + ex).abs() < 1e-3 && (y - ey).abs() < 1e-3,
-                    "{name} coin {i}: ({x}, {y}) n'est pas le miroir de ({ex}, {ey})"
+                    mx <= w * 0.5 + 0.5 && my <= h * 0.5 + 0.5,
+                    "{w}x{h} {pose:?} {d:?} : ({mx:.1}, {my:.1})"
                 );
             }
-            assert!((a.scale - b.scale).abs() < 1e-4, "{name}: l'échelle de containment saute");
-        }
-        // Et les présets se répondent deux à deux : `left` a `right` pour miroir.
-        assert_eq!(flip_mirror(preset("left")), preset("right"));
-        assert_eq!(flip_mirror(preset("right")), preset("left"));
-    }
-
-    /// `flip` : l'attitude prend la pose miroir selon la moitié de coupe du pointeur. Bascule
-    /// sèche — aucune frame intermédiaire, donc aucune pose à arête parallèle à un axe.
-    #[test]
-    fn flip_switches_sides_with_the_pointer() {
-        let base = preset("iso");
-        for (p, expected) in [
-            ((0.2, 0.5), base),
-            ((0.8, 0.5), flip_mirror(base)),
-            ((0.9, 0.1), flip_mirror(base)),
-            ((0.1, 0.9), base),
-        ] {
-            let track = parked(p);
-            assert_eq!(
-                camera_base(base, CameraMotion::Flip, Some(&track), FULL_CUT, 3.0),
-                expected,
-                "pointeur en {p:?}"
-            );
-        }
-        // Sans piste (pas de sidecar : Linux hors du groupe `input`) : l'attitude reste celle du
-        // préset, comme pour la parallaxe.
-        assert_eq!(camera_base(base, CameraMotion::Flip, None, FULL_CUT, 3.0), base);
-        // Les autres mouvements ne touchent jamais la base.
-        let right = parked((0.9, 0.5));
-        for m in [CameraMotion::Still, CameraMotion::Sway, CameraMotion::Follow] {
-            assert_eq!(camera_base(base, m, Some(&right), FULL_CUT, 3.0), base);
+            // Pendant l'ease-in aussi (pose × force, impact sous sa porte), et l'échelle y reste
+            // continue : pas de saut d'une force à la suivante.
+            let mut last = 1.0f32;
+            for k in 0..=100 {
+                let s = k as f32 / 100.0;
+                let gate = smoothstep(PARALLAX_GATE_START, 1.0, s);
+                let scale = tilted_quad(w, h, camera_pose(0.0, 0.0).map(|a| a * s), [0.0; 3], s).scale;
+                assert!((scale - last).abs() < 0.02, "{w}x{h} force {s} : {last} → {scale}");
+                last = scale;
+                for i in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+                    for v in [-1.0f32, 0.0, 1.0] {
+                        for (a, b) in [(-1.0, -1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0)] {
+                            let pose = camera_pose(i, v).map(|x| x * s);
+                            let d = [a * CLICK_IMPACT_DEG * gate, b * CLICK_IMPACT_DEG * gate, 0.0];
+                            let q = tilted_quad(w, h, pose, d, s);
+                            let (mx, my) = projected_extents(&q.corners);
+                            assert!(mx <= w * 0.5 + 0.5 && my <= h * 0.5 + 0.5, "{w}x{h} force {s}");
+                        }
+                    }
+                }
+            }
+            assert_eq!(last, frozen);
         }
     }
 
-    /// Pure fonction de `t`, comme la parallaxe : un seek arrière rend exactement la même pose,
-    /// bascules comprises.
+    /// Le côté change vraiment, de toute l'amplitude des présets fixes, et dans leur sens : à
+    /// droite, c'est le bord GAUCHE qui est proche (plus haut à l'écran), comme sous `right`.
     #[test]
-    fn the_camera_base_is_a_pure_function_of_time() {
-        let track = CursorTrack::new(
-            (0..=120)
-                .map(|i| {
-                    let t = i as f32 / 30.0;
-                    (t, if (t as i32) % 2 == 0 { 0.1 } else { 0.9 }, 0.5)
-                })
-                .collect(),
-            vec![],
-            vec![],
-        );
-        let base = preset("left");
-        let at = |i: usize| {
-            camera_base(base, CameraMotion::Flip, Some(&track), FULL_CUT, i as f32 / 30.0)
-        };
-        let forward: Vec<_> = (0..120).map(at).collect();
-        for i in (0..120).rev() {
-            assert_eq!(at(i), forward[i]);
+    fn the_path_changes_side_as_much_as_the_fixed_presets() {
+        assert_eq!(camera_pose(-1.0, 0.0)[1], rotation3d_for(&Some("left".into()))[1]);
+        assert_eq!(camera_pose(1.0, 0.0)[1], rotation3d_for(&Some("right".into()))[1]);
+        let (w, h) = (1920.0f32, 1080.0f32);
+        let len = |c: &[(f32, f32); 4], a: usize, b: usize| (c[b].0 - c[a].0).hypot(c[b].1 - c[a].1);
+        let left = tilted_quad(w, h, camera_pose(-1.0, 0.0), [0.0; 3], 1.0).corners;
+        let right = tilted_quad(w, h, camera_pose(1.0, 0.0), [0.0; 3], 1.0).corners;
+        assert!(len(&left, 1, 2) > 1.15 * len(&left, 0, 3), "à gauche, le bord droit est proche");
+        assert!(len(&right, 0, 3) > 1.15 * len(&right, 1, 2), "à droite, le bord gauche est proche");
+        let preset = rotated_quad_corners_px(w, h, rotation3d_for(&Some("right".into())), [0.0; 3]).corners;
+        assert!(len(&preset, 0, 3) > len(&preset, 1, 2), "même sens que `right`");
+        let moved = left.iter().zip(right).map(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1)).fold(0.0, f32::max);
+        assert!(moved > 120.0, "un coin ne bouge que de {moved:.0} px d'un côté à l'autre");
+        // La hauteur : curseur bas → plongée plus marquée, curseur haut → écran redressé.
+        assert!(camera_pose(0.0, 1.0)[0] < camera_pose(0.0, -1.0)[0] - 4.0);
+        // Le roulis ne change jamais de signe (cf. `camera_pose`).
+        for i in 0..=40 {
+            assert!(camera_pose(i as f32 / 20.0 - 1.0, 0.0)[2] <= -5.5);
+        }
+    }
+
+    /// `follow-cursor` se tourne du côté du curseur dans l'IMAGE SOURCE, recadrage compris.
+    #[test]
+    fn follow_cursor_turns_towards_the_pointer_in_the_source() {
+        for (x, sign) in [(0.8f32, 1.0f32), (0.2, -1.0)] {
+            let tr = track(|_| (x, 0.5), vec![]);
+            let uv = follow_uv(5.0, &whole(&tr));
+            assert!(uv[0] * sign > 0.9 && uv[1].abs() < 1e-4, "x {x} → {uv:?}");
+        }
+        let low = track(|_| (0.5, 0.9), vec![]);
+        assert!(follow_uv(5.0, &whole(&low))[1] > 0.9, "curseur bas → v > 0");
+        // Dans un recadrage [0,2 ; 0,4], x = 0,38 est tout à droite de ce qu'on voit.
+        let tr = track(|_| (0.38, 0.5), vec![]);
+        let cropped = CameraFrame { crop: [0.2, 0.0, 0.4, 1.0], ..whole(&tr) };
+        assert!(follow_uv(5.0, &cropped)[0] > 0.9);
+        assert!(follow_uv(5.0, &whole(&tr))[0] < 0.0, "garde : sans recadrage, c'est à gauche");
+        assert_eq!(follow_uv(5.0, &CameraFrame::NONE), [0.0; 2]);
+    }
+
+    /// Le défaut de l'ancien `follow` : mesuré dans la coupe ZOOMÉE, il ne faisait rien en focus
+    /// auto, puisque la coupe se centre sur le curseur. Ici, focus auto ou non, même pose.
+    #[test]
+    fn follow_cursor_still_turns_under_auto_focus() {
+        let tr = track(|_| (0.85, 0.5), vec![]);
+        let mut auto = region("follow-cursor", 2.0, 8.0);
+        auto.focus_mode = Some("auto".into());
+        let manual = region("follow-cursor", 2.0, 8.0);
+        let a = zoom_state_in(&[auto], 5.0, Some(&tr), &whole(&tr));
+        let m = zoom_state_in(&[manual], 5.0, Some(&tr), &whole(&tr));
+        assert!(a.rotation[1] > 14.0, "{:?}", a.rotation);
+        assert_eq!(a.rotation, m.rotation);
+    }
+
+    /// Un cadreur, pas un asservissement : un saut du pointeur d'un bord à l'autre se rattrape
+    /// en ~0,7 s, sans à-coup, et la pose est une pure fonction de `t`.
+    #[test]
+    fn follow_cursor_lags_smoothly_and_is_a_pure_function_of_time() {
+        let tr = track(|t| (if t < 5.0 { 0.1 } else { 0.9 }, 0.5), vec![]);
+        let f = whole(&tr);
+        let u = |t: f32| follow_uv(t, &f)[0];
+        assert!(u(4.99) < -0.99);
+        assert!(u(5.4) < 0.0, "trop nerveux : {}", u(5.4));
+        assert!(u(6.0) > 0.0, "trop lent : {}", u(6.0));
+        assert!(u(6.45) > 0.99);
+        let frames: Vec<f32> = (0..240).map(|i| u(4.5 + i as f32 / 60.0)).collect();
+        for pair in frames.windows(2) {
+            assert!((pair[1] - pair[0]).abs() < 0.15, "à-coup : {pair:?}");
+        }
+        for i in (0..240).rev() {
+            assert_eq!(u(4.5 + i as f32 / 60.0), frames[i]);
+        }
+    }
+
+    /// `swing-clicks` : tient la pose du début, pivote en 0,7 s vers chaque clic, ignore le
+    /// pointeur entre deux clics.
+    #[test]
+    fn swing_clicks_holds_then_turns_to_each_click() {
+        // Pointeur à gauche, passe à droite vers 4 s, clic à 4,5 s, repart à gauche à 6 s sans clic.
+        let at = |t: f32| (if (4.0..6.0).contains(&t) { 0.85 } else { 0.15 }, 0.5);
+        let tr = track(at, vec![4.5]);
+        let f = whole(&tr);
+        let u = |t: f32| swing_uv(t, &f, 2.0)[0];
+        assert!(u(3.0) < -0.99, "pose du début de zoom");
+        assert!(u(4.4) < -0.99, "le pointeur a bougé, pas de clic : la pose tient");
+        assert!(u(4.85).abs() < 0.1, "mi-pivot : {}", u(4.85));
+        assert!(u(5.2) > 0.99, "pivot fini en 0,7 s");
+        assert!(u(7.0) > 0.99, "le pointeur repart sans clic : la pose tient");
+        // Pivot en douceur : aucune frame ne saute.
+        let frames: Vec<f32> = (0..180).map(|i| u(4.0 + i as f32 / 60.0)).collect();
+        for pair in frames.windows(2) {
+            assert!((pair[1] - pair[0]).abs() < 0.15, "à-coup : {pair:?}");
+        }
+        // Clic hors de la fenêtre du clip (fin exclusive), hors recadrage, ou avant le zoom : rien.
+        let cut = CameraFrame { window: [0.0, 4.5], ..f };
+        assert!(swing_uv(6.0, &cut, 2.0)[0] < -0.99);
+        let cropped = CameraFrame { crop: [0.0, 0.0, 0.8, 1.0], ..f };
+        assert!(swing_uv(5.5, &cropped, 2.0)[0] < -0.95, "clic hors du recadrage");
+        assert!(swing_uv(9.0, &f, 7.0)[0] < -0.99, "clic antérieur au zoom");
+    }
+
+    /// Un clic en plein pivot repart de la pose atteinte : pas de saut.
+    #[test]
+    fn a_click_during_a_swing_continues_from_where_the_camera_is() {
+        // Départ à gauche ; clic à droite à 4 s ; nouveau clic, à gauche, 0,3 s plus tard.
+        let at = |t: f32| (if (3.5..4.25).contains(&t) { 0.9 } else { 0.1 }, 0.5);
+        let tr = track(at, vec![4.0, 4.3]);
+        let f = whole(&tr);
+        let before = swing_uv(4.3 - 1e-3, &f, 1.0)[0];
+        let after = swing_uv(4.3 + 1e-3, &f, 1.0)[0];
+        assert!(before > -0.9, "garde : le premier pivot a commencé ({before})");
+        assert!((before - after).abs() < 0.01, "{before} → {after}");
+        assert!(swing_uv(5.1, &f, 1.0)[0] < -0.99);
+    }
+
+    /// `orbit` balaie d'un bord à l'autre pendant le zoom, depuis le côté du pointeur au début.
+    #[test]
+    fn orbit_sweeps_from_the_pointer_side_to_the_other() {
+        let right = track(|_| (0.9, 0.2), vec![]);
+        let u = |t: f32| orbit_uv(t, &whole(&right), 2.0, 8.0);
+        assert_eq!(u(1.0), [1.0, 0.0]);
+        assert_eq!(u(2.0), [1.0, 0.0]);
+        assert!(u(5.0)[0].abs() < 1e-4);
+        assert_eq!(u(8.0), [-1.0, 0.0]);
+        let mut last = 1.0f32;
+        for i in 0..=60 {
+            let x = u(2.0 + i as f32 / 10.0)[0];
+            assert!(x <= last, "l'orbite recule à {i}");
+            last = x;
+        }
+        let left = track(|_| (0.1, 0.5), vec![]);
+        assert_eq!(orbit_uv(8.0, &whole(&left), 2.0, 8.0), [1.0, 0.0]);
+        assert_eq!(orbit_uv(2.0, &CameraFrame::NONE, 2.0, 8.0), [-1.0, 0.0]);
+        // Une région dégénérée ne produit pas de NaN.
+        assert!(orbit_uv(2.0, &CameraFrame::NONE, 2.0, 2.0)[0].is_finite());
+    }
+
+    /// Dans `zoom_state_in` : la pose du chemin sous la force de la région, poids mobile = force,
+    /// pas de parallaxe ; un préset fixe garde exactement son état d'avant.
+    #[test]
+    fn a_moving_preset_rides_the_zoom_envelope() {
+        let tr = track(|_| (0.85, 0.5), vec![]);
+        let f = whole(&tr);
+        for name in ["follow-cursor", "swing-clicks", "orbit"] {
+            let r = [region(name, 2.0, 8.0)];
+            let full = zoom_state_in(&r, 5.0, Some(&tr), &f);
+            assert_eq!((full.tilt, full.moving, full.parallax), (1.0, 1.0, 0.0), "{name}");
+            assert!(!is_identity_rotation(full.rotation), "{name}");
+            let easing = zoom_state_in(&r, 1.5, Some(&tr), &f);
+            assert!(easing.tilt > 0.0 && easing.tilt < 1.0, "{name}");
+            assert_eq!(easing.moving, easing.tilt, "{name}");
+            let pose = attitude_at(&r[0], 1.5, &f).rotation();
+            assert_eq!(easing.rotation, lerp_rotation3d([0.0; 3], pose, easing.tilt), "{name}");
+            let out = zoom_state_in(&r, 0.0, Some(&tr), &f);
+            assert_eq!((out.rotation, out.moving, out.parallax), ([0.0; 3], 0.0, 1.0), "{name}");
+        }
+        let iso = zoom_state_in(&[region("iso", 2.0, 8.0)], 5.0, Some(&tr), &f);
+        assert_eq!((iso.rotation, iso.moving, iso.parallax), ([-12.0, -18.0, -2.0], 0.0, 1.0));
+        let unknown = zoom_state_in(&[region("spin", 2.0, 8.0)], 5.0, Some(&tr), &f);
+        assert_eq!((unknown.rotation, unknown.tilt, unknown.moving), ([0.0; 3], 0.0, 0.0));
+    }
+
+    /// La parallaxe de vitesse s'éteint sous une caméra mobile ; l'impact du clic, non.
+    #[test]
+    fn a_moving_camera_drops_the_parallax_but_keeps_the_click_impact() {
+        let swipe = track(|t| (0.2 + 0.5 * t.min(3.0) / 3.0, 0.5), vec![]);
+        let impact = [1.0, -1.5, 0.0];
+        let full = [0.0, 0.0, 1.0, 1.0];
+        assert_eq!(dynamic_tilt(1.0, Some(&swipe), full, 1.0, impact, 0.0), impact);
+        assert_eq!(dynamic_tilt(1.0, Some(&swipe), full, 1.0, [0.0; 3], 0.0), [0.0; 3]);
+        assert_ne!(dynamic_tilt(1.0, Some(&swipe), full, 1.0, [0.0; 3], 1.0), [0.0; 3]);
+        let half = dynamic_tilt(1.0, Some(&swipe), full, 1.0, [0.0; 3], 0.5)[1];
+        let whole_ = dynamic_tilt(1.0, Some(&swipe), full, 1.0, [0.0; 3], 1.0)[1];
+        assert!((half - whole_ * 0.5).abs() < 1e-6);
+    }
+
+    /// Deux caméras mobiles chaînées restent sur le chemin (pas de porte, pas de pose hors
+    /// chemin) ; un fixe → mobile passe par la porte habituelle, et le poids mobile glisse.
+    #[test]
+    fn chained_moving_cameras_stay_on_the_path() {
+        let tr = track(|_| (0.9, 0.5), vec![]);
+        let f = whole(&tr);
+        let regions = [region("orbit", 1.0, 4.0), region("follow-cursor", 4.5, 8.0)];
+        for k in 0..=20 {
+            let t = 4.0 + k as f32 / 20.0;
+            let s = zoom_state_in(&regions, t, Some(&tr), &f);
+            assert_eq!((s.tilt, s.moving, s.parallax), (1.0, 1.0, 0.0), "t {t}");
+            // Sur le chemin : Z est celui que `camera_pose` donne pour ce Y.
+            let u = s.rotation[1] / 16.0;
+            assert!((s.rotation[2] - camera_pose(u, 0.0)[2]).abs() < 1e-3, "t {t} : {:?}", s.rotation);
+        }
+        let mixed = [region("iso", 1.0, 4.0), region("follow-cursor", 4.5, 8.0)];
+        let mid = zoom_state_in(&mixed, 4.5, Some(&tr), &f);
+        assert!(mid.tilt < 0.6 && mid.moving > 0.0 && mid.moving < 1.0, "{} {}", mid.tilt, mid.moving);
+    }
+
+    /// Seek arrière ou lecture : même pose, pour les trois caméras.
+    #[test]
+    fn the_moving_poses_are_a_pure_function_of_time() {
+        let tr = track(|t| (0.5 + 0.4 * (t * 1.3).sin(), 0.5 + 0.3 * (t * 0.7).cos()), vec![2.5, 3.1, 3.2, 5.0, 6.4]);
+        let f = whole(&tr);
+        for name in ["follow-cursor", "swing-clicks", "orbit"] {
+            let r = [region(name, 2.0, 8.0)];
+            let at = |i: usize| zoom_state_in(&r, 1.0 + i as f32 / 30.0, Some(&tr), &f).rotation;
+            let forward: Vec<_> = (0..240).map(at).collect();
+            for i in (0..240).rev() {
+                assert_eq!(at(i), forward[i], "{name} frame {i}");
+            }
         }
     }
 }

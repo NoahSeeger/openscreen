@@ -1910,11 +1910,12 @@ impl Compositor {
             // une découpe (« un overflow hidden qui tronque l'enregistrement ») là où il devrait
             // lire une inclinaison. Ils sont donc rendus, dans le repère DU PLAN.
             let quad = tilt.unwrap_or_else(|| {
-                crate::regions::rotated_quad_corners_px(
+                crate::regions::tilted_quad(
                     s_px[0],
                     s_px[1],
                     zoom_rotation,
                     zoom_rotation_dyn,
+                    g.zoom_moving,
                 )
             });
             let corners = quad.corners;

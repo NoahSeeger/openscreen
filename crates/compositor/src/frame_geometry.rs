@@ -188,17 +188,10 @@ pub(crate) fn parse_color_channel(raw: &str, max: f32) -> Option<f32> {
     }
     Some(n / max)
 }
-/// Rect source après crop puis zoom, dans les UV de la texture D3D. `u_max`/`v_max`
-/// excluent le padding NV12 ; le crop reste donc exprimé dans le frame visible (0..1),
-/// comme `VirtualPreview.cropVideoStyle`, puis le focus du zoom est remappé dans ce crop.
-pub(crate) fn screen_source_rect(
-    u_max: f32,
-    v_max: f32,
-    crop: Option<SceneCrop>,
-    zoom: f32,
-    focus: [f32; 2],
-) -> [f32; 4] {
-    let normalized_crop = crop.and_then(|crop| {
+/// Le recadrage `[x0, y0, x1, y1]` en fractions de la source (repère normalisé du curseur),
+/// l'image entière quand il est absent ou invalide.
+fn normalized_crop(crop: Option<SceneCrop>) -> [f32; 4] {
+    crop.and_then(|crop| {
         if !crop.x.is_finite() || !crop.y.is_finite()
             || !crop.width.is_finite() || !crop.height.is_finite()
         {
@@ -209,8 +202,21 @@ pub(crate) fn screen_source_rect(
         let x1 = (crop.x + crop.width).clamp(x0, 1.0);
         let y1 = (crop.y + crop.height).clamp(y0, 1.0);
         (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
-    });
-    let [x0, y0, x1, y1] = normalized_crop.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    })
+    .unwrap_or([0.0, 0.0, 1.0, 1.0])
+}
+
+/// Rect source après crop puis zoom, dans les UV de la texture D3D. `u_max`/`v_max`
+/// excluent le padding NV12 ; le crop reste donc exprimé dans le frame visible (0..1),
+/// comme `VirtualPreview.cropVideoStyle`, puis le focus du zoom est remappé dans ce crop.
+pub(crate) fn screen_source_rect(
+    u_max: f32,
+    v_max: f32,
+    crop: Option<SceneCrop>,
+    zoom: f32,
+    focus: [f32; 2],
+) -> [f32; 4] {
+    let [x0, y0, x1, y1] = normalized_crop(crop);
     let (cu0, cv0, cu1, cv1) = (x0 * u_max, y0 * v_max, x1 * u_max, y1 * v_max);
     let (cw, ch) = (cu1 - cu0, cv1 - cv0);
     let zoom = if zoom.is_finite() && zoom >= 1.0 { zoom } else { 1.0 };
@@ -1059,6 +1065,9 @@ pub struct FrameGeometry {
     /// Part dynamique du tilt (parallaxe, `regions::dynamic_tilt`), ajoutée à la base à la
     /// projection. Nulle quand la base est neutre.
     pub zoom_rotation_dyn: [f32; 3],
+    /// Poids de la caméra mobile (`ZoomState::moving`) : 0 sous un angle fixe. Gèle l'échelle
+    /// de containment sur tout le chemin des poses (`regions::tilted_quad`).
+    pub zoom_moving: f32,
     pub padding_scale: f32,
     /// Coupe source de l'écran en UV texture (crop utilisateur + zoom).
     pub cut: [f32; 4],
@@ -1126,11 +1135,12 @@ impl FrameGeometry {
     /// doivent porter la même séparation base / dynamique, sinon ils se décollent.
     pub fn screen_tilt(&self, s_px: [f32; 2]) -> Option<crate::regions::TiltedQuad> {
         (!crate::regions::is_identity_rotation(self.zoom_rotation)).then(|| {
-            crate::regions::rotated_quad_corners_px(
+            crate::regions::tilted_quad(
                 s_px[0],
                 s_px[1],
                 self.zoom_rotation,
                 self.zoom_rotation_dyn,
+                self.zoom_moving,
             )
         })
     }
@@ -1544,15 +1554,35 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let mut zoom_rotation = [0.0f32; 3];
         let mut zoom_tilt = 0.0f32;
         let mut zoom_click_impact = 0.0f32;
-        let mut zoom_motion = crate::regions::CameraMotion::Sway;
+        let mut zoom_parallax = 1.0f32;
+        let mut zoom_moving = 0.0f32;
+        // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, caméras
+        // mobiles) : l'export ne charge la piste que si le curseur est affiché
+        // (`timeline_walk`), la preview toujours. Sans cette porte, la preview pencherait un
+        // plan que l'export laisse immobile.
+        let parallax_track = cursor_for_zoom.filter(|_| scene.is_some_and(|s| s.cursor.show));
+        let active_crop = scene.and_then(|scene| {
+            scene.crop_by_clip.get(scene.active_clip_index).copied().flatten()
+        });
         if !zoom_regions.is_empty() {
-            let zs = crate::regions::zoom_state_at(zoom_regions, source_t, cursor_for_zoom);
+            // Les caméras mobiles lisent le curseur dans l'image SOURCE recadrée — pas dans la
+            // coupe zoomée, qu'un focus auto recentre sur lui — et ignorent ce qu'une coupe retire.
+            let camera = crate::regions::CameraFrame {
+                track: parallax_track,
+                crop: normalized_crop(active_crop),
+                window: scene
+                    .and_then(|s| s.clips.get(s.active_clip_index))
+                    .map(|c| [c.source_start_sec as f32, c.source_end_sec as f32])
+                    .unwrap_or([f32::NEG_INFINITY, f32::INFINITY]),
+            };
+            let zs = crate::regions::zoom_state_in(zoom_regions, source_t, cursor_for_zoom, &camera);
             p.zoom = zs.scale;
             p.focus = zs.focus;
             zoom_rotation = zs.rotation;
             zoom_tilt = zs.tilt;
             zoom_click_impact = zs.click_impact;
-            zoom_motion = zs.motion;
+            zoom_parallax = zs.parallax;
+            zoom_moving = zs.moving;
             let zs_p = crate::regions::zoom_state_at(zoom_regions, source_t_prev, cursor_for_zoom);
             pp.zoom = zs_p.scale;
             pp.focus = zs_p.focus;
@@ -1641,9 +1671,6 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         // diffère de la boîte du preset) se retrouve étiré pour remplir cette boîte — parité web
         // cassée : `computeCompositeLayout`/`centerRectInBounds` (TS) contiennent déjà le crop
         // dans sa boîte en respectant son ratio, le natif ne le faisait pas (rapport utilisateur).
-        let active_crop = scene.and_then(|scene| {
-            scene.crop_by_clip.get(scene.active_clip_index).copied().flatten()
-        });
         let crop_aspect = match active_crop {
             Some(c) if c.width > 0.0001 && c.height > 0.0001 => {
                 (c.width * scw) / (c.height * sch).max(0.0001)
@@ -1741,10 +1768,6 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         // en coupes VISIBLES par seconde. La coupe visible est `cut_ref`, zoom compris : `cut`
         // ne porte plus que le crop depuis #179, et sous un x2 le même geste traverse deux fois
         // plus d'écran. La coupe passe au repère normalisé du curseur.
-        // Curseur masqué → pas de parallaxe : l'export ne charge la piste que si le curseur est
-        // affiché (`timeline_walk`), la preview toujours. Sans cette porte, la preview pencherait
-        // un plan que l'export laisse immobile.
-        let parallax_track = cursor_for_zoom.filter(|_| scene.is_some_and(|s| s.cursor.show));
         let cut_norm = [
             cut_ref[0] / u_max.max(1e-6),
             cut_ref[1] / v_max.max(1e-6),
@@ -1759,25 +1782,13 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             }
             _ => [0.0; 3],
         };
-        // `flip` agit sur la BASE, pas sur la part dynamique : passer de `left` à `right`
-        // demanderait 12 fois le budget d'angle dynamique, et une interpolation entre les
-        // deux traverserait Y = 0 (cf. `camera_base`). Le plan saute donc d'une pose sûre à
-        // son miroir, et tout ce qui suit — ombre, curseur, masque, profondeur — lit la
-        // même base, comme il lisait déjà le même angle dynamique.
-        zoom_rotation = crate::regions::camera_base(
-            zoom_rotation,
-            zoom_motion,
-            parallax_track,
-            cut_norm,
-            source_t,
-        );
         let zoom_rotation_dyn = crate::regions::dynamic_tilt(
             source_t,
             parallax_track,
             cut_norm,
             zoom_tilt,
             impact,
-            zoom_motion,
+            zoom_parallax,
         );
         let s_dst_prev = remap_box(s_base_prev, cut_ref_prev, cut);
         // le padding n'affecte QUE l'écran (la quantité de fond révélée). La webcam reste ancrée
@@ -1917,6 +1928,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         programme_t: input.programme_time.unwrap_or(frame / FPS),
         zoom_rotation,
         zoom_rotation_dyn,
+        zoom_moving,
         padding_scale,
         cut,
         focus_plane,
@@ -3159,6 +3171,57 @@ mod tests {
         }
     }
 
+    /// Une caméra mobile passe par `plan_frame` : elle lit le curseur dans le RECADRAGE, se tourne
+    /// de son côté à échelle gelée, perd la parallaxe mais garde l'impact du clic, et tient la
+    /// pose de face quand le curseur est masqué (l'export n'a alors pas de piste).
+    #[test]
+    fn a_moving_camera_turns_with_the_pointer_in_the_crop() {
+        let cfg = crate::config::all().pop().expect("au moins une config");
+        let json = zoomed_golden_scene_json()
+            .replace(r#""rotation":"none""#, r#""rotation":"follow-cursor","clickImpact":true"#);
+        let scene = Scene::from_json(&json).expect("scène");
+        let parked = |x: f32, clicks: Vec<f32>| -> &'static crate::cursor::CursorTrack {
+            Box::leak(Box::new(crate::cursor::CursorTrack::new(
+                (0..=90).map(|i| (i as f32 / 30.0, x, 0.3)).collect(),
+                clicks,
+                vec![],
+            )))
+        };
+        let plan = |scene: &Scene, track| {
+            plan_frame(&FrameGeometryInput { cursor: Some(track), ..golden_input(scene, &cfg) })
+        };
+        // Le crop du golden fait 0,61 de large : x = 0,55 est tout à droite de ce qu'on voit, alors
+        // que dans l'image entière ce serait presque le centre.
+        let right = plan(&scene, parked(0.55, vec![]));
+        let left = plan(&scene, parked(0.05, vec![]));
+        assert_eq!(right.zoom_moving, 1.0);
+        assert!(right.zoom_rotation[1] > 14.0, "{:?}", right.zoom_rotation);
+        assert!(left.zoom_rotation[1] < -14.0, "{:?}", left.zoom_rotation);
+        assert_eq!(right.zoom_rotation_dyn, [0.0; 3], "pas de clic, pas de parallaxe");
+
+        let render = [1170.0, 658.0];
+        let s_px = [right.s_dst[2] * render[0], right.s_dst[3] * render[1]];
+        let (qr, ql) = (right.screen_tilt(s_px).expect("incliné"), left.screen_tilt(s_px).expect("incliné"));
+        assert_eq!(qr.scale, ql.scale, "échelle gelée d'un côté à l'autre");
+        // À droite, le bord gauche est le proche : son coin haut monte nettement.
+        assert!(ql.corners[0].1 > qr.corners[0].1 + 20.0, "le côté se voit : {:?} / {:?}", qr.corners, ql.corners);
+
+        // Un geste rapide ne penche rien de plus ; un clic, si.
+        let swipe: &'static crate::cursor::CursorTrack = Box::leak(Box::new(crate::cursor::CursorTrack::new(
+            (0..=90).map(|i| (i as f32 / 30.0, 0.05 + 0.2 * i as f32 / 30.0, 0.3)).collect(),
+            vec![],
+            vec![],
+        )));
+        assert_eq!(plan(&scene, swipe).zoom_rotation_dyn, [0.0; 3]);
+        let clicked = plan(&scene, parked(0.55, vec![1.45]));
+        assert!(clicked.zoom_rotation_dyn[1] > 1.0, "{:?}", clicked.zoom_rotation_dyn);
+        assert_eq!(clicked.zoom_rotation, right.zoom_rotation, "l'impact ne touche pas la base");
+
+        let hidden = Scene::from_json(&json.replace(r#""show":true"#, r#""show":false"#)).expect("scène");
+        let front = plan(&hidden, parked(0.55, vec![]));
+        assert_eq!(front.zoom_rotation, crate::regions::camera_pose(0.0, 0.0));
+    }
+
     /// Sous un préset 3D, le masque est le quad du contenu, warpé comme le mode 8 le dessine.
     #[test]
     fn a_privacy_mask_follows_the_tilted_content() {
@@ -3745,6 +3808,7 @@ mod tests {
             programme_t: 0.0,
             zoom_rotation: [0.0, 0.0, 0.0],
             zoom_rotation_dyn: [0.0, 0.0, 0.0],
+            zoom_moving: 0.0,
             padding_scale: 1.0,
             cut: [0.0, 0.0, 1.0, 1.0],
             focus_plane: [0.5, 0.5],

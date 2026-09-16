@@ -2,7 +2,7 @@
 
 Suite de `spec-3d.md` (PR 1 → 5b, toutes ouvertes). Deux demandes :
 
-1. **plusieurs mouvements de caméra**, dont un où l'orientation suit la **position** du curseur ;
+1. **plusieurs caméras 3D**, dont une où l'orientation suit la **position** du curseur ;
 2. un **curseur modélisé** en vraie 3D — hauteur au-dessus du plan, ombre portée, contact au
    clic, orientation vers le point cliqué — en commençant par **deux** tracés compatibles
    (le curseur classique d'abord).
@@ -25,83 +25,98 @@ deux effets qui partagent un unique budget d'angle dynamique (`DYNAMIC_TILT_BUDG
 `rotated_quad_corners_px(w, h, base, dyn)` projette les coins ; l'échelle de containment est
 calculée sur la **base seule** (« échelle gelée »), la part dynamique ne fait que reprojeter.
 
-### A.2 Le modèle : attitude × mouvement
+### A.2 Le modèle : une seule liste « caméra 3D »
 
-Une caméra, ce n'est pas un préset mais **deux** réglages indépendants :
+**Révisé après test produit.** La première version séparait l'attitude (`rotationPreset`) du
+mouvement (`cameraMotion` : `still`, `sway`, `follow`, `flip`). Rejetée : deux sélecteurs dont
+les effets ne se distinguaient pas, et des bugs (cf. A.3.1). Il n'y a plus qu'**un** champ,
+`rotationPreset`, et **un** sélecteur « 3D camera » :
 
-| | champ | valeurs |
-|---|---|---|
-| **Attitude** (où penche le plan au repos) | `rotationPreset` (existant) | `iso`, `left`, `right` |
-| **Mouvement** (comment elle bouge pendant le zoom) | `cameraMotion` (nouveau) | `still`, `sway`, `follow`, `flip` |
+| groupe | valeur | libellé (EN) | ce que ça fait |
+|---|---|---|---|
+| — | absent | Off | écran droit |
+| Angle fixe | `iso` | Angled from above | tourné vers la gauche, plongée marquée |
+| Angle fixe | `left` | Turned left | tourné vers la gauche |
+| Angle fixe | `right` | Turned right | tourné vers la droite |
+| Caméra mobile | `follow-cursor` | Follows the cursor | se tourne du côté du curseur |
+| Caméra mobile | `swing-clicks` | Turns to each click | pivote vers chaque clic, tient entre deux |
+| Caméra mobile | `orbit` | Slow orbit | balaie d'un côté à l'autre pendant le zoom |
 
-`cameraMotion` **absent = `sway`** : c'est exactement le rendu d'aujourd'hui (parallaxe de
-vitesse). Aucun projet existant ne change. C'est le sens de « ajouter au iso » : le mouvement
-se compose avec l'attitude au lieu de la remplacer, et chaque attitude existante gagne les
-trois mouvements.
+Les trois angles fixes gardent leurs valeurs (rendu d'un projet existant inchangé à l'octet),
+avec la parallaxe de vitesse. Les caméras mobiles n'ont pas de parallaxe (la pose bouge déjà) ;
+l'impact du clic (réglage à part) s'ajoute à tous les présets, dans le même budget. Sous la
+liste, une ligne dit ce que fait l'option choisie.
 
-Pourquoi un **second champ** et pas des présets en plus dans la liste `iso/left/right` : la
-liste actuelle dit *où penche le plan*, une valeur `follow` n'y dirait pas *sur quelle
-attitude*. 3 attitudes × 4 mouvements = 12 rendus distincts pour **un** contrôle de plus ;
-en présets, il faudrait 12 entrées dont 9 recopient une attitude. Le coût d'un champ est
-d'ailleurs le même (schéma + migration + i18n) : c'est le seul endroit où v1 voyait une
-économie, et elle n'existe pas.
+« Turned right » veut dire que la face de l'écran regarde vers la droite : le bord droit
+recule. C'est ce que fait `right` [−8, 16, 1] depuis toujours ; « From the right » aurait
+décrit l'inverse.
 
-Le contrôle : un `select` « Camera motion » **sous** le sélecteur 3D, désactivé (avec sa
-raison) quand `rotationPreset` est `none` — rien à animer sur un plan droit, même règle que
-`clickImpact`. Quatre libellés, pas de slider de plus.
+### A.3 Les caméras mobiles
 
-### A.3 Les quatre mouvements
-
-Signes : ceux déjà posés par la parallaxe et l'impact — **clic/déplacement à droite → +Y**
-(le bord droit recule), **vers le bas → −X** (le bord bas recule).
-
-**`still`** — aucune part dynamique. L'attitude tient, l'impact du clic reste actif (il a son
-propre réglage). Le rendu des anciens présets, moins la parallaxe : la seule façon d'avoir un
-plan parfaitement stable, aujourd'hui impossible.
-
-**`sway`** (défaut) — la parallaxe de vitesse, inchangée, plus l'impact. Le rendu actuel.
-
-**`follow`** — la **position** du curseur, pas sa vitesse. Dans la coupe visible (`cut`, repère
-normalisé du curseur), le décalage du pointeur au centre :
+Les trois partagent **un** chemin de poses, `regions::camera_pose(u, v)`, `u` le côté (−1
+gauche, +1 droite), `v` la hauteur (−1 haut, +1 bas) :
 
 ```
-rel = (p − c) / (demi-taille de la coupe)        ∈ [−1, 1]²
-dyn = [−K_x · rel_y, +K_y · rel_x, 0]            K = DYNAMIC_TILT_BUDGET (le budget plein)
+X = −3 − 2,5·v        plongée plus marquée quand le curseur est bas (l'écran se tourne vers lui)
+Y = 16·u              toute l'amplitude de left/right : la caméra change vraiment de côté
+Z = −(5,5 + 3·u²)     roulis anti-horaire, de signe constant, −5,5° au centre, −8,5° aux bords
 ```
 
-Borné et lissé par le même `tanh` que la parallaxe (pas de plateau sec aux bords), sommé à
-l'impact du clic, puis `clamp_dynamic_tilt` et la porte d'ease-in s'appliquent comme avant.
-Saturation douce **et** plancher : `tanh` seul laisse 0,0° au centre exact, où le plan
-retrouve la pose d'un préset à l'arrêt — c'est voulu (c'est le même point que la pose
-« au repos » de `sway`).
+**Pourquoi un roulis.** Tant qu'aucune arête ne franchit son axe, le signe de l'angle de chaque
+arête est constant le long d'un chemin continu. À Y = 0, les deux arêtes horizontales ont le
+signe de Z (une rotation X seule les laisse horizontales) ; à |Y| = 16 avec un petit Z, elles ont
+des signes opposés, et opposés dans l'autre sens de l'autre côté (`left` : haut −, bas + ;
+`right` : haut +, bas −). **Aucun chemin continu ne relie `left` à `right` sans qu'une arête
+horizontale passe par 0°** : c'est exactement pourquoi l'ancien `flip` sautait. Recherche
+numérique (toutes les familles X, Y, Z, impact ±1,9° compris) : la seule famille qui franchit
+Y = 0 est celle où Z domine toutes les fuites, les quatre arêtes penchant du même côté que le
+roulis. D'où |Z| ≥ ~5,5 au centre et ~8,5 aux bords, et une plongée X modeste (la fuite
+verticale qu'elle crée doit rester sous le roulis).
 
-**Limite connue, à écrire dans l'UI** : en focus **auto**, la caméra cadre déjà le curseur, donc
-le pointeur est au centre de la coupe et `rel ≈ 0` — l'effet est quasi nul. `follow` est un
-mouvement de zoom **manuel** (le cas normal : on zoome sur un formulaire, le pointeur balaie
-le cadre). C'est la raison pour laquelle v1 avait choisi la vitesse ; on garde les deux.
+**Échelle gelée.** L'échelle de containment d'une caméra mobile est le minimum sur toute
+l'enveloppe (`moving_envelope_scale` : 5 × 2 poses × 4 coins d'impact, porte d'ease-in
+comprise), constante pendant le zoom : le plan ne respire pas. Prix : il est ~18 % plus petit
+qu'un angle fixe (0,674 contre 0,82–0,84 en 16:9).
 
-**`flip`** — l'attitude **change de côté** selon la moitié de la coupe où se trouve le pointeur :
-`left` ↔ `right`, `iso` s'inverse en Y (`[-12, −18, −2] → [-12, +18, +2]`, le Z suivant pour
-que la bascule reste une symétrie et non une rotation en plus).
+Mesuré à l'échelle gelée sur la grille fine (41 × 9 poses × 25 impacts) : arête la plus proche
+d'un axe à 2,45° en 16:9, 2,31° en 16:10, 2,26° en 21:9, 2,09° en 4:3
+(`the_moving_sweep_keeps_every_edge_off_axis`), aucun débordement sur cinq formats
+(`the_moving_sweep_stays_inside_at_one_frozen_scale`). En portrait la règle des 2° ne tient
+pas, comme pour les présets fixes (elle n'est posée qu'en paysage).
 
-Deux décisions, toutes deux structurelles :
+Le curseur se lit dans l'**image source recadrée** (`CameraFrame::crop`), jamais dans la coupe
+zoomée. `aim_uv` ramène chaque axe à [−1, 1] par un smoothstep sur 15 %..85 % : « le curseur
+dans la partie droite » donne presque toute la pose de droite.
 
-- **ça agit sur la BASE, pas sur la part dynamique.** Passer de −18° à +18° demanderait +36°
-  de dynamique, 12× le budget. `flip` est donc résolu dans `plan_frame` (`camera_base`), le
-  seul endroit qui connaisse à la fois la pose, la piste curseur ET la coupe — `zoom_state_at`
-  n'a pas la coupe, elle se calcule plus tard depuis le focus. Conséquence : le signe du champ
-  de profondeur (`depth_k`) s'inverse aussi, et c'est correct — la profondeur de champ se
-  déduit de la pose réellement dessinée.
-- **bascule sèche, jamais d'interpolation.** Interpoler entre `left` et `right`
-  traverse `Y = 0`, une pose où une paire d'arêtes est parallèle à un axe de l'image — le
-  défaut qui a été rapporté trois fois comme « la troncature de l'enregistrement » (cf. v1,
-  règle des 2°). Une bascule **instantanée** ne traverse rien : le plan saute dans l'autre
-  pose à pleine force. Le côté est celui du pointeur **lissé** (`follow_at`) et rien d'autre :
-  une bande morte demanderait de se souvenir du côté précédent, or une frame doit rester une
-  pure fonction de `t` (même exigence que la parallaxe, cf. `regions.rs::camera_base`).
-  L'échelle de containment ne saute pas : la projection du miroir a exactement les mêmes
-  étendues, et `the_flipped_pose_is_the_mirror_of_its_preset` le vérifie au coin près — la
-  règle des 2° est donc *transportée* par la symétrie, pas revérifiée à la main.
+- **`follow-cursor`** : moyenne de la piste sur une fenêtre de Hann de 1,4 s (24 échantillons,
+  retard ~0,7 s), bornée à la fenêtre du clip. Pure fonction de `t`, sans à-coup.
+- **`swing-clicks`** : pose du curseur au début du zoom, puis à chaque clic (dans la fenêtre du
+  clip et le recadrage) un pivot smoothstep de 0,7 s vers la pose du clic. Les clics sont
+  rejoués depuis le début de la région à chaque frame ; un clic en plein pivot repart de la
+  pose atteinte.
+- **`orbit`** : de `u = ±1` (côté du curseur au début du zoom) à `u = ∓1`, smoothstep sur la
+  durée de la région, `v = 0`.
+
+Entre deux caméras mobiles chaînées, on interpole `(u, v)`, pas les angles : la pose reste sur
+le chemin. Sans piste (curseur masqué : l'export ne la charge pas), `follow-cursor` et
+`swing-clicks` tiennent la pose de face, `orbit` part de la gauche.
+
+### A.3.1 Ce qui clochait dans `cameraMotion`
+
+- **`flip` clignotait en focus auto** : le seuil était le centre de la coupe zoomée, que le focus
+  auto place sur le curseur lissé. Le côté se jouait au bruit flottant : 44 bascules miroir en
+  6 s sur une dérive lente (mesuré avant suppression). En focus manuel, une bascule sèche d'une
+  frame, lue comme un glitch.
+- **`follow` ne faisait rien en focus auto** (même cause : position mesurée dans la coupe
+  zoomée), et plafonnait au budget dynamique (±1,9° / ±3°) en manuel : à peine visible.
+- **`still` et `sway` indiscernables** : la parallaxe d'une dérive lente culmine à ~1,2°.
+- **Saut en fin de transition chaînée** : le mouvement était pris sur la région sortante pendant
+  toute la transition, puis sur l'entrante — un `flip` suivi d'un autre mouvement sautait de
+  pose à la dernière frame.
+- **Réglage mort sans curseur** : curseur masqué, aucune piste à l'export, donc aucun mouvement,
+  sans que le sélecteur le dise. Le nouveau sélecteur l'écrit sous la liste.
+- `iso` [−12, −18, −2] et `left` [−8, −16, −1] se ressemblent (tous deux tournés vers la gauche) :
+  inchangés pour ne pas modifier les projets existants, mais les libellés le disent désormais.
 
 ### A.4 Ce qui n'est pas livré ici, et pourquoi
 
@@ -124,9 +139,9 @@ Deux décisions, toutes deux structurelles :
 Le natif porte la preview **et** l'export (`sceneDescription` → `scene.rs`). Le seul autre
 consommateur de l'attitude est `getRotation3D` (`types.ts`), lu par
 `computeRotation3DContainScale` via `zoomRegionUtils` — donc la preview CSS
-(`VirtualPreview.tsx`) ne porte **aucun** tilt aujourd'hui. Rien à faire pour la parité :
-`cameraMotion` est un champ du document, lu par le natif ; le chemin canvas garde l'attitude
-seule et c'est déjà ce qu'il fait.
+(`VirtualPreview.tsx`) ne porte **aucun** tilt aujourd'hui. Pour une caméra mobile,
+`getRotation3D` rend une pose représentative (`camera_pose(0, 0)` = [−3, 0, −5,5]) : le chemin
+canvas n'a pas la piste curseur.
 
 ---
 
@@ -233,7 +248,7 @@ modélisé ; et un pack qui peint son ombre dans son PNG la voit toujours projet
 
 | PR | Titre | Contenu | Dépend de |
 |---|---|---|---|
-| **6** | `feat(zoom): add camera motion presets` | `cameraMotion` (`still`/`sway`/`follow`/`flip`), lois dans `regions.rs`, sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
+| **6** | `feat(zoom): add moving 3D camera presets` | `rotationPreset` étendu (`follow-cursor`/`swing-clicks`/`orbit`), `camera_pose` dans `regions.rs`, un seul sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
 | **7a** | `feat(cursor): give the cursor height and contact` | `cursor.hover`, `tap` au clic, ombre portée, clip de bounds | PR 6 (indépendante en pratique) |
 | **7b** | `feat(cursor): aim the modelled cursor` | rotation du sprite vers le geste / le point cliqué, tracés compatibles | 7a |
 | **8** | `feat(zoom): dolly the camera` | distance de fuite par région, dolly-zoom | PR 6 |

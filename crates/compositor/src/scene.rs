@@ -385,14 +385,10 @@ pub struct SceneZoomRegion {
     /// "manual" | "auto" (suit la télémétrie curseur) | null (= manual).
     #[serde(default)]
     pub focus_mode: Option<String>,
-    /// "iso" | "left" | "right" | null.
+    /// La caméra 3D du zoom : un angle fixe ("iso" | "left" | "right"), une caméra mobile
+    /// ("follow-cursor" | "swing-clicks" | "orbit", cf. `regions::camera_pose`), ou null
+    /// (écran droit). Une valeur inconnue rend l'écran droit.
     pub rotation: Option<String>,
-    /// "still" | "sway" | "follow" | "flip" | null — quel mouvement anime l'attitude
-    /// ci-dessus. `#[serde(default)]` : absent de tout payload écrit avant le réglage,
-    /// et le défaut retenu (`sway`) est le rendu d'avant — une valeur inconnue y retombe
-    /// aussi, donc une scène d'une version plus récente ne casse pas un binaire ancien.
-    #[serde(default)]
-    pub camera_motion: Option<String>,
     /// La région entière tombe sur une portion qu'un trim retire. Ses temps sont donc HORS de
     /// la fenêtre source de `clip_index`, qui n'est là que pour l'adresser (le segment que la
     /// coupe interrompt, cf. `cutAddressingSegmentIndex` côté TS).
