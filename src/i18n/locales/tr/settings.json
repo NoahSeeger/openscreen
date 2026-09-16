@@ -337,27 +337,34 @@
 			"autoDescription": "Kamera kaydedilen imleç konumunu takip eder",
 			"title": "Odak Modu"
 		},
-		"threeD": {
+		"camera": {
+			"title": "3D kamera",
+			"off": "Kapalı",
+			"fixed": "Sabit açı",
+			"moving": "Hareketli kamera",
 			"preset": {
-				"left": "Sol",
-				"right": "Sağ",
-				"iso": "Iso"
+				"iso": "Yukarıdan çapraz",
+				"left": "Ekran sola dönük",
+				"right": "Ekran sağa dönük",
+				"followCursor": "İmleci takip eder",
+				"swingClicks": "Her tıklamaya döner",
+				"orbit": "Yavaş tur"
 			},
-			"none": "Yok",
-			"title": "3D Döndürme"
-		},
-		"cameraMotion": {
-			"title": "Kamera hareketi",
-			"still": "Sabit",
-			"sway": "Salınım",
-			"follow": "İmleci izler",
-			"flip": "Taraf değiştir",
-			"needsRotation": "Önce bir 3B döndürme seç: yalnızca eğik bir ekran hareket edebilir."
+			"description": {
+				"off": "Ekran düz kalır.",
+				"iso": "Tek bir pozda kalır: sola dönük ve yukarıdan görünür.",
+				"left": "Tek bir pozda kalır: ekran sola bakar, sağ kenarı öne çıkar.",
+				"right": "Tek bir pozda kalır: ekran sağa bakar, sol kenarı öne çıkar.",
+				"followCursor": "Kaydın imlecin bulunduğu tarafına, hafif bir gecikmeyle döner.",
+				"swingClicks": "Açısını korur, ardından her tıklamaya doğru döner.",
+				"orbit": "Yakınlaştırma boyunca, imlecin olduğu taraftan başlayarak yavaşça bir yandan diğerine geçer."
+			},
+			"needsCursor": "İmleç gizli: bu kameranın takip edecek bir şeyi yok, önden bakmaya devam eder."
 		},
 		"clickImpact": {
 			"title": "Tıklama etkisi",
 			"description": "Her tıklama eğik ekranı bastırır: tıklanan taraf çöker, sonra geri döner.",
-			"needsRotation": "Önce bir 3D döndürme seçin: yalnızca eğik bir ekran bastırılabilir.",
+			"needsRotation": "Önce bir 3D kamera seçin: yalnızca eğik bir ekran bastırılabilir.",
 			"needsCursor": "İmleç gizli: ekran yalnızca görünen tıklamalara tepki verir."
 		},
 		"level": "Yakınlaştırma Seviyesi",

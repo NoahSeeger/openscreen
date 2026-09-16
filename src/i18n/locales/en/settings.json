@@ -337,27 +337,34 @@
 			"autoDescription": "Camera follows the recorded cursor position",
 			"title": "Focus Mode"
 		},
-		"threeD": {
+		"camera": {
+			"title": "3D camera",
+			"off": "Off",
+			"fixed": "Fixed angle",
+			"moving": "Moving camera",
 			"preset": {
-				"left": "Left",
-				"right": "Right",
-				"iso": "Iso"
+				"iso": "Angled from above",
+				"left": "Screen turned left",
+				"right": "Screen turned right",
+				"followCursor": "Follows the cursor",
+				"swingClicks": "Turns to each click",
+				"orbit": "Slow orbit"
 			},
-			"none": "None",
-			"title": "3D Rotation"
-		},
-		"cameraMotion": {
-			"title": "Camera motion",
-			"still": "Still",
-			"sway": "Sway",
-			"follow": "Follow cursor",
-			"flip": "Switch sides",
-			"needsRotation": "Pick a 3D rotation first: only a tilted screen can move."
+			"description": {
+				"off": "The screen stays flat.",
+				"iso": "Holds one pose: turned left and seen from above.",
+				"left": "Holds one pose: the screen faces left, its right edge comes forward.",
+				"right": "Holds one pose: the screen faces right, its left edge comes forward.",
+				"followCursor": "Turns toward the side of the recording where the cursor is, with a slight delay.",
+				"swingClicks": "Holds its angle, then turns toward each click.",
+				"orbit": "Swings slowly from one side to the other during the zoom, starting on the cursor's side."
+			},
+			"needsCursor": "The cursor is hidden: this camera has nothing to follow and stays facing front."
 		},
 		"clickImpact": {
 			"title": "Click impact",
 			"description": "Each click presses the tilted screen: the clicked side dips, then springs back.",
-			"needsRotation": "Pick a 3D rotation first: only a tilted screen can be pressed.",
+			"needsRotation": "Pick a 3D camera first: only a tilted screen can be pressed.",
 			"needsCursor": "The cursor is hidden: the screen only reacts to clicks you can see."
 		},
 		"level": "Zoom Level",

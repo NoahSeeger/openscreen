@@ -337,27 +337,34 @@
 			"autoDescription": "La cámara sigue la posición del cursor grabado",
 			"title": "Modo de enfoque"
 		},
-		"threeD": {
+		"camera": {
+			"title": "Cámara 3D",
+			"off": "Desactivada",
+			"fixed": "Ángulo fijo",
+			"moving": "Cámara en movimiento",
 			"preset": {
-				"left": "Izquierda",
-				"right": "Derecha",
-				"iso": "Iso"
+				"iso": "Picado en diagonal",
+				"left": "Pantalla girada a la izquierda",
+				"right": "Pantalla girada a la derecha",
+				"followCursor": "Sigue el cursor",
+				"swingClicks": "Gira con cada clic",
+				"orbit": "Órbita lenta"
 			},
-			"none": "Ninguna",
-			"title": "Rotación 3D"
-		},
-		"cameraMotion": {
-			"title": "Movimiento de cámara",
-			"still": "Fijo",
-			"sway": "Balanceo",
-			"follow": "Sigue el cursor",
-			"flip": "Cambio de lado",
-			"needsRotation": "Elige primero una rotación 3D: solo una pantalla inclinada puede moverse."
+			"description": {
+				"off": "La pantalla se queda plana.",
+				"iso": "Mantiene una sola pose: girada a la izquierda y vista desde arriba.",
+				"left": "Mantiene una sola pose: la pantalla mira a la izquierda y su borde derecho avanza.",
+				"right": "Mantiene una sola pose: la pantalla mira a la derecha y su borde izquierdo avanza.",
+				"followCursor": "Gira hacia el lado de la grabación donde está el cursor, con un ligero retraso.",
+				"swingClicks": "Mantiene su ángulo y luego gira hacia cada clic.",
+				"orbit": "Pasa lentamente de un lado a otro durante el zoom, empezando por el lado del cursor."
+			},
+			"needsCursor": "El cursor está oculto: esta cámara no tiene nada que seguir y se queda de frente."
 		},
 		"clickImpact": {
 			"title": "Impacto del clic",
 			"description": "Cada clic presiona la pantalla inclinada: el lado pulsado se hunde y luego vuelve.",
-			"needsRotation": "Elige primero una rotación 3D: solo se puede presionar una pantalla inclinada.",
+			"needsRotation": "Elige primero una cámara 3D: solo se puede presionar una pantalla inclinada.",
 			"needsCursor": "El cursor está oculto: la pantalla solo reacciona a los clics visibles."
 		},
 		"level": "Nivel de zoom",

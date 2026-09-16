@@ -337,27 +337,34 @@
 			"autoDescription": "La caméra suit la position du curseur enregistré",
 			"title": "Mode focus"
 		},
-		"threeD": {
+		"camera": {
+			"title": "Caméra 3D",
+			"off": "Désactivée",
+			"fixed": "Angle fixe",
+			"moving": "Caméra mobile",
 			"preset": {
-				"left": "Gauche",
-				"right": "Droite",
-				"iso": "Iso"
+				"iso": "Plongée de biais",
+				"left": "Écran tourné à gauche",
+				"right": "Écran tourné à droite",
+				"followCursor": "Suit le curseur",
+				"swingClicks": "Pivote à chaque clic",
+				"orbit": "Orbite lente"
 			},
-			"none": "Aucune",
-			"title": "Rotation 3D"
-		},
-		"cameraMotion": {
-			"title": "Mouvement de caméra",
-			"still": "Immobile",
-			"sway": "Balancement",
-			"follow": "Suit le curseur",
-			"flip": "Bascule",
-			"needsRotation": "Choisis d'abord une rotation 3D : seul un écran incliné peut bouger."
+			"description": {
+				"off": "L'écran reste à plat.",
+				"iso": "Garde une seule pose : tourné vers la gauche et vu d'en haut.",
+				"left": "Garde une seule pose : l'écran regarde vers la gauche, son bord droit avance.",
+				"right": "Garde une seule pose : l'écran regarde vers la droite, son bord gauche avance.",
+				"followCursor": "Se tourne vers le côté de l'enregistrement où se trouve le curseur, avec un léger retard.",
+				"swingClicks": "Garde son angle, puis pivote vers chaque clic.",
+				"orbit": "Passe lentement d'un côté à l'autre pendant le zoom, en partant du côté du curseur."
+			},
+			"needsCursor": "Le curseur est masqué : cette caméra n'a rien à suivre et reste de face."
 		},
 		"clickImpact": {
 			"title": "Impact du clic",
 			"description": "Chaque clic enfonce l'écran incliné : le côté cliqué s'abaisse, puis revient.",
-			"needsRotation": "Choisissez d'abord une rotation 3D : seul un écran incliné peut être enfoncé.",
+			"needsRotation": "Choisissez d'abord une caméra 3D : seul un écran incliné peut être enfoncé.",
 			"needsCursor": "Le curseur est masqué : l'écran ne réagit qu'aux clics visibles."
 		},
 		"level": "Niveau de zoom",

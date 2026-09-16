@@ -337,27 +337,34 @@
 			"autoDescription": "Máy ảnh đi theo vị trí con trỏ đã ghi",
 			"title": "Chế độ lấy nét"
 		},
-		"threeD": {
+		"camera": {
+			"title": "Camera 3D",
+			"off": "Tắt",
+			"fixed": "Góc cố định",
+			"moving": "Camera chuyển động",
 			"preset": {
-				"left": "Trái",
-				"right": "Phải",
-				"iso": "Đẳng phối"
+				"iso": "Chéo từ trên xuống",
+				"left": "Màn hình xoay sang trái",
+				"right": "Màn hình xoay sang phải",
+				"followCursor": "Theo con trỏ",
+				"swingClicks": "Xoay theo từng cú nhấp",
+				"orbit": "Quay quanh chậm"
 			},
-			"none": "Không",
-			"title": "Xoay 3D"
-		},
-		"cameraMotion": {
-			"title": "Chuyển động camera",
-			"still": "Đứng yên",
-			"sway": "Đung đưa",
-			"follow": "Bám theo con trỏ",
-			"flip": "Đổi bên",
-			"needsRotation": "Hãy chọn phép quay 3D trước: chỉ màn hình nghiêng mới chuyển động được."
+			"description": {
+				"off": "Màn hình giữ phẳng.",
+				"iso": "Giữ một tư thế: xoay sang trái và nhìn từ trên xuống.",
+				"left": "Giữ một tư thế: màn hình hướng sang trái, cạnh phải nhô về phía trước.",
+				"right": "Giữ một tư thế: màn hình hướng sang phải, cạnh trái nhô về phía trước.",
+				"followCursor": "Xoay về phía bên của bản ghi có con trỏ, hơi trễ một chút.",
+				"swingClicks": "Giữ nguyên góc, rồi xoay về phía từng cú nhấp.",
+				"orbit": "Chậm rãi chuyển từ bên này sang bên kia trong lúc thu phóng, bắt đầu từ phía con trỏ."
+			},
+			"needsCursor": "Con trỏ đang ẩn: camera này không có gì để theo và giữ hướng nhìn thẳng."
 		},
 		"clickImpact": {
 			"title": "Hiệu ứng nhấp",
 			"description": "Mỗi lần nhấp sẽ ấn màn hình nghiêng: phía được nhấp lún xuống rồi bật lại.",
-			"needsRotation": "Hãy chọn xoay 3D trước: chỉ màn hình nghiêng mới ấn được.",
+			"needsRotation": "Hãy chọn camera 3D trước: chỉ màn hình nghiêng mới ấn được.",
 			"needsCursor": "Con trỏ đang ẩn: màn hình chỉ phản ứng với các lần nhấp nhìn thấy được."
 		},
 		"level": "Mức độ thu phóng",

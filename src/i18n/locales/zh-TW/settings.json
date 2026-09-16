@@ -337,27 +337,34 @@
 			"autoDescription": "攝影機跟隨錄製時的游標位置",
 			"title": "對焦模式"
 		},
-		"threeD": {
+		"camera": {
+			"title": "3D 鏡頭",
+			"off": "關閉",
+			"fixed": "固定角度",
+			"moving": "運動鏡頭",
 			"preset": {
-				"left": "左",
-				"right": "右",
-				"iso": "Iso"
+				"iso": "斜上方俯視",
+				"left": "畫面向左轉",
+				"right": "畫面向右轉",
+				"followCursor": "跟隨游標",
+				"swingClicks": "每次點擊時轉向",
+				"orbit": "緩慢環繞"
 			},
-			"none": "無",
-			"title": "3D 旋轉"
-		},
-		"cameraMotion": {
-			"title": "鏡頭運動",
-			"still": "靜止",
-			"sway": "擺動",
-			"follow": "跟隨游標",
-			"flip": "切換方向",
-			"needsRotation": "請先選擇 3D 旋轉：只有傾斜的畫面才會移動。"
+			"description": {
+				"off": "畫面保持平整。",
+				"iso": "保持單一姿態：向左轉，並從上方俯視。",
+				"left": "保持單一姿態：畫面朝向左側，右邊緣向前。",
+				"right": "保持單一姿態：畫面朝向右側，左邊緣向前。",
+				"followCursor": "稍有延遲地轉向錄製畫面中游標所在的一側。",
+				"swingClicks": "保持角度，每次點擊時轉向點擊位置。",
+				"orbit": "在縮放期間，從游標所在一側緩慢轉到另一側。"
+			},
+			"needsCursor": "游標已隱藏：此鏡頭沒有可跟隨的對象，將保持正面。"
 		},
 		"clickImpact": {
 			"title": "點擊按壓",
 			"description": "每次點擊都會按壓傾斜的畫面：被點擊的一側下沉，然後彈回。",
-			"needsRotation": "請先選擇 3D 旋轉：只有傾斜的畫面才能被按壓。",
+			"needsRotation": "請先選擇 3D 鏡頭：只有傾斜的畫面才能被按壓。",
 			"needsCursor": "游標已隱藏：畫面只對看得見的點擊做出反應。"
 		},
 		"level": "縮放級別",

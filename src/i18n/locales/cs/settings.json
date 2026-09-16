@@ -337,27 +337,34 @@
 			"autoDescription": "Kamera sleduje zaznamenanou pozici kurzoru",
 			"title": "Režim zaostření"
 		},
-		"threeD": {
+		"camera": {
+			"title": "3D kamera",
+			"off": "Vypnuto",
+			"fixed": "Pevný úhel",
+			"moving": "Pohyblivá kamera",
 			"preset": {
-				"left": "Vlevo",
-				"right": "Vpravo",
-				"iso": "Iso"
+				"iso": "Šikmo shora",
+				"left": "Obrazovka natočená doleva",
+				"right": "Obrazovka natočená doprava",
+				"followCursor": "Sleduje kurzor",
+				"swingClicks": "Natočí se ke každému kliknutí",
+				"orbit": "Pomalý oblet"
 			},
-			"none": "Žádné",
-			"title": "3D rotace"
-		},
-		"cameraMotion": {
-			"title": "Pohyb kamery",
-			"still": "Nehybné",
-			"sway": "Houpání",
-			"follow": "Sleduje kurzor",
-			"flip": "Přepnutí strany",
-			"needsRotation": "Nejprve zvolte 3D otočení: pohybovat se může jen nakloněná obrazovka."
+			"description": {
+				"off": "Obrazovka zůstane rovná.",
+				"iso": "Drží jednu pózu: natočená doleva a viděná shora.",
+				"left": "Drží jednu pózu: obrazovka hledí doleva, její pravý okraj vystupuje dopředu.",
+				"right": "Drží jednu pózu: obrazovka hledí doprava, její levý okraj vystupuje dopředu.",
+				"followCursor": "Natáčí se ke straně záznamu, kde je kurzor, s mírným zpožděním.",
+				"swingClicks": "Drží svůj úhel a pak se natočí ke každému kliknutí.",
+				"orbit": "Během zoomu se pomalu přesune z jedné strany na druhou, začíná na straně kurzoru."
+			},
+			"needsCursor": "Kurzor je skrytý: tato kamera nemá co sledovat a zůstane v čelním pohledu."
 		},
 		"clickImpact": {
 			"title": "Odezva kliknutí",
 			"description": "Každé kliknutí zatlačí nakloněnou obrazovku: kliknutá strana se prohne a vrátí zpět.",
-			"needsRotation": "Nejprve zvolte 3D rotaci: zatlačit lze jen nakloněnou obrazovku.",
+			"needsRotation": "Nejprve zvolte 3D kameru: zatlačit lze jen nakloněnou obrazovku.",
 			"needsCursor": "Kurzor je skrytý: obrazovka reaguje jen na viditelná kliknutí."
 		},
 		"level": "Úroveň přiblížení",
