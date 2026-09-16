@@ -35,7 +35,6 @@ export const DEFAULT_EDITOR_APPEARANCE_SETTINGS: {
 	shadowIntensity: number;
 	showBlur: boolean;
 	motionBlurAmount: number;
-	depthOfField: boolean;
 	borderRadius: number;
 } = {
 	// Keep in sync with `DEFAULT_EDITOR_SETTINGS` (lib/ai-edition/store/editorSettings.ts),
@@ -43,7 +42,6 @@ export const DEFAULT_EDITOR_APPEARANCE_SETTINGS: {
 	shadowIntensity: 0.2,
 	showBlur: false,
 	motionBlurAmount: 0.2,
-	depthOfField: true,
 	borderRadius: 40,
 };
 
