@@ -4,8 +4,8 @@ Suite de `spec-3d.md` (PR 1 → 5b, toutes ouvertes). Deux demandes :
 
 1. **plusieurs mouvements de caméra**, dont un où l'orientation suit la **position** du curseur ;
 2. un **curseur modélisé** en vraie 3D — hauteur au-dessus du plan, ombre portée, contact au
-   clic, orientation vers le point cliqué — en commençant par **deux** tracés compatibles
-   (le curseur classique d'abord).
+   clic, orientation vers le point cliqué — en commençant par le curseur classique (la flèche
+   du thème par défaut).
 
 Ce document tranche les décisions que la v1 laissait ouvertes et découpe les PR.
 
@@ -132,100 +132,97 @@ seule et c'est déjà ce qu'il fait.
 
 ## B. Le curseur modélisé
 
-### B.1 Ce qui existe
+### B.1 Ce qui a été retiré
 
-`CursorVolume` (PR 2) : le sprite est **extrudé** le long de la normale du plan (copies de la
-silhouette dans `mb`, mode 13) et une ombre de **contact** (mode 12) est posée sous la pointe.
-Réglage `cursor.volume`, 0 par défaut.
+Deux essais précédents ne modélisaient rien, et ont été retirés sans compatibilité (ils n'ont
+jamais atteint `main`) :
 
-Le curseur est donc **posé sur le plan**, à plat dans le plan, et son ombre touche sa pointe.
-Ce n'est pas un objet 3D : c'est une carte découpée avec de l'épaisseur.
+- `cursor.volume` (« 3D Depth ») empilait des copies du sprite 2D le long de la normale du plan ;
+- `cursor.hover` (« Float Height ») décalait le sprite et posait une tache (mode 12) dessous.
 
-### B.2 Ce que « modélisé » veut dire
+Une carte découpée avec de l'épaisseur n'est pas un objet : pas de face éclairée, pas d'ombre
+de sa forme, pas de contact. Un préréglage qui porte encore ces clés se lit toujours (les clés
+inconnues sont ignorées).
 
-Trois degrés de liberté de plus, **sans nouveau mode de shader** :
+### B.2 Le réglage
 
-1. **La hauteur.** Le curseur flotte au-dessus du plan de `h` (fraction de la taille du sprite,
-   `cursor.hover`, 0 par défaut). Le sprite se déplace de `n_xy · h · unité`, où `n_xy` est la
-   normale projetée **déjà calculée** (`cursor_extrusion_px`) ; l'ombre, elle, reste **sur le
-   plan**, à la verticale de la pointe. `h = 0` rend exactement le rendu d'aujourd'hui à
-   l'octet — même contrat que le volume.
-2. **Le contact.** Au clic, `h → 0` avec la courbe `tap()` de v1 (creux à 49,5 ms, retour nul à
-   260 ms, même instant de contact que `bounce()`), puis remontée. Le curseur **touche**
-   réellement le plan au lieu de le presser par une mise à l'échelle. L'ombre se resserre
-   (rayon et flou ∝ `h`) : c'est elle qui vend le contact.
-3. **L'orientation.** Le sprite est tourné (lacet/tangage autour de sa pointe) vers le point
-   visé — au repos vers la direction du **mouvement** (le curseur s'incline dans son geste,
-   comme un objet qu'on traîne), au clic vers le **point cliqué**. C'est un quad de quatre
-   coins calculés en CPU sur le plan du sprite, projetés par la même perspective que l'écran :
-   le mode 13 avale déjà quatre coins quelconques, aucun shader ne change.
+**Un seul interrupteur**, `cursor.model3d` (« 3D cursor », **éteint par défaut**) : il remplace la
+flèche du thème par défaut par un modèle 3D. Tout autre état (`text`, `pointer`…) et tout autre
+thème gardent leur sprite plat ; l'indice du panneau le dit (« Classic arrow only »). Curseur
+masqué, l'interrupteur est grisé et son info-bulle dit pourquoi. Éteint, la frame est celle
+d'avant **à l'octet** (vérifié à plat et incliné contre le commit de base).
 
-L'ombre devient une vraie ombre **portée** : elle se déplace en sens inverse du décalage du
-sprite (elle reste au sol), grossit et se floute avec `h`, et se confond avec la contact shadow
-actuelle à `h = 0`.
+Tuyauterie : `CursorVisualSettings.model3d`, clé legacy `cursorModel3d`, préréglages (absent →
+éteint), `SceneCursor.model3d` (`serde(default)`), `LiveParams.cursor_model3d`, paramètre live
+`cursorModel3d`.
 
-### B.3 Les tracés compatibles (2 pour commencer)
+### B.3 Le modèle (mode 15)
 
-Un pack = 16 tracés PNG (17 packs). Le traitement 3D suppose une silhouette **pleine et
-convexe à la pointe** : les tracés troués, en trait fin ou pixelisés (la moitié du catalogue,
-qui est décoratif) donneraient une extrusion en escalier et une ombre méconnaissable.
+Un seul mode de shader, identique en HLSL, MSL et WGSL (`cursor_model`), lancé de rayons par
+pixel dans la boîte de dessin :
 
-- **Livrés** : `arrow` (le curseur classique, priorité de la demande) et `pointer` (la main) —
-  les deux seuls tracés présents dans **tous** les packs et les seuls qu'une démo utilise
-  vraiment.
-- **Repli** : tout autre tracé garde le volume v1 (extrusion + contact) et ignore hauteur,
-  orientation et ombre portée. Un tracé inconnu n'est jamais un état d'erreur.
+- **Forme** : le contour de `cursors/default/arrow.png` en polygone de 10 sommets gonflé d'un
+  arrondi (`ARROW_CORE`, `ARROW_ROUND`), ajusté sur l'alpha du PNG (1,1 % d'écart moyen de
+  couverture). Unité = hauteur de la flèche (= `size_px`), origine au hotspot de la face du
+  dessus. Extrudé de 0,19 unité, chanfrein arrondi de 0,045. Normales par gradient du champ.
+- **Matières** : celles du PNG. Incrustation noire sur la face du dessus, filet blanc de
+  0,058 unité autour, chanfrein et flancs blancs. Lumière fixée à la **caméra** (haut-gauche,
+  devant), ambiante 0,36, diffuse 0,75, reflet sur les arrondis seulement : une face plane
+  s'allumerait d'un bloc et le noir virerait au gris à chaque clic.
+- **Ombre** : un rayon qui rate la flèche tombe sur le plan de l'écran. De là, marche vers la
+  lumière (pénombre `k·d/t`, k = 6, bornée à 0,45 unité) et ombre de contact (0,12 unité autour
+  du modèle). Opacité 0,5 chacune, et seulement à l'intérieur de l'écran.
+- **Silhouette antialiasée** sur un pixel ; sortie prémultipliée, ombre noire.
 
-Le pack (le thème) reste orthogonal : ces deux tracés existent dans les 17 packs.
+### B.4 La caméra et l'ancrage
 
-### B.4 Pièges
+La caméra est reconstruite par pixel exactement comme `regions.rs` projette le plan : rotation
+dessinée (`TiltedQuad::rot`, base + dynamique), Z puis Y puis X, perspective `P/(P − z)` avec
+`P = min(w, h) × 1,6`, échelle de containment. Un écran droit prend un plan identité : même
+caméra, même mode.
 
-- **Ombre déjà peinte** : certains packs peignent leur ombre dans le PNG (v1 le documente pour
-  l'extrusion) ; ici elle serait **projetée deux fois**, et à des endroits différents. À dire
-  dans l'UI plutôt qu'à bloquer : la hauteur part de 0.
-- **Le hotspot n'est pas la pointe** : le décalage de hauteur et la rotation se font autour de
-  la pointe (`hotspot` du manifest), pas du centre du sprite — sinon le curseur « patine » sur
-  sa propre image quand il tourne.
-- **La traînée** : elle dessine N copies du sprite. L'ombre se dessine **une fois**, comme le
-  fait déjà le volume (le code actuel le fait pour la contact shadow — garder ce chemin).
-- **Repli math (Windows, mode 4)** : pas de sprite, donc pas de modèle — il reste droit, comme
-  le volume aujourd'hui.
-- **Coût** : la hauteur déplace le sprite, donc `cursor_bounds` (clip « Clip to canvas ») doit
-  l'inclure, sinon un curseur qui flotte près du bord est coupé.
+Deux décisions :
 
-### B.5 Ce que la PR 7a a livré, et les trois écarts
+1. **Le hotspot est sur le rayon de vue** du point de contenu visé, à sa hauteur. La pointe ne
+   glisse donc jamais à l'écran quand la flèche monte ou descend : seule l'ombre dit la hauteur.
+2. **Ancrage** : la vidéo est dessinée par un warp **bilinéaire** des coins projetés, qui
+   s'écarte de la perspective exacte de quelques pixels. Tout le rendu est décalé de
+   `point_px(plane_pt) − projection exacte`, pour que la pointe tombe sur le pixel que
+   l'écran montre.
 
-Livré : `cursor.hover` (0..1, **0 par défaut** → le rendu d'avant, au bit près), la porte de
-contact au clic, l'ombre portée et l'élargissement du clip « Clip to canvas ». Trois décisions
-ont été prises en codant, et s'écartent de l'esquisse ci-dessus :
+### B.5 La pose (fonction pure de `t`)
 
-1. **La montée réutilise l'extrusion, inversée.** `e` est la normale *arrière* projetée — les
-   flancs dépassent de ce côté-là — donc la hauteur, qui vient vers le spectateur, vaut `−ê`,
-   à la longueur `0,75 × taille du sprite × échelle du plan` (`CURSOR_HOVER_LIFT_FRAC`). À
-   plat, le repli bas-droite du volume fait donc monter le sprite vers le **haut-gauche** :
-   l'ombre descend, le curseur s'élève, c'est le rendu d'un objet posé. L'ombre, elle, ne bouge
-   pas d'un pixel : elle reste au pied de l'extrusion, c'est-à-dire au point que le curseur
-   touche quand `h` s'annule — la même position que la contact shadow de v1, donc `hover = 0`
-   reste identique au volume seul.
-2. **La porte du contact est `1 + tap()`** — la courbe de `regions.rs`, déjà partagée avec
-   l'impact du clic — et non un aller-retour symétrique : la hauteur s'annule à 49,5 ms puis
-   **dépasse de 27 %** avant de retomber à 0 à 260 ms. Le dépassement est voulu (c'est le
-   rebond d'un objet qu'on relâche) et il retombe à la fin de la fenêtre de `bounce` : sprite
-   écrasé, plan basculé et pose du curseur lisent la même image. La condition d'activation lit
-   le RÉGLAGE et non la hauteur instantanée — au creux celle-ci vaut 0, et rebasculer sur le
-   chemin plat cette frame-là ferait disparaître l'ombre pile à l'instant où elle vend le
-   contact.
-3. **`taps = 1` quand il n'y a pas d'extrusion** : la hauteur seule n'a rien à extruder, et
-   `mb.z ≤ 1` fait prendre au mode 13 sa branche plate, qui échantillonne déjà quatre coins
-   quelconques. Deux copies identiques, elles, n'auraient fait qu'assombrir les bords
-   antialiasés du sprite.
+`cursor_pose` :
 
-La hauteur est **agnostique du tracé** : elle ne suppose qu'un sprite et un `hotspot`, donc elle
-vaut pour les 17 packs. C'est la rotation (7b) qui, elle, demandera une silhouette pleine et
-convexe à la pointe.
+- **Hauteur** : 0,35 unité de garde au repos. Chaque clic la pose **au contact** avec la courbe
+  `tap()`, celle de l'impact du clic, dont le creux (49,5 ms) est celui de la pression de
+  `bounce()`. Gain 1,25 : posée de 27 à 74 ms, donc au moins une image au contact jusqu'à
+  21 i/s. Le point le plus bas du modèle affleure le plan (moins de 2 % d'unité, testé).
+- **Tangage** : queue relevée, pointe vers le bas, 18° au repos, jusqu'à +10° au creux de la
+  pression, fois `clickBounce / 2,5`.
+- **Lacet** : vers la vitesse horizontale lissée (`follow_at`, différence centrée sur ±100 ms),
+  et vers la cible d'un clic dans les 300 ms qui le précèdent. Borné en douceur à ±25°
+  (`tanh`), nul au repos, continu en `t`.
+- **Pas de rebond d'échelle** en 3D : le contact le remplace.
 
-Reste ouvert : l'ombre s'étale linéairement (`1 + 1,6·h`) et se dilue, il n'y a pas de projecteur
-modélisé ; et un pack qui peint son ombre dans son PNG la voit toujours projetée deux fois.
+### B.6 Boîte, traînée, coût
+
+- **Boîte de dessin** : les huit coins de la boîte du modèle, et leur projection au sol le long
+  de la lumière, élargie de la pénombre (`min(t/k, 0,45) / lz`) et du contact. Un miroir CPU du
+  shader vérifie qu'aucun pixel d'ombre n'en sort.
+- **Traînée** : des copies du modèle sur GPU. Mesuré en 1080p sur RTX 4070 Ti : flèche nette
+  dans le bruit (moins de 0,2 ms), taille 10 avec 16 copies +0,6 à +0,9 ms/frame. Sur WARP la
+  même traînée coûte +68 à +98 ms : le backend logiciel ne dessine que la tête
+  (`CursorPlan::for_backend`).
+- **`LayerCB`** reste à 128 octets ; l'emploi des emplacements au mode 15 est documenté en tête
+  de la section « Curseur modélisé » de `frame_geometry.rs` et dans les trois structs de shader.
+
+### B.7 Limites
+
+- Seule la flèche du thème par défaut a un modèle.
+- Le repli math de Windows (mode 4, sans sprite) reste plat.
+- L'ombre s'arrête au bord du rect de l'écran, pas à ses coins arrondis.
+- Le MSL n'est compilé et exécuté que par la CI macOS.
 
 ---
 
@@ -234,19 +231,16 @@ modélisé ; et un pack qui peint son ombre dans son PNG la voit toujours projet
 | PR | Titre | Contenu | Dépend de |
 |---|---|---|---|
 | **6** | `feat(zoom): add camera motion presets` | `cameraMotion` (`still`/`sway`/`follow`/`flip`), lois dans `regions.rs`, sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
-| **7a** | `feat(cursor): give the cursor height and contact` | `cursor.hover`, `tap` au clic, ombre portée, clip de bounds | PR 6 (indépendante en pratique) |
-| **7b** | `feat(cursor): aim the modelled cursor` | rotation du sprite vers le geste / le point cliqué, tracés compatibles | 7a |
+| **7** | `feat(cursor): model the default arrow in 3D` | `cursor.model3d`, mode 15, pose, ombre, retrait de `volume`/`hover` | PR 6 |
 | **8** | `feat(zoom): dolly the camera` | distance de fuite par région, dolly-zoom | PR 6 |
-| **9** | `feat(cursor): the cursor picks things up` *(plus tard)* | long press : le plan reste pressé pendant un glisser (v1 §PR 2b « Later ») | 7a |
+| **9** | `feat(cursor): the cursor picks things up` *(plus tard)* | long press : le plan reste pressé pendant un glisser (v1 §PR 2b « Later ») | 7 |
 
 La PR 6 est CPU seulement : 0 shader, aucune nouvelle constante de buffer. Elle touche la
 géométrie partagée par les trois backends, donc elle est testable sans GPU — c'est la
 première raison de son ordre.
 
-La PR 7a l'est aussi, et pour la même raison : elle ne change **aucun** shader (le mode 12
-dessine déjà un quad quelconque en ombre, le mode 13 accepte déjà quatre coins quelconques), et
-elle non plus ne peut pas échouer en silence — les cinq tests unitaires Rust couvrent le sens de
-la montée, le creux du contact, le clip et les copies, et le rendu Linux garde l'or de la v1.
+La PR 7 ajoute un mode de shader, donc elle se vérifie sur les trois backends : tests unitaires
+Rust de la pose, du contact, de l'ancrage et de la boîte ; rendus D3D11 sur une frame NV12
+synthétique ; le même test de rendu dans les modules Linux (lavapipe) et macOS (CI).
 
-**État** : PR 6 et 7a écrites et testées (branche du chantier 3D, non committées). 7b, 8 et 9
-restent à faire.
+**État** : PR 6 et 7 écrites et testées. 8 et 9 restent à faire.
