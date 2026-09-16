@@ -399,10 +399,9 @@
 	"cursor": {
 		"smoothing": "Smussatura",
 		"clickBounce": "Rimbalzo clic",
-		"depth": "Profondità 3D",
-		"depthNeedsCursor": "Attiva «Mostra cursore» per dargli profondità.",
-		"hover": "Altezza flottante",
-		"hoverNeedsCursor": "Attiva «Mostra cursore» per staccarlo dallo schermo.",
+		"model3d": "Cursore 3D",
+		"model3dHint": "Solo la freccia classica: le altre forme del cursore restano piatte.",
+		"model3dNeedsCursor": "Attiva «Mostra cursore» per usare il cursore 3D.",
 		"help": "Resa del cursore dalla telemetria registrata: tema, dimensione, smussatura, sfocatura di movimento e rimbalzo al clic.",
 		"clipToBoundsDescription": "Mantiene il cursore all'interno del fotogramma video. Disattiva per lasciare che il cursore superi i bordi — utile quando si esegue zoom o panoramica.",
 		"size": "Dimensione",

@@ -794,11 +794,19 @@ fn project_corner(x0: f32, y0: f32, rot: [f32; 3], perspective: f32) -> Option<(
 /// X/Y/Z), AVANT perspective. `z > 0` = vers la caméra (la perspective divise par
 /// `perspective - z`, donc agrandit), < 0 recule.
 fn rotate_corner(x0: f32, y0: f32, rot: [f32; 3]) -> (f32, f32, f32) {
+    let [px, py, pz] = rotate_point([x0, y0, 0.0], rot);
+    (px, py, pz)
+}
+
+/// `rotate_corner` pour un point QUELCONQUE du repère du plan (x droite, y bas, z vers la
+/// caméra) : Z, puis Y, puis X, en degrés. Le curseur modélisé (mode 15) a besoin de points
+/// hors du plan, et doit tourner exactement comme lui.
+pub(crate) fn rotate_point(p: [f32; 3], rot: [f32; 3]) -> [f32; 3] {
     let (a, b, g) = (rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
     let (ca, sa) = (a.cos(), a.sin());
     let (cb, sb) = (b.cos(), b.sin());
     let (cg, sg) = (g.cos(), g.sin());
-    let (mut px, mut py, mut pz) = (x0, y0, 0.0f32);
+    let [mut px, mut py, mut pz] = p;
     // rotateZ
     let (zx, zy) = (px * cg - py * sg, px * sg + py * cg);
     px = zx;
@@ -811,7 +819,27 @@ fn rotate_corner(x0: f32, y0: f32, rot: [f32; 3]) -> (f32, f32, f32) {
     let (xy, xz) = (py * ca - pz * sa, py * sa + pz * ca);
     py = xy;
     pz = xz;
-    (px, py, pz)
+    [px, py, pz]
+}
+
+/// L'inverse de `rotate_point` : du repère caméra vers celui du plan (X, puis Y, puis Z, chacun
+/// transposé). Une rotation est orthonormée, sa transposée est son inverse.
+pub(crate) fn rotate_point_inv(p: [f32; 3], rot: [f32; 3]) -> [f32; 3] {
+    let (a, b, g) = (rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+    let (ca, sa) = (a.cos(), a.sin());
+    let (cb, sb) = (b.cos(), b.sin());
+    let (cg, sg) = (g.cos(), g.sin());
+    let [mut px, mut py, mut pz] = p;
+    let (xy, xz) = (py * ca + pz * sa, -py * sa + pz * ca);
+    py = xy;
+    pz = xz;
+    let (yx, yz) = (px * cb - pz * sb, px * sb + pz * cb);
+    px = yx;
+    pz = yz;
+    let (zx, zy) = (px * cg + py * sg, -px * sg + py * cg);
+    px = zx;
+    py = zy;
+    [px, py, pz]
 }
 
 /// `(Kx, Ky)` tels que le `pz` de `rotate_corner(x0, y0, rot)` vaille `Kx·x0 + Ky·y0`.
@@ -833,7 +861,7 @@ fn depth_coefficients(rot: [f32; 3]) -> (f32, f32) {
 /// est grand, plus la caméra est loin et plus la convergence des arêtes s'aplatit. À 2.6 elle
 /// était si faible que l'inclinaison ne se lisait plus (le bord haut d'iso ressortait à 0.08° de
 /// l'horizontale).
-const PERSPECTIVE_FACTOR: f32 = 1.6;
+pub(crate) const PERSPECTIVE_FACTOR: f32 = 1.6;
 
 /// Profondeur de champ du mode 8 : cercle de confusion, en texels SOURCE, par unité d'écart de
 /// profondeur rapporté à la distance de fuite (`|z − z_focus| / P`).
@@ -881,6 +909,10 @@ pub struct TiltedQuad {
     /// position en px dans le repère du plan, centre à l'origine, AVANT projection. Positive =
     /// vers la caméra. Nulle quand le quad est rendu à plat.
     pub depth_k: (f32, f32),
+    /// La rotation RÉELLEMENT dessinée (base + dynamique, ou la base seule quand la pose
+    /// complète passerait derrière le plan de fuite), en degrés X/Y/Z. Le curseur modélisé
+    /// reconstruit la caméra avec : un angle voisin le décollerait du contenu.
+    pub rot: [f32; 3],
 }
 
 /// Les 4 coins (TL, TR, BR, BL) du quad tilté en 3D, en px relatifs au CENTRE du rect d'origine
@@ -926,6 +958,7 @@ pub fn tilted_quad(
             corners: [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)],
             scale: 1.0,
             depth_k: (0.0, 0.0),
+            rot: [0.0; 3],
         };
     };
     if moving > 0.0 {
@@ -947,7 +980,7 @@ pub fn tilted_quad(
             drawn = full;
         }
     }
-    TiltedQuad { corners, scale, depth_k: depth_coefficients(drawn) }
+    TiltedQuad { corners, scale, depth_k: depth_coefficients(drawn), rot: drawn }
 }
 
 /// La plus petite échelle de containment de l'enveloppe des caméras mobiles au poids `w` :

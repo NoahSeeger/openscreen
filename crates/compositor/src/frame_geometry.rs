@@ -502,7 +502,7 @@ impl CursorPlacement {
     /// droit à travers la perspective.
     ///
     /// Le plan lui-même est interpolé aussi. Sous un vrai tilt les deux bornes partagent le même
-    /// quad (`a + (a - a) * f` rend `a` au bit près, rien ne bouge) ; mais un curseur en volume
+    /// quad (`a + (a - a) * f` rend `a` au bit près, rien ne bouge) ; mais la flèche modélisée
     /// sur écran droit porte un quad identité taillé dans `s_dst` d'un côté et `s_dst_prev` de
     /// l'autre, et garder celui de la queue décalerait la tête quand le zoom bouge.
     pub(crate) fn lerp(self, other: CursorPlacement, f: f32) -> CursorPlacement {
@@ -530,6 +530,7 @@ impl CursorPlacement {
                         lerp(quad.depth_k.0, quad_b.depth_k.0, f),
                         lerp(quad.depth_k.1, quad_b.depth_k.1, f),
                     ),
+                    rot: std::array::from_fn(|i| lerp(quad.rot[i], quad_b.rot[i], f)),
                 },
                 center_px: [lerp(center_px[0], center_b[0], f), lerp(center_px[1], center_b[1], f)],
                 screen_px: [lerp(screen_px[0], screen_b[0], f), lerp(screen_px[1], screen_b[1], f)],
@@ -558,11 +559,9 @@ impl CursorPlacement {
 }
 
 /// `LayerCB` du sprite de curseur, pour les trois backends : mode 7 sur écran droit, mode 13
-/// posé sur le plan (incliné, ou identité quand le curseur a du volume).
+/// posé sur le plan incliné.
 ///
-/// `sprite_px` = taille du sprite en px de sortie (ratio de l'image déjà appliqué). `volume`
-/// ajoute l'extrusion : la bbox s'étend jusqu'aux faces arrière et `mb` porte `e` et le nombre
-/// de copies. Sans volume, `mb` reste à zéro et le shader prend le chemin plat d'avant.
+/// `sprite_px` = taille du sprite en px de sortie (ratio de l'image déjà appliqué).
 pub fn cursor_sprite_cb(
     placement: CursorPlacement,
     sprite_px: [f32; 2],
@@ -570,12 +569,10 @@ pub fn cursor_sprite_cb(
     alpha: f32,
     clip: [f32; 4],
     render_px: [f32; 2],
-    volume: Option<&CursorVolume>,
 ) -> LayerCB {
     let [pw, ph] = sprite_px;
     let [rw, rh] = render_px;
     match placement {
-        // Pas de volume ici : `plan_cursor` rend un placement `Tilted` dès qu'il y en a.
         CursorPlacement::Upright { center } => LayerCB {
             dst: cursor_sprite_dst(center, pw / rw, ph / rh, hotspot),
             src: [0.0, 0.0, 1.0, 1.0],
@@ -592,33 +589,17 @@ pub fn cursor_sprite_cb(
             let (wf, hf) = (pw / screen_px[0], ph / screen_px[1]);
             let x0 = plane_pt[0] - hotspot[0] * wf;
             let y0 = plane_pt[1] - hotspot[1] * hf;
-            // La HAUTEUR ne déplace que le sprite : l'ombre (`CursorVolume::shadow`) est calculée
-            // sur `plane_pt` sans ce décalage, donc elle reste au sol. Le décalage est appliqué
-            // ici, avant la bbox, pour qu'elle grandisse avec lui — sinon un curseur qui flotte
-            // verrait sa propre silhouette coupée au bord de son clip.
-            let [ox, oy] = volume.map(|v| v.lift_px).unwrap_or([0.0; 2]);
             let corners =
                 [(x0, y0), (x0 + wf, y0), (x0 + wf, y0 + hf), (x0, y0 + hf)].map(|(fx, fy)| {
                     let (px, py) = quad.point_px(fx, fy);
-                    (center_px[0] + px + ox, center_px[1] + py + oy)
+                    (center_px[0] + px, center_px[1] + py)
                 });
-            let (mut min_x, mut max_x) = corners
+            let (min_x, max_x) = corners
                 .iter()
                 .fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
-            let (mut min_y, mut max_y) = corners
+            let (min_y, max_y) = corners
                 .iter()
                 .fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| (mn.min(y), mx.max(y)));
-            // Les faces arrière sont la même silhouette décalée de `e` : la bbox doit les
-            // contenir aussi, sinon l'extrusion se coupe net au bord du sprite.
-            let mb = match volume {
-                Some(v) => {
-                    let [ex, ey] = v.extrude_px;
-                    (min_x, max_x) = (min_x.min(min_x + ex), max_x.max(max_x + ex));
-                    (min_y, max_y) = (min_y.min(min_y + ey), max_y.max(max_y + ey));
-                    [ex, ey, v.taps as f32, 0.0]
-                }
-                None => [0.0; 4],
-            };
             // Le quad projeté d'un sprite peut être très fin de biais : une bbox d'un pixel
             // de large ferait diverger le warp inverse, donc plancher à 1 px.
             let (bw, bh) = ((max_x - min_x).max(1.0), (max_y - min_y).max(1.0));
@@ -636,7 +617,6 @@ pub fn cursor_sprite_cb(
                 src_prev: [br0, br1, bl0, bl1],
                 // Le clip vit ici et NON dans `fx` (mode 7) : `fx` porte les coins.
                 dst_prev: clip,
-                mb,
                 ..Default::default()
             }
         }
@@ -886,13 +866,8 @@ pub struct LiveParams {
     /// vélocité), pas par un flou gaussien variable comme le canvas web — plus simple à
     /// réutiliser côté GPU, effet de streak équivalent.
     pub cursor_motion_blur: f32,
-    /// 0..1 : volume du curseur (extrusion le long de la normale du plan + ombre de contact).
-    /// 0 = sprite plat, rendu d'avant au bit près.
-    pub cursor_volume: f32,
-    /// 0..1 : hauteur du curseur au-dessus du plan (`cursor.hover`, le curseur MODÉLISÉ). À 0 le
-    /// sprite est posé dessus, rendu d'avant au bit près ; au-delà il monte vers le spectateur,
-    /// son ombre reste au sol et s'étale, et un clic le fait redescendre toucher le plan.
-    pub cursor_hover: f32,
+    /// Flèche modélisée en 3D (mode 15, cf. `plan_cursor`). `false` = le sprite plat d'avant.
+    pub cursor_model3d: bool,
     /// Masquage auto du curseur en cas d'inactivité.
     pub cursor_auto_hide: bool,
     /// False when the "webcam" decoder is actually just the screen video again (the TS side
@@ -972,8 +947,7 @@ impl Default for LiveParams {
             cursor_size_scale: 1.0,
             cursor_bounce_scale: 1.0,
             cursor_motion_blur: 0.0,
-            cursor_volume: 0.0,
-            cursor_hover: 0.0,
+            cursor_model3d: false,
             cursor_auto_hide: false,
             has_webcam: true,
         }
@@ -1012,8 +986,7 @@ pub fn live_params_from_scene(s: &crate::scene::Scene) -> LiveParams {
         cursor_size_scale: s.cursor.size,
         cursor_bounce_scale: s.cursor.click_bounce,
         cursor_motion_blur: s.cursor.motion_blur,
-        cursor_volume: s.cursor.volume,
-        cursor_hover: s.cursor.hover,
+        cursor_model3d: s.cursor.model3d,
         cursor_auto_hide: s.cursor.auto_hide,
         ..LiveParams::default()
     }
@@ -1203,6 +1176,7 @@ impl FrameGeometry {
                 corners: [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)],
                 scale: 1.0,
                 depth_k: (0.0, 0.0),
+                rot: [0.0; 3],
             }
         });
         let corners = [
@@ -1972,68 +1946,24 @@ pub struct CursorPlan {
     pub cursor_type: Option<String>,
     /// Opacité effective (0..1) tenant compte de l'inactivité (auto-hide) et du zoom.
     pub alpha: f32,
-    /// Volume du curseur. `None` au réglage 0 : sprite plat, rendu d'avant.
-    pub volume: Option<CursorVolume>,
+    /// Flèche modélisée (mode 15) : `Some` quand le réglage est allumé et que l'état résolu est la
+    /// flèche du thème par défaut. Le placement est alors toujours `Tilted` (quad identité sur un
+    /// écran droit), et le sprite n'est pas dessiné.
+    pub model: Option<CursorPose>,
 }
 
-/// Épaisseur du curseur à volume 1, en fraction de la taille du sprite.
-const CURSOR_VOLUME_DEPTH_FRAC: f32 = 0.6;
-/// Écran droit : la normale se projette sur un point, l'extrusion ne se verrait pas. On la
-/// remplace par un décalage bas-droite de 3 px pour un sprite de 34 px (volume 1).
-const CURSOR_VOLUME_FLAT_FRAC: f32 = 3.0 / 34.0;
-/// Plafond de copies de la silhouette : la borne de boucle des trois shaders. À la taille par
-/// défaut, `iso` extrude ~37 px en 4K : 48 garde l'écart entre copies sous 1 px. Seuls les
-/// pixels de flanc paient la boucle — la face avant opaque sort dès la copie 0.
-const CURSOR_VOLUME_MAX_TAPS: u32 = 48;
-/// Hauteur du curseur à `hover = 1`, en fraction de la taille du sprite. Un peu plus que son
-/// épaisseur (`CURSOR_VOLUME_DEPTH_FRAC`, 0,6) : le corps reste dans le voisinage de son ombre,
-/// ce qu'un curseur à un demi-écran de son propre sol ne ferait plus lire comme un contact.
-const CURSOR_HOVER_LIFT_FRAC: f32 = 0.75;
-
-/// Le MODÈLE du curseur — extrusion, hauteur, ombre portée — calculé une fois pour les trois
-/// backends. C'est ce qui fait du curseur un objet posé sur le plan plutôt qu'une carte plate :
-/// son épaisseur lui donne des flancs, sa hauteur le décolle du sol, et son ombre reste dessous.
-///
-/// Limites connues, assumées puisque le réglage part de 0 : un pack dont le PNG peint déjà une
-/// ombre la voit extrudée avec le reste (ombre doublée, et projetée deux fois dès que le curseur
-/// monte) ; le curseur math de secours (mode 4, Windows) reste plat ; et sans sprite il n'y a
-/// plus rien à extruder — macOS, qui n'a pas de repli, ne dessine alors ni curseur ni volume.
-#[derive(Clone, Copy)]
-pub struct CursorVolume {
-    /// Où tombent les faces arrière par rapport à la face avant, en px de sortie. Le shader le
-    /// reçoit tel quel dans `mb.xy` : une translation ne dépend pas du repère local.
-    pub extrude_px: [f32; 2],
-    /// Copies de la silhouette, face avant comprise — `mb.z`. 1 quand il n'y a PAS d'extrusion
-    /// (hauteur seule) : le shader prend alors sa branche plate, qui échantillonne déjà quatre
-    /// coins quelconques, là où deux copies identiques n'assombriraient que les bords du sprite.
-    pub taps: u32,
-    /// Décalage du sprite vers le SPECTATEUR quand le curseur flotte, en px de sortie : `[0, 0]`
-    /// posé sur le plan. L'ombre ne le suit pas — c'est cet écart qui se lit comme une hauteur.
-    pub lift_px: [f32; 2],
-    /// Ombre portée sous la pointe (mode 12), prête à dessiner AVANT le sprite et sa traînée.
-    /// Ombre de CONTACT à hauteur 0 ; elle s'étale et se dilue à mesure que le curseur monte.
-    pub shadow: LayerCB,
-}
-
-/// Vecteur d'extrusion en px : la normale du plan tournée par `rot`, projetée, fois l'épaisseur.
-///
-/// La normale arrière (0,0,-1) passe par la même composition que `rotated_quad_corners_px`
-/// (Z, puis Y, puis X) ; Z la laisse fixe, il reste `(-sin b, cos b · sin a)`. C'est la
-/// direction où l'on voit les flancs : un plan dont le bord droit s'éloigne (b > 0) fait face à
-/// droite, on le regarde depuis sa gauche, et c'est à gauche que dépassent les côtés du curseur.
-/// Projection orthographique : la perspective ne ferait varier `e` que de quelques pour cent
-/// d'un bout à l'autre de l'écran.
-///
-/// À plat, cette projection s'annule. Le repli bas-droite prend le relais en fondu (et non par
-/// un seuil) pour que la mise en place d'un tilt ne fasse pas sauter l'extrusion.
-pub(crate) fn cursor_extrusion_px(rot: [f32; 3], thickness_px: f32, flat_px: f32) -> [f32; 2] {
-    let (a, b) = (rot[0].to_radians(), rot[1].to_radians());
-    let e = [-b.sin() * thickness_px, b.cos() * a.sin() * thickness_px];
-    let flat = [flat_px * std::f32::consts::FRAC_1_SQRT_2; 2];
-    let len = e[0].hypot(e[1]);
-    let k = if flat_px > 0.0 { (len / flat_px).clamp(0.0, 1.0) } else { 1.0 };
-    let k = k * k * (3.0 - 2.0 * k);
-    [lerp(flat[0], e[0], k), lerp(flat[1], e[1], k)]
+impl CursorPlan {
+    /// Le plan tel qu'un backend le dessine. La traînée de la flèche modélisée coûte une marche
+    /// de rayons par copie : mesuré en 1080p (taille 10, 16 copies), +0,6 à +0,9 ms/frame sur GPU
+    /// mais +68 à +98 ms sur WARP. Le backend logiciel ne dessine donc que la tête ; le sprite
+    /// plat, lui, garde sa traînée partout.
+    pub fn for_backend(mut self, cpu_backend: bool) -> CursorPlan {
+        if cpu_backend && self.model.is_some() {
+            self.taps = 1;
+            self.prev_placement = self.placement;
+        }
+        self
+    }
 }
 
 /// Ce que `plan_cursor` doit savoir en plus de `FrameGeometry`.
@@ -2136,36 +2066,8 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
         (g.s_dst[0] + g.s_dst[2] * 0.5) * rw,
         (g.s_dst[1] + g.s_dst[3] * 0.5) * rh,
     ];
-    let volume01 = input.live.cursor_volume.clamp(0.0, 1.0);
-    let has_volume = volume01 > 0.001;
-    // Hauteur EFFECTIVE : le réglage, fois la porte du contact. Un clic fait redescendre le
-    // curseur toucher le plan au creux de `tap` (49,5 ms) puis remonter — même courbe, même
-    // fenêtre et même creux que le rebond d'échelle de `CursorTrack::bounce` et que l'impact du
-    // plan (`regions::click_impact`), donc les trois lisent le même contact à la même image.
-    //
-    // La porte se prend sur le dernier clic AVANT `t`, sans filtre de fenêtre source, comme
-    // `bounce` : un curseur visible au-dessus d'une portion coupée s'y enfonce aussi.
-    // `hover01 == 0` court-circuite le calcul (aucun clic à parcourir) et rend exactement 0.
-    let hover01 = input.live.cursor_hover.clamp(0.0, 1.0);
-    let hovering = hover01 > 0.001;
-    let hover_now = if hovering {
-        hover01
-            * input
-                .track
-                .last_click_at(input.t)
-                .map(|tc| {
-                    (1.0 + crate::regions::tap((input.t - tc) / crate::regions::CLICK_IMPACT_WINDOW_S))
-                        .clamp(0.0, 1.3)
-                })
-                .unwrap_or(1.0)
-    } else {
-        0.0
-    };
-    // Le mode 13 porte l'extrusion ET la hauteur : l'un ou l'autre suffit à en avoir besoin. La
-    // condition lit les RÉGLAGES (`hovering`), pas la hauteur instantanée : au creux du contact
-    // celle-ci vaut 0, et basculer sur le chemin droit cette frame-là ferait disparaître l'ombre
-    // pile à l'instant où elle vend le contact.
-    let modelled = has_volume || hovering;
+    let cursor_type = input.track.type_at(input.t);
+    let model3d = input.live.cursor_model3d && resolves_to_default_arrow(input.scene, cursor_type);
     let place = |cxy: Option<(f32, f32)>, dst: [f32; 4]| -> Option<CursorPlacement> {
         cxy.and_then(|p| {
             let [fx, fy] = cursor_plane_point(g.cut, [input.u_max, input.v_max], p)?;
@@ -2177,12 +2079,10 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
                     screen_px: s_px,
                     render_px: [rw, rh],
                 },
-                // Le volume et la hauteur passent par le mode 13, seuls à porter l'extrusion et
-                // le décalage : sur écran droit on pose le sprite sur un plan IDENTITÉ taillé dans
-                // `dst`. À rotation nulle `rotated_quad_corners_px` rend les coins exacts
-                // (±w/2, ±h/2, échelle 1), donc le sprite retombe sur le rect du mode 7 (cf. le
-                // test qui le vérifie).
-                None if modelled => {
+                // La flèche modélisée a toujours besoin d'un plan : sur écran droit, un plan
+                // IDENTITÉ taillé dans `dst`. À rotation nulle `rotated_quad_corners_px` rend les
+                // coins exacts (±w/2, ±h/2, échelle 1) : même caméra, même mode 15.
+                None if model3d => {
                     let screen_px = [dst[2] * rw, dst[3] * rh];
                     CursorPlacement::Tilted {
                         plane_pt: [fx, fy],
@@ -2209,7 +2109,12 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
     // `cursor_bounce_scale` est le clickBounce brut (0..5) : au-delà de 1/0.24 ≈ 4.17, le creux
     // de la pression (0.76) passe sous zéro. Une taille négative retournerait le sprite, donc
     // plancher à 0 — le curseur disparaît le temps du creux, c'est ce qu'une telle amplitude dit.
-    let bounce = (1.0 + (input.track.bounce(input.t) - 1.0) * lp.cursor_bounce_scale).max(0.0);
+    // La flèche modélisée n'a pas de rebond d'échelle : le clic la fait toucher le plan à la place.
+    let bounce = if model3d {
+        1.0
+    } else {
+        (1.0 + (input.track.bounce(input.t) - 1.0) * lp.cursor_bounce_scale).max(0.0)
+    };
     let size_px =
         CURSOR_BASE_SIZE_FRAC * g.frame_min_px * lp.cursor_size_scale * bounce * g.padding_scale;
     // Taille nulle = rien à dessiner, et surtout rien à projeter : sur un plan incliné les quatre
@@ -2250,17 +2155,9 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
         }
     };
 
-    let volume = if modelled {
-        cursor_volume(g.zoom_rotation, placement, size_px, volume01, hover_now, alpha)
-    } else {
-        None
-    };
-
     // « Clip to canvas » : la BOUNDING BOX des quatre coins projetés du plan — le rect dans
-    // lequel le curseur a le droit d'exister. Un curseur qui FLOTTE sort de son empreinte au sol
-    // de `lift_px`, et le clip doit couvrir l'UNION des deux, sinon il se coupe net sur le bord
-    // du canvas (`pout` est en 0..1 sortie, comme ce rect) alors qu'il est encore dans l'image.
-    let ground: [f32; 4] = match tilt.as_ref() {
+    // lequel le curseur a le droit d'exister (`pout` est en 0..1 sortie, comme ce rect).
+    let cursor_bounds: [f32; 4] = match tilt.as_ref() {
         None => g.s_dst,
         Some(quad) => {
             let (hx, hy) = quad.half_extents_px();
@@ -2272,13 +2169,6 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
             ]
         }
     };
-    let [lx, ly] = volume.as_ref().map(|v| v.lift_px).unwrap_or([0.0; 2]);
-    let cursor_bounds = [
-        ground[0] + lx.min(0.0) / rw,
-        ground[1] + ly.min(0.0) / rh,
-        ground[2] + lx.abs() / rw,
-        ground[3] + ly.abs() / rh,
-    ];
     let clip = match input.scene {
         Some(s) if s.cursor.clip_to_bounds => cursor_bounds,
         _ => [-1.0, -1.0, 3.0, 3.0],
@@ -2290,101 +2180,334 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
         size_px,
         taps,
         clip,
-        cursor_type: input.track.type_at(input.t).map(str::to_string),
+        cursor_type: cursor_type.map(str::to_string),
         alpha,
-        volume,
+        model: model3d.then(|| cursor_pose(input.track, input.t, lp.cursor_bounce_scale)),
     })
 }
 
-/// Le modèle du curseur posé en `placement` : extrusion (`volume01`), hauteur (`hover01`, déjà
-/// passée par la porte de contact du clic) et ombre portée. `None` pour un placement droit, que
-/// `plan_cursor` ne produit plus dès que l'un des deux réglages est actif.
+// ============ Curseur modélisé (mode 15) ============
+//
+// La flèche par défaut devient un OBJET : son contour extrudé, lancé de rayons par pixel dans le
+// shader (champ de distance signé), éclairé, et qui porte une vraie ombre sur l'écran. Rust ne
+// fait ici que la pose (fonction pure de `t`), la caméra et la boîte de dessin ; les trois shaders
+// font le reste avec les MÊMES constantes.
+//
+// Emplacements du `LayerCB` au mode 15 (128 octets, inchangés) :
+//   dst           rect de dessin (sortie 0..1) : boîte du modèle ET de son ombre
+//   quad_px       taille de ce rect en px (le VS en tire `local`)
+//   src.xy        décalage px : `local + src.xy` = pixel relatif à l'axe de la caméra, ancrage ôté
+//   src.z         P, distance caméra–plan (px) ; src.w = U, hauteur de la flèche (px du plan)
+//   color.a       opacité (auto-hide, zoom) ; color.rgb inutilisé
+//   fx.xyz        rotation dessinée du plan (rad, X/Y/Z, ordre de `regions::rotate_point`)
+//   fx.w          tangage de la flèche (rad)
+//   src_prev.xyz  hotspot de la face du dessus, repère du plan (px, centre du plan à l'origine)
+//   src_prev.w    lacet de la flèche (rad)
+//   dst_prev      rect de clip « Clip to canvas » (sortie 0..1), comme au mode 13
+//   mb.xy         demi-taille du plan dans son repère (px) : l'ombre s'arrête à ses bords
+//   mb.zw, radius_px  inutilisés
+
+/// Contour de la flèche par défaut (`public/cursors/default/arrow.png`, 42×70), en hauteurs de
+/// flèche, origine au hotspot (0.119, 0.0874), y vers le bas. C'est le NOYAU du contour : la
+/// silhouette est ce polygone gonflé de `ARROW_ROUND`. Ajusté sur l'alpha du PNG (1,1 % d'écart
+/// moyen de couverture par pixel). Miroir exact de `ARROW_CORE` dans les trois shaders.
+pub const ARROW_CORE: [[f32; 2]; 10] = [
+    [-0.0338, -0.0631],
+    [0.4736, 0.4415],
+    [0.4764, 0.5280],
+    [0.3085, 0.5491],
+    [0.4090, 0.8058],
+    [0.2893, 0.9066],
+    [0.1453, 0.6027],
+    [0.0369, 0.6954],
+    [-0.0207, 0.6752],
+    [-0.0381, 0.6363],
+];
+/// Arrondi du contour (les coins du PNG ont ~2,5 px de rayon sur 70).
+pub const ARROW_ROUND: f32 = 0.0357;
+/// Largeur du filet blanc du dessus, autour de l'incrustation noire (~4 px sur 70 dans le PNG).
+pub const ARROW_BAND: f32 = 0.0577;
+/// Épaisseur de la flèche : la face du dessus est en z = 0, celle du dessous en z = -épaisseur.
+pub const ARROW_THICK: f32 = 0.19;
+/// Rayon du chanfrein arrondi des arêtes du dessus et du dessous.
+pub const ARROW_BEVEL: f32 = 0.045;
+/// Direction VERS la lumière, repère caméra (x droite, y bas, z vers le spectateur) : en haut à
+/// gauche, devant. Unitaire. Miroir de `MODEL_LIGHT` dans les trois shaders.
+pub const MODEL_LIGHT: [f32; 3] = [-0.4194, -0.5792, 0.6990];
+
+/// Garde au sol au repos, en hauteurs de flèche.
+const MODEL_HOVER: f32 = 0.35;
+/// Gain sur `tap` pour la descente : à 1,25 la flèche reste posée de 27 à 74 ms après le clic,
+/// assez pour qu'au moins une image la montre au contact jusqu'à 21 i/s.
+const MODEL_CONTACT_GAIN: f32 = 1.25;
+/// Tangage au repos (queue relevée, pointe vers le bas) et supplément au creux de la pression.
+const MODEL_PITCH_IDLE_DEG: f32 = 18.0;
+const MODEL_PITCH_PRESS_DEG: f32 = 10.0;
+/// Le supplément de tangage suit `clickBounce` rapporté à sa valeur par défaut, borné à 2×.
+const MODEL_CLICK_BOUNCE_REF: f32 = 2.5;
+/// Lacet maximal, et la vitesse (largeurs de l'écran par seconde) qui en donne 76 % (`tanh 1`).
+const MODEL_YAW_MAX_DEG: f32 = 25.0;
+const MODEL_YAW_SPEED: f32 = 0.8;
+/// Demi-fenêtre de la différence centrée qui mesure la vitesse (comme la parallaxe du plan).
+const MODEL_YAW_HALF_WINDOW_S: f32 = 0.1;
+/// Combien de temps avant un clic la flèche se tourne vers sa cible.
+const MODEL_AIM_S: f32 = 0.3;
+/// Pénombre (miroir des shaders) : un point du plan est dans l'ombre douce quand son rayon vers
+/// la lumière passe à moins de `t / MODEL_SOFTNESS` du modèle, `t` la distance parcourue, et
+/// jamais au-delà de `MODEL_SHADOW_PAD` (la marche s'arrête à la boîte du modèle élargie d'autant).
+const MODEL_SOFTNESS: f32 = 6.0;
+const MODEL_SHADOW_PAD: f32 = 0.45;
+/// Portée de l'ombre de contact (miroir des shaders), en hauteurs de flèche.
+const MODEL_CONTACT_RADIUS: f32 = 0.12;
+
+/// La boîte englobante du modèle, dans son repère (hauteurs de flèche).
+fn arrow_box() -> ([f32; 3], [f32; 3]) {
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for [x, y] in ARROW_CORE {
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    (
+        [lo[0] - ARROW_ROUND, lo[1] - ARROW_ROUND, -ARROW_THICK],
+        [hi[0] + ARROW_ROUND, hi[1] + ARROW_ROUND, 0.0],
+    )
+}
+
+/// Hauteur du hotspot du dessus quand le point le plus bas de la flèche basculée de `pitch`
+/// affleure le plan : le bas de la pointe (y minimal, face du dessous). Le chanfrein arrondit ce
+/// coin et laisse un jour d'au plus ~1 % de la hauteur, invisible sous l'ombre de contact.
+fn arrow_contact_lift(pitch: f32) -> f32 {
+    let y_min = arrow_box().0[1];
+    ARROW_THICK * pitch.cos() - y_min * pitch.sin()
+}
+
+/// La pose de la flèche modélisée à un instant : une fonction pure de `t`, comme tout le reste
+/// de la frame (preview == export, lecture == seek).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CursorPose {
+    /// Garde au sol du point le plus bas, en hauteurs de flèche : 0 = elle touche le plan.
+    pub clearance: f32,
+    /// Tangage (rad) autour de l'axe x passant par le hotspot : la queue monte, la pointe descend.
+    pub pitch: f32,
+    /// Lacet (rad) autour de la normale du plan, appliqué après le tangage : positif = sens
+    /// horaire à l'écran (y vers le bas), la pointe part vers la droite.
+    pub yaw: f32,
+}
+
+/// La pose à `t`. `click_bounce` est le réglage brut (0..5, 2,5 par défaut).
 ///
-/// Les deux réglages sont INDÉPENDANTS et se composent : une hauteur sans épaisseur garde
-/// l'ombre, une épaisseur sans hauteur garde le contact d'origine, et le plan incliné projette
-/// déjà tout ce qui est posé dessus — la même paire de fonctions porte donc le curseur plat, le
-/// curseur en volume et le curseur qui flotte.
-///
-/// `hover01 = 0` retombe sur les constantes du volume v1 (`0.08`, `0.14`, `0.35 · volume`), donc
-/// sur un rendu identique au bit près.
-fn cursor_volume(
+/// - Hauteur : `MODEL_HOVER` au repos ; chaque clic la fait descendre TOUCHER le plan au creux de
+///   `regions::tap`, la courbe de l'impact du clic, dont le creux (49,5 ms) est celui de la
+///   pression de `CursorTrack::bounce` : la flèche, le plan et le rebond d'échelle lisent le même
+///   contact à la même image. Dernier clic avant `t`, comme `bounce`.
+/// - Tangage : 18° au repos, jusqu'à +10° au creux de la pression, fois `clickBounce`.
+/// - Lacet : vers la vitesse horizontale lissée (`follow_at`, différence centrée), et vers la
+///   cible d'un clic dans les 300 ms qui le précèdent ; borné à ±25° en douceur (`tanh`), nul au
+///   repos. Les contributions des clics montent avant eux et retombent sur la fenêtre de l'impact,
+///   donc la pose reste continue en `t`.
+pub fn cursor_pose(track: &crate::cursor::CursorTrack, t: f32, click_bounce: f32) -> CursorPose {
+    use crate::regions::{tap, CLICK_IMPACT_WINDOW_S};
+    let k = track.last_click_at(t).map(|tc| tap((t - tc) / CLICK_IMPACT_WINDOW_S)).unwrap_or(0.0);
+    let clearance = MODEL_HOVER * (1.0 + MODEL_CONTACT_GAIN * k).max(0.0);
+    let press = (-k).max(0.0) * (click_bounce / MODEL_CLICK_BOUNCE_REF).clamp(0.0, 2.0);
+    let pitch = (MODEL_PITCH_IDLE_DEG + MODEL_PITCH_PRESS_DEG * press).to_radians();
+
+    let smooth = |x: f32| {
+        let u = x.clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    let h = MODEL_YAW_HALF_WINDOW_S;
+    let mut v = match (track.follow_at(t - h), track.follow_at(t + h)) {
+        (Some(a), Some(b)) => (b.0 - a.0) / (2.0 * h),
+        _ => 0.0,
+    };
+    if let Some(here) = track.follow_at(t) {
+        for &tc in track.clicks_between(t - CLICK_IMPACT_WINDOW_S, t + MODEL_AIM_S) {
+            let Some(target) = track.at(tc) else { continue };
+            let w = if tc > t {
+                smooth(1.0 - (tc - t) / MODEL_AIM_S)
+            } else {
+                1.0 - smooth((t - tc) / CLICK_IMPACT_WINDOW_S)
+            };
+            v += w * (target.0 - here.0) / MODEL_AIM_S;
+        }
+    }
+    let yaw = MODEL_YAW_MAX_DEG.to_radians() * (v / MODEL_YAW_SPEED).tanh();
+    CursorPose { clearance, pitch, yaw }
+}
+
+/// La flèche du thème par défaut est-elle le sprite que les backends résoudraient pour
+/// `cursor_type` ? Même résolution qu'eux : l'état s'il a un sprite, sinon la flèche.
+fn resolves_to_default_arrow(scene: Option<&Scene>, cursor_type: Option<&str>) -> bool {
+    let Some(s) = scene else { return false };
+    let sprites = &s.cursor.cursor_sprites;
+    let key = cursor_type.filter(|k| sprites.contains_key(*k)).unwrap_or("arrow");
+    s.cursor.theme == "default" && key == "arrow" && sprites.contains_key("arrow")
+}
+
+/// La caméra et la pose d'une flèche modélisée posée en `placement` : de quoi projeter n'importe
+/// quel point du modèle exactement comme le mode 15 le rend.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModelView {
+    /// Rotation dessinée du plan, degrés (`TiltedQuad::rot`).
     rot: [f32; 3],
+    perspective: f32,
+    /// Hauteur de la flèche en px du plan.
+    unit: f32,
+    /// Hotspot du dessus, repère du plan (px).
+    tip: [f32; 3],
+    /// Décalage écran qui pose la pointe sur le pixel du contenu (warp bilinéaire du mode 8).
+    anchor: [f32; 2],
+    center: [f32; 2],
+    half: [f32; 2],
+    pose: CursorPose,
+}
+
+impl ModelView {
+    /// `None` pour un placement droit (`plan_cursor` n'en produit pas pour le modèle) ou une
+    /// caméra dégénérée.
+    ///
+    /// Le hotspot est posé sur le rayon de vue qui passe par le point du contenu (`plane_pt`),
+    /// à sa hauteur : la pointe reste donc sur le même pixel quand la flèche monte ou descend, et
+    /// seule l'ombre dit la hauteur. Le contenu, lui, est dessiné par un warp BILINÉAIRE des coins
+    /// projetés, qui s'écarte de la perspective exacte de quelques px : tout le rendu est décalé
+    /// de l'écart au point visé (`anchor`), pour que la pointe tombe sur le pixel que montre
+    /// l'écran.
+    pub(crate) fn new(placement: CursorPlacement, size_px: f32, pose: CursorPose) -> Option<Self> {
+        let CursorPlacement::Tilted { plane_pt, quad, center_px, screen_px, .. } = placement else {
+            return None;
+        };
+        let s = quad.scale;
+        let half = [screen_px[0] * s * 0.5, screen_px[1] * s * 0.5];
+        let perspective = screen_px[0].min(screen_px[1]) * crate::regions::PERSPECTIVE_FACTOR;
+        let unit = size_px * s;
+        let eye = crate::regions::rotate_point_inv([0.0, 0.0, perspective], quad.rot);
+        if !(unit > 0.0) || !(eye[2] > 1e-3) {
+            return None;
+        }
+        let ground =
+            [(plane_pt[0] - 0.5) * 2.0 * half[0], (plane_pt[1] - 0.5) * 2.0 * half[1], 0.0];
+        let height = unit * (pose.clearance + arrow_contact_lift(pose.pitch));
+        let k = height / eye[2];
+        let tip =
+            [ground[0] + (eye[0] - ground[0]) * k, ground[1] + (eye[1] - ground[1]) * k, height];
+        let mut view = ModelView {
+            rot: quad.rot,
+            perspective,
+            unit,
+            tip,
+            anchor: [0.0; 2],
+            center: center_px,
+            half,
+            pose,
+        };
+        let exact = view.project(ground)?;
+        let (bx, by) = quad.point_px(plane_pt[0], plane_pt[1]);
+        view.anchor = [center_px[0] + bx - exact[0], center_px[1] + by - exact[1]];
+        Some(view)
+    }
+
+    /// Point du modèle (hauteurs de flèche) → repère du plan (px) : tangage, lacet, échelle,
+    /// hotspot.
+    pub(crate) fn model_to_plane(&self, q: [f32; 3]) -> [f32; 3] {
+        let (cp, sp) = (self.pose.pitch.cos(), self.pose.pitch.sin());
+        let (cy, sy) = (self.pose.yaw.cos(), self.pose.yaw.sin());
+        let (x, y, z) = (q[0], q[1] * cp - q[2] * sp, q[1] * sp + q[2] * cp);
+        let (x, y) = (x * cy - y * sy, x * sy + y * cy);
+        [self.tip[0] + self.unit * x, self.tip[1] + self.unit * y, self.tip[2] + self.unit * z]
+    }
+
+    /// Point du repère du plan → px de sortie : la perspective exacte, puis l'ancrage.
+    pub(crate) fn project(&self, p: [f32; 3]) -> Option<[f32; 2]> {
+        let w = crate::regions::rotate_point(p, self.rot);
+        let d = self.perspective - w[2];
+        if !(d > 1e-3) {
+            return None;
+        }
+        let f = self.perspective / d;
+        Some([
+            self.center[0] + self.anchor[0] + w[0] * f,
+            self.center[1] + self.anchor[1] + w[1] * f,
+        ])
+    }
+
+    /// La lumière dans le repère du plan (elle est fixée à la caméra, pas au plan).
+    pub(crate) fn light(&self) -> [f32; 3] {
+        crate::regions::rotate_point_inv(MODEL_LIGHT, self.rot)
+    }
+
+    /// Boîte (px de sortie, `[x0, y0, x1, y1]`) qui contient la flèche ET son ombre : les huit
+    /// coins de la boîte du modèle, et leur projection au sol le long de la lumière, élargie de la
+    /// portée de la pénombre et du contact. Conservatrice : le shader ne dessine rien hors d'elle.
+    ///
+    /// Portée : un rayon qui passe à `d` d'un point du modèle part d'un point du sol décalé d'au
+    /// plus `d / lz` de son ombre géométrique (`lz` = élévation de la lumière au-dessus du plan),
+    /// et la pénombre s'arrête à `d = min(t / MODEL_SOFTNESS, MODEL_SHADOW_PAD)`.
+    pub(crate) fn footprint(&self) -> Option<[f32; 4]> {
+        let (lo, hi) = arrow_box();
+        let light = self.light();
+        let lz = light[2].max(0.2);
+        let corners: [[f32; 3]; 8] = std::array::from_fn(|i| {
+            self.model_to_plane([
+                if i & 1 == 0 { lo[0] } else { hi[0] },
+                if i & 2 == 0 { lo[1] } else { hi[1] },
+                if i & 4 == 0 { lo[2] } else { hi[2] },
+            ])
+        });
+        let top = corners.iter().fold(0.0f32, |m, p| m.max(p[2])) / self.unit;
+        let penumbra = (top / lz / MODEL_SOFTNESS).min(MODEL_SHADOW_PAD);
+        let reach = (penumbra / lz + MODEL_CONTACT_RADIUS) * self.unit;
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut add = |p: [f32; 2]| {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        };
+        for p in corners {
+            add(self.project(p)?);
+            let h = p[2].max(0.0) / lz;
+            let g = [p[0] - light[0] * h, p[1] - light[1] * h];
+            for (dx, dy) in [(-reach, -reach), (reach, -reach), (reach, reach), (-reach, reach)] {
+                add(self.project([g[0] + dx, g[1] + dy, 0.0])?);
+            }
+        }
+        const PAD_PX: f32 = 2.0;
+        Some([b[0] - PAD_PX, b[1] - PAD_PX, b[2] + PAD_PX, b[3] + PAD_PX])
+    }
+}
+
+/// `LayerCB` de la flèche modélisée (mode 15) posée en `placement`, pour les trois backends.
+/// `None` quand il n'y a rien à dessiner (placement droit, caméra dégénérée). Voir l'en-tête de
+/// cette section pour l'emploi des emplacements.
+pub fn cursor_model_cb(
     placement: CursorPlacement,
     size_px: f32,
-    volume01: f32,
-    hover01: f32,
+    pose: CursorPose,
     alpha: f32,
-) -> Option<CursorVolume> {
-    let CursorPlacement::Tilted { plane_pt, quad, center_px, screen_px, render_px } = placement
-    else {
-        return None;
-    };
-    let scale = quad.scale;
-    // Tout en fraction de la taille du sprite : l'épaisseur suit le réglage Size et le padding,
-    // et la réduction du plan incliné (`scale`) comme le sprite lui-même.
-    let unit = size_px * volume01 * scale;
-    let e = cursor_extrusion_px(
-        rot,
-        CURSOR_VOLUME_DEPTH_FRAC * unit,
-        CURSOR_VOLUME_FLAT_FRAC * unit,
-    );
-    // Une copie par pixel de profondeur : au-delà de 1 px d'écart, les copies se lisent comme
-    // des marches sur le contour. Sans extrusion (hauteur seule) : UNE copie, la branche plate du
-    // mode 13 — deux copies identiques n'ajouteraient que de l'assombrissement sur les bords.
-    let len = e[0].hypot(e[1]);
-    let taps = if len == 0.0 {
-        1
-    } else {
-        ((len.ceil() as u32) + 1).clamp(2, CURSOR_VOLUME_MAX_TAPS)
-    };
-
-    // La montée va vers le SPECTATEUR, soit l'inverse de l'extrusion : `e` est la normale ARRIÈRE
-    // projetée (c'est de ce côté que dépassent les flancs), la hauteur vient vers nous. La
-    // direction est prise à volume PLEIN puis normalisée : au volume 0 `e` s'annule, alors que le
-    // repli à plat garde une direction utilisable — et c'est le bas-droite du repli, donc un
-    // curseur à plat s'élève vers le haut-gauche au-dessus de son ombre, exactement l'inverse du
-    // volume qui descend vers le bas-droite.
-    let full = size_px * scale;
-    let dir = cursor_extrusion_px(
-        rot,
-        CURSOR_VOLUME_DEPTH_FRAC * full,
-        CURSOR_VOLUME_FLAT_FRAC * full,
-    );
-    let dlen = dir[0].hypot(dir[1]);
-    let lift_px = if hover01 > 0.0 {
-        let (ux, uy) = if dlen > 1e-6 {
-            (-dir[0] / dlen, -dir[1] / dlen)
-        } else {
-            // Normale nulle elle aussi (que le repli rend impossible) : la hauteur monte tout
-            // droit, comme sur un écran vu de face.
-            (0.0, -1.0)
-        };
-        let h = CURSOR_HOVER_LIFT_FRAC * hover01 * full;
-        [ux * h, uy * h]
-    } else {
-        [0.0; 2]
-    };
-
-    // Ombre portée : un petit carré DANS le plan autour de la pointe, projeté comme le sprite,
-    // puis poussé de `e` jusqu'au pied de l'extrusion — là où le curseur touche l'écran. Elle ne
-    // suit PAS `lift_px` : plus le curseur monte, plus elle s'étale (`grow`) et se dilue, et à
-    // hauteur 0 les trois formules retombent sur celles du volume v1.
-    let grow = 1.0 + 1.6 * hover01;
-    let half = 0.08 * size_px * grow;
-    let (hx, hy) = (half / screen_px[0], half / screen_px[1]);
-    let corners = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)].map(|(dx, dy)| {
-        let (px, py) = quad.point_px(plane_pt[0] + dx, plane_pt[1] + dy);
-        (center_px[0] + px + e[0], center_px[1] + py + e[1])
-    });
-    // Rayon au plafond : la tache est ronde, et `quad_shadow_max_radius` garde le mode 12 à
-    // l'endroit (au-delà de 0.8× le demi-côté, le quad rentré se retourne).
-    let radius = quad_shadow_max_radius(&corners);
-    let spread = 0.14 * size_px * scale * grow;
-    // L'ombre de contact du volume, plus celle que la hauteur ajoute — diluée à mesure que la
-    // tache s'étale, ce que fait une ombre portée qu'on éloigne de son sol.
-    let opacity = (0.35 * volume01 + 0.30 * hover01) / (1.0 + 1.1 * hover01) * alpha;
-    let shadow = quad_shadow_cb(&corners, radius, spread, opacity, render_px);
-    Some(CursorVolume { extrude_px: e, taps, lift_px, shadow })
+    clip: [f32; 4],
+) -> Option<LayerCB> {
+    let view = ModelView::new(placement, size_px, pose)?;
+    let CursorPlacement::Tilted { render_px: [rw, rh], .. } = placement else { return None };
+    let [x0, y0, x1, y1] = view.footprint()?;
+    // Bords entiers : `local` vaut alors k + 0,5 au centre des pixels, comme le rastériseur.
+    let (x0, y0, x1, y1) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
+    let (bw, bh) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+    let r = view.rot.map(f32::to_radians);
+    Some(LayerCB {
+        dst: [x0 / rw, y0 / rh, bw / rw, bh / rh],
+        src: [
+            x0 - view.center[0] - view.anchor[0],
+            y0 - view.center[1] - view.anchor[1],
+            view.perspective,
+            view.unit,
+        ],
+        quad_px: [bw, bh],
+        mode: 15.0,
+        color: [1.0, 1.0, 1.0, alpha],
+        fx: [r[0], r[1], r[2], pose.pitch],
+        src_prev: [view.tip[0], view.tip[1], view.tip[2], pose.yaw],
+        dst_prev: clip,
+        mb: [view.half[0], view.half[1], 0.0, 0.0],
+        ..Default::default()
+    })
 }
 
 /// Poids d'un échantillon du flou de mouvement de curseur (0 = queue/passé, taps-1 = tête/courant).
@@ -2735,7 +2858,7 @@ mod tests {
             assert!((radius - wf.radius * quad.scale).abs() < 1e-4);
 
             let [ml, mt, mr, mb] = wf.margins;
-            let frame_quad = crate::regions::TiltedQuad { corners: frame, scale: quad.scale, depth_k: quad.depth_k };
+            let frame_quad = crate::regions::TiltedQuad { corners: frame, ..quad };
             let (u0, v0) = (ml / (1.0 + ml + mr), mt / (1.0 + mt + mb));
             let (u1, v1) = ((1.0 + ml) / (1.0 + ml + mr), (1.0 + mt) / (1.0 + mt + mb));
             for (i, (u, v)) in [(u0, v0), (u1, v0), (u1, v1), (u0, v1)].into_iter().enumerate() {
@@ -3934,13 +4057,8 @@ mod tests {
         assert!((peak / rest - 1.8).abs() < 1e-3, "pic = 1 + 0.16 * 5, got {}", peak / rest);
     }
 
-    fn plan_with(rot: [f32; 3], volume: f32) -> CursorPlan {
-        plan_with_hover(rot, volume, 0.0)
-    }
-
-    /// Le même plan, avec les deux réglages du curseur modélisé. Le curseur est immobile et la
-    /// coupe ne bouge pas : seule la hauteur distingue les appels.
-    fn plan_with_hover(rot: [f32; 3], volume: f32, hover: f32) -> CursorPlan {
+    /// Un plan de curseur immobile sous la rotation `rot`, coupe fixe.
+    fn plan_with(rot: [f32; 3]) -> CursorPlan {
         let cfg = crate::config::all().pop().expect("cfg");
         let scene = zoomed_golden_scene();
         let fg = FrameGeometry { zoom_rotation: rot, ..full_frame_geometry() };
@@ -3953,11 +4071,7 @@ mod tests {
                 u_max: 1.0,
                 v_max: 1.0,
                 cfg: &cfg,
-                live: LiveParams {
-                    cursor_volume: volume,
-                    cursor_hover: hover,
-                    ..LiveParams::default()
-                },
+                live: LiveParams::default(),
                 scene: Some(&scene),
                 track: &track,
                 t: 0.5,
@@ -3966,337 +4080,13 @@ mod tests {
         .expect("plan cursor")
     }
 
-    /// L'échelle du plan incliné, celle que `cursor_volume` lit sur le placement.
-    fn plan_scale(plan: &CursorPlan) -> f32 {
-        match plan.placement {
-            CursorPlacement::Tilted { quad, .. } => quad.scale,
-            CursorPlacement::Upright { .. } => 1.0,
-        }
-    }
-
-    /// Le centre ABSOLU d'un quad d'ombre : `fx`/`src_prev` sont locaux à sa boîte, dont le coin
-    /// est `dst` (déjà diminué de l'étalement) — d'où `+ dst * render_px`.
-    fn shadow_centre(s: &LayerCB, render_px: [f32; 2]) -> (f32, f32) {
-        (
-            (s.fx[0] + s.fx[2] + s.src_prev[0] + s.src_prev[2]) * 0.25 + s.dst[0] * render_px[0],
-            (s.fx[1] + s.fx[3] + s.src_prev[1] + s.src_prev[3]) * 0.25 + s.dst[1] * render_px[1],
-        )
-    }
-
     const ISO: [f32; 3] = [-12.0, -18.0, -2.0];
     const LEFT: [f32; 3] = [-8.0, -16.0, -1.0];
 
-    /// Le sens de `e` : à plat, le repli bas-droite ; sous `iso` et `left` (bord droit qui
-    /// s'éloigne, bord haut qui recule), les flancs dépassent vers la droite et vers le haut.
+    /// Le `LayerCB` du sprite incliné est, octet pour octet, celui que chaque backend construisait
+    /// avant de le partager. La référence est le corps d'origine de `draw_cursor_sprite`.
     #[test]
-    fn cursor_extrusion_points_along_the_projected_plane_normal() {
-        let flat = cursor_extrusion_px([0.0; 3], 20.0, 3.0);
-        assert!((flat[0] - flat[1]).abs() < 1e-6 && flat[0] > 0.0, "bas-droite : {flat:?}");
-        assert!((flat[0].hypot(flat[1]) - 3.0).abs() < 1e-4, "3 px à plat : {flat:?}");
-
-        let iso = cursor_extrusion_px(ISO, 20.0, 3.0);
-        let expect = [
-            -(-18f32).to_radians().sin() * 20.0,
-            (-18f32).to_radians().cos() * (-12f32).to_radians().sin() * 20.0,
-        ];
-        assert!((iso[0] - expect[0]).abs() < 1e-4 && (iso[1] - expect[1]).abs() < 1e-4, "{iso:?}");
-        assert!(iso[0] > 5.0 && iso[1] < -3.0, "iso : droite et haut, {iso:?}");
-
-        let left = cursor_extrusion_px(LEFT, 20.0, 3.0);
-        assert!(left[0] > 5.0 && left[1] < -2.0, "left : droite et haut, {left:?}");
-        // `right` est le miroir de `left` : les flancs passent à gauche.
-        let right = cursor_extrusion_px([-8.0, 16.0, 1.0], 20.0, 3.0);
-        assert!((right[0] + left[0]).abs() < 1e-5 && (right[1] - left[1]).abs() < 1e-5);
-
-        // Entre les deux, pas de saut : une rotation de 0.1° reste à côté du repli.
-        let tiny = cursor_extrusion_px([0.0, -0.1, 0.0], 20.0, 3.0);
-        assert!((tiny[0] - flat[0]).abs() < 0.1 && (tiny[1] - flat[1]).abs() < 0.1, "{tiny:?}");
-    }
-
-    /// Le plan porte `e`, les copies et l'ombre ; à volume 0 il n'en porte aucun, et le sprite
-    /// reste sur le chemin droit (mode 7) quand l'écran est plat.
-    #[test]
-    fn cursor_plan_carries_the_volume_only_when_it_is_on() {
-        let off = plan_with([0.0; 3], 0.0);
-        assert!(off.volume.is_none());
-        assert!(matches!(off.placement, CursorPlacement::Upright { .. }));
-
-        let flat = plan_with([0.0; 3], 1.0);
-        assert!(matches!(flat.placement, CursorPlacement::Tilted { .. }), "volume ⇒ mode 13");
-        let v = flat.volume.expect("volume");
-        let e = v.extrude_px;
-        assert!(e[0] > 0.0 && (e[0] - e[1]).abs() < 1e-4, "repli bas-droite : {e:?}");
-        let expect_len = CURSOR_VOLUME_FLAT_FRAC * flat.size_px;
-        assert!((e[0].hypot(e[1]) - expect_len).abs() < 1e-3, "{e:?} vs {expect_len}");
-        assert!(v.taps >= 2 && v.taps <= CURSOR_VOLUME_MAX_TAPS);
-        assert_eq!(v.shadow.mode, 12.0);
-
-        let iso = plan_with(ISO, 1.0).volume.expect("volume").extrude_px;
-        let left = plan_with(LEFT, 1.0).volume.expect("volume").extrude_px;
-        assert!(iso[0] > 0.0 && iso[1] < 0.0, "iso : {iso:?}");
-        assert!(left[0] > 0.0 && left[1] < 0.0, "left : {left:?}");
-        assert!(iso[1] < left[1], "iso est plus penché en X que left : {iso:?} / {left:?}");
-        // Moitié de volume, moitié d'épaisseur.
-        let half = plan_with(ISO, 0.5).volume.expect("volume").extrude_px;
-        assert!((half[0] * 2.0 - iso[0]).abs() < 1e-3, "{half:?} / {iso:?}");
-    }
-
-    /// Une copie par pixel d'extrusion jusqu'en 4K : au-delà de 1 px d'écart, les flancs se
-    /// lisent en marches. `plan_with` rend en 1080p à la taille 1 ; l'éditeur part de la taille 3
-    /// (`DEFAULT_CURSOR_SIZE`), et la 4K double encore `size_px` (et donc `e`).
-    #[test]
-    fn cursor_volume_copies_stay_under_a_pixel_apart_in_4k() {
-        let plan = plan_with(ISO, 1.0);
-        for size_px in [plan.size_px * 3.0, plan.size_px * 6.0] {
-            let v = cursor_volume(ISO, plan.placement, size_px, 1.0, 0.0, 1.0).expect("volume");
-            let len = v.extrude_px[0].hypot(v.extrude_px[1]);
-            let gap = len / (v.taps - 1) as f32;
-            assert!(gap <= 1.0, "|e| {len} px, {} copies : écart {gap} px", v.taps);
-        }
-    }
-
-    /// La hauteur décolle le SPRITE et laisse l'ombre au sol : c'est l'écart entre les deux qui
-    /// se lit comme une hauteur, pas la taille de l'ombre. La montée part aussi dans le sens
-    /// opposé à l'extrusion — `e` est la normale arrière, la hauteur vient vers nous.
-    #[test]
-    fn cursor_hover_lifts_the_sprite_and_leaves_the_shadow_on_the_plane() {
-        let grounded = plan_with_hover(ISO, 1.0, 0.0);
-        let hovering = plan_with_hover(ISO, 1.0, 1.0);
-        let (a, b) = (grounded.volume.expect("volume"), hovering.volume.expect("volume"));
-        let render = [1920.0, 1080.0];
-
-        assert_eq!(a.lift_px, [0.0, 0.0], "à hauteur 0 le sprite est posé sur le plan");
-        let dot = a.lift_px[0] * a.extrude_px[0] + a.lift_px[1] * a.extrude_px[1];
-        assert!(dot <= 0.0, "montée et extrusion de sens opposés : {dot}");
-        let expect = CURSOR_HOVER_LIFT_FRAC * hovering.size_px * plan_scale(&hovering);
-        let got = b.lift_px[0].hypot(b.lift_px[1]);
-        assert!((got - expect).abs() < 1e-3, "hauteur {got} px contre {expect}");
-
-        // L'ombre s'étale, se dilue… et ne bouge pas d'un pixel : même centre, plus grand.
-        assert!(
-            b.shadow.mb[1] > a.shadow.mb[1] + 0.5,
-            "étalement {} / {}",
-            b.shadow.mb[1],
-            a.shadow.mb[1]
-        );
-        assert!(b.shadow.radius_px > a.shadow.radius_px);
-        assert!(
-            b.shadow.color[3] > 0.0 && b.shadow.color[3] < a.shadow.color[3],
-            "opacité {} / {}",
-            b.shadow.color[3],
-            a.shadow.color[3]
-        );
-        let (ca, cb) = (shadow_centre(&a.shadow, render), shadow_centre(&b.shadow, render));
-        assert!(
-            (ca.0 - cb.0).abs() < 1e-3 && (ca.1 - cb.1).abs() < 1e-3,
-            "l'ombre reste au sol : {ca:?} / {cb:?}"
-        );
-
-        // Le sprite, lui, a bel et bien bougé — et sa boîte (`dst`) avec lui.
-        let sprite = |v: &CursorVolume| {
-            cursor_sprite_cb(
-                hovering.placement,
-                [hovering.size_px; 2],
-                [0.0; 2],
-                1.0,
-                [0.0; 4],
-                render,
-                Some(v),
-            )
-        };
-        let (sa, sb) = (sprite(&a), sprite(&b));
-        let moved = ((sa.dst[0] - sb.dst[0]) * render[0]).hypot((sa.dst[1] - sb.dst[1]) * render[1]);
-        assert!((moved - got).abs() < 0.5, "le sprite s'est déplacé de {moved} px au lieu de {got}");
-    }
-
-    /// À plat, la montée est l'inverse EXACT du repli bas-droite du volume : le curseur s'élève
-    /// vers le haut-gauche au-dessus de son ombre, comme sur un écran vu de face.
-    #[test]
-    fn a_floating_cursor_rises_towards_the_top_left_on_a_flat_screen() {
-        let plan = plan_with_hover([0.0; 3], 1.0, 1.0);
-        let v = plan.volume.expect("volume");
-        assert!(v.lift_px[0] < -1.0 && v.lift_px[1] < -1.0, "{:?}", v.lift_px);
-        let e = v.extrude_px;
-        assert!(e[0] > 0.0 && e[1] > 0.0, "le repli du volume ne bouge pas : {e:?}");
-        // Colinéaires et opposés : le produit vectoriel s'annule.
-        assert!((v.lift_px[0] * e[1] - v.lift_px[1] * e[0]).abs() < 1e-3, "{:?}", v.lift_px);
-        let expect = CURSOR_HOVER_LIFT_FRAC * plan.size_px;
-        assert!(
-            (v.lift_px[0].hypot(v.lift_px[1]) - expect).abs() < 1e-3,
-            "hauteur {} px contre {expect}",
-            v.lift_px[0].hypot(v.lift_px[1])
-        );
-    }
-
-    /// Hauteur seule (volume 0) : rien à extruder, donc UNE copie et `mb.z <= 1` — le shader prend
-    /// sa branche plate, qui échantillonne déjà quatre coins quelconques. Un sprite surélevé, pas
-    /// deux copies identiques. Et réglage éteint, le chemin droit d'avant, sans modèle du tout.
-    #[test]
-    fn a_floating_cursor_without_volume_asks_for_a_single_tap() {
-        let flat = plan_with_hover([0.0; 3], 0.0, 1.0);
-        assert!(
-            matches!(flat.placement, CursorPlacement::Tilted { .. }),
-            "la hauteur seule passe déjà par le mode 13"
-        );
-        let v = flat.volume.expect("volume");
-        assert_eq!(v.extrude_px, [0.0, 0.0]);
-        assert_eq!(v.taps, 1);
-        assert!(v.shadow.color[3] > 0.0, "la hauteur porte son ombre à elle");
-        let cb = cursor_sprite_cb(
-            flat.placement,
-            [flat.size_px; 2],
-            [0.0; 2],
-            1.0,
-            [0.0; 4],
-            [1920.0, 1080.0],
-            Some(&v),
-        );
-        assert_eq!(cb.mode, 13.0);
-        assert_eq!(cb.mb, [0.0, 0.0, 1.0, 0.0], "branche plate du shader");
-
-        let off = plan_with_hover([0.0; 3], 0.0, 0.0);
-        assert!(off.volume.is_none());
-        assert!(matches!(off.placement, CursorPlacement::Upright { .. }));
-    }
-
-    /// Le clic fait REDESCENDRE le curseur toucher le plan, puis il remonte : la hauteur n'est pas
-    /// un réglage statique. Même creux (49,5 ms) et même fenêtre (260 ms) que le rebond d'échelle.
-    #[test]
-    fn a_click_drops_the_floating_cursor_onto_the_plane_and_back() {
-        let cfg = crate::config::all().pop().expect("cfg");
-        let scene = zoomed_golden_scene();
-        let fg = FrameGeometry { zoom_rotation: ISO, ..full_frame_geometry() };
-        let samples = vec![(0.0, 0.4, 0.6), (2.0, 0.4, 0.6)];
-        let clicked = crate::cursor::CursorTrack::new(samples.clone(), vec![0.5], vec![]);
-        let quiet = crate::cursor::CursorTrack::new(samples, vec![], vec![]);
-        let lift = |track: &crate::cursor::CursorTrack, t: f32| {
-            let plan = plan_cursor(
-                &fg,
-                &CursorPlanInput {
-                    render_px: [1920.0, 1080.0],
-                    u_max: 1.0,
-                    v_max: 1.0,
-                    cfg: &cfg,
-                    live: LiveParams { cursor_hover: 1.0, ..LiveParams::default() },
-                    scene: Some(&scene),
-                    track,
-                    t,
-                },
-            )
-            .expect("plan cursor");
-            let l = plan.volume.expect("volume").lift_px;
-            l[0].hypot(l[1])
-        };
-
-        // Juste AVANT le creux : le curseur est encore en l'air, exactement comme sans clic —
-        // `tap` part de 0, la hauteur ne bouge pas encore d'un pixel à l'instant du clic.
-        let rest = lift(&quiet, 0.5494);
-        assert!(rest > 1.0, "le curseur flotte au repos : {rest} px");
-        assert!((lift(&clicked, 0.5) - lift(&quiet, 0.5)).abs() < 1e-3);
-        // Creux du contact : la hauteur s'annule, le curseur touche le plan.
-        let down = lift(&clicked, 0.5 + 0.0494);
-        assert!(down < rest * 0.02, "au creux, {down} px contre {rest}");
-        // …et à la fin de la fenêtre (260 ms) il est remonté comme avant le clic.
-        let up = lift(&clicked, 0.76);
-        assert!((up - lift(&quiet, 0.76)).abs() < 1e-3, "{up} / {}", lift(&quiet, 0.76));
-    }
-
-    /// « Clip to canvas » couvre l'UNION de l'empreinte au sol et du sprite surélevé : sinon un
-    /// curseur qui flotte près du bord se coupe net alors qu'il est encore dans l'image.
-    #[test]
-    fn the_clip_covers_a_floating_cursor() {
-        let cfg = crate::config::all().pop().expect("cfg");
-        let mut scene = zoomed_golden_scene();
-        scene.cursor.clip_to_bounds = true;
-        let fg = FrameGeometry { zoom_rotation: ISO, ..full_frame_geometry() };
-        let track =
-            crate::cursor::CursorTrack::new(vec![(0.0, 0.4, 0.6), (2.0, 0.4, 0.6)], vec![], vec![]);
-        let plan = |hover: f32| {
-            plan_cursor(
-                &fg,
-                &CursorPlanInput {
-                    render_px: [1920.0, 1080.0],
-                    u_max: 1.0,
-                    v_max: 1.0,
-                    cfg: &cfg,
-                    live: LiveParams {
-                        cursor_volume: 1.0,
-                        cursor_hover: hover,
-                        ..LiveParams::default()
-                    },
-                    scene: Some(&scene),
-                    track: &track,
-                    t: 0.5,
-                },
-            )
-            .expect("plan cursor")
-        };
-        let (grounded, floating) = (plan(0.0), plan(1.0));
-        let lift = floating.volume.expect("volume").lift_px;
-        assert!(lift[0].abs() > 1.0 || lift[1].abs() > 1.0, "{lift:?}");
-        // Le clip suit `g.s_dst`, donc entre les deux appels seul le décalage a changé.
-        for (k, extent) in [(0usize, 1920.0f32), (1, 1080.0), (2, 1920.0), (3, 1080.0)] {
-            let delta = (floating.clip[k] - grounded.clip[k]) * extent;
-            let want = if k < 2 { lift[k].min(0.0) } else { lift[k - 2].abs() };
-            assert!((delta - want).abs() < 1e-3, "clip[{k}] a bougé de {delta} au lieu de {want}");
-        }
-    }
-
-    /// À rotation nulle, le quad identité rend EXACTEMENT le rect du mode 7 : passer le curseur
-    /// en mode 13 pour lui donner du volume ne le déplace pas d'un pixel.
-    #[test]
-    fn an_identity_quad_reproduces_the_upright_sprite_rect() {
-        let render = [1920.0, 1080.0];
-        let (sprite, hotspot) = ([34.0, 40.0], [0.1, 0.05]);
-        for dst in [[0.0, 0.0, 1.0, 1.0], [0.1, 0.07, 0.8, 0.8], [0.23, 0.11, 0.5, 0.61]] {
-            let (fx, fy) = (0.37, 0.58);
-            let upright =
-                CursorPlacement::Upright { center: [dst[0] + fx * dst[2], dst[1] + fy * dst[3]] };
-            let screen_px = [dst[2] * render[0], dst[3] * render[1]];
-            let quad =
-                crate::regions::rotated_quad_corners_px(screen_px[0], screen_px[1], [0.0; 3], [0.0; 3]);
-            assert_eq!(quad.scale, 1.0);
-            let tilted = CursorPlacement::Tilted {
-                plane_pt: [fx, fy],
-                quad,
-                center_px: [
-                    (dst[0] + dst[2] * 0.5) * render[0],
-                    (dst[1] + dst[3] * 0.5) * render[1],
-                ],
-                screen_px,
-                render_px: render,
-            };
-            let a = cursor_sprite_cb(upright, sprite, hotspot, 1.0, [0.0; 4], render, None);
-            let b = cursor_sprite_cb(tilted, sprite, hotspot, 1.0, [0.0; 4], render, None);
-            assert_eq!((a.mode, b.mode), (7.0, 13.0));
-            for k in 0..4 {
-                let px = (a.dst[k] - b.dst[k]).abs() * render[k % 2];
-                assert!(px < 1e-3, "dst[{k}] : {} vs {} ({px} px)", a.dst[k], b.dst[k]);
-            }
-            // Les coins du quad sont ceux de la bbox : TL (0,0), TR (w,0), BR (w,h), BL (0,h).
-            let [w, h] = b.quad_px;
-            let expect = [0.0, 0.0, w, 0.0, w, h, 0.0, h];
-            let got = [
-                b.fx[0],
-                b.fx[1],
-                b.fx[2],
-                b.fx[3],
-                b.src_prev[0],
-                b.src_prev[1],
-                b.src_prev[2],
-                b.src_prev[3],
-            ];
-            for k in 0..8 {
-                assert!((got[k] - expect[k]).abs() < 1e-3, "coin {k} : {got:?}");
-            }
-            assert_eq!(b.mb, [0.0; 4], "sans volume, le shader garde le chemin plat");
-        }
-    }
-
-    /// Volume 0 : le `LayerCB` du sprite incliné est, octet pour octet, celui d'avant le volume.
-    /// La référence est le corps d'origine de `draw_cursor_sprite`, recopié tel quel.
-    #[test]
-    fn cursor_sprite_cb_without_volume_is_byte_identical_to_the_flat_sprite() {
+    fn cursor_sprite_cb_is_byte_identical_to_the_flat_sprite() {
         fn before(
             p: CursorPlacement,
             pw: f32,
@@ -4346,8 +4136,7 @@ mod tests {
             unsafe { std::slice::from_raw_parts(cb as *const LayerCB as *const u8, 128) }.to_vec()
         };
         for rot in [ISO, LEFT, [-8.0, 16.0, 1.0]] {
-            let plan = plan_with(rot, 0.0);
-            assert!(plan.volume.is_none());
+            let plan = plan_with(rot);
             let clip = [0.1, 0.2, 0.7, 0.6];
             let got = cursor_sprite_cb(
                 plan.placement,
@@ -4356,69 +4145,407 @@ mod tests {
                 0.8,
                 clip,
                 [1920.0, 1080.0],
-                None,
             );
             let want = before(plan.placement, 30.0, 34.0, [0.2, 0.1], 0.8, clip);
             assert_eq!(bytes(&got), bytes(&want), "rotation {rot:?}");
         }
     }
 
-    /// Le rayon de l'ombre de contact reste sous le point où le mode 12 retourne son quad, et
-    /// la bbox du sprite en volume contient ses faces arrière.
-    #[test]
-    fn cursor_volume_shadow_and_bbox_stay_consistent() {
-        for rot in [[0.0; 3], ISO, LEFT] {
-            let plan = plan_with(rot, 1.0);
-            let v = plan.volume.expect("volume");
-            let s = v.shadow;
-            let c = [
-                (s.fx[0], s.fx[1]),
-                (s.fx[2], s.fx[3]),
-                (s.src_prev[0], s.src_prev[1]),
-                (s.src_prev[2], s.src_prev[3]),
-            ];
-            // Demi-côté le plus court du quad d'ombre, mesuré naïvement sur ses arêtes.
-            let min_half = (0..4)
-                .map(|k| {
-                    let (a, b) = (c[k], c[(k + 1) % 4]);
-                    (b.0 - a.0).hypot(b.1 - a.1) * 0.5
-                })
-                .fold(f32::MAX, f32::min);
-            assert!(
-                s.radius_px > 0.0 && s.radius_px <= 0.8 * min_half + 1e-3,
-                "{rot:?} : r {} / {min_half}",
-                s.radius_px
-            );
+    // ---- Flèche modélisée (mode 15) ----
 
-            let cb = cursor_sprite_cb(
-                plan.placement,
-                [plan.size_px; 2],
-                [0.0; 2],
-                1.0,
-                [0.0; 4],
-                [1920.0, 1080.0],
-                Some(&v),
+    /// Miroir CPU de `sd_arrow2` des shaders.
+    fn sd_arrow2(p: [f32; 2]) -> f32 {
+        let v = ARROW_CORE;
+        let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
+        let dot = |a: [f32; 2], b: [f32; 2]| a[0] * b[0] + a[1] * b[1];
+        let mut d = dot(sub(p, v[0]), sub(p, v[0]));
+        let mut s = 1.0f32;
+        let mut j = v.len() - 1;
+        for i in 0..v.len() {
+            let (e, w) = (sub(v[j], v[i]), sub(p, v[i]));
+            let k = (dot(w, e) / dot(e, e)).clamp(0.0, 1.0);
+            let b = [w[0] - e[0] * k, w[1] - e[1] * k];
+            d = d.min(dot(b, b));
+            let (c1, c2, c3) = (p[1] >= v[i][1], p[1] < v[j][1], e[0] * w[1] > e[1] * w[0]);
+            if (c1 && c2 && c3) || (!c1 && !c2 && !c3) {
+                s = -s;
+            }
+            j = i;
+        }
+        s * d.sqrt() - ARROW_ROUND
+    }
+
+    /// Miroir CPU de `sd_arrow`.
+    fn sd_arrow(p: [f32; 3]) -> f32 {
+        let half_t = ARROW_THICK * 0.5;
+        let w = [sd_arrow2([p[0], p[1]]) + ARROW_BEVEL, (p[2] + half_t).abs() - (half_t - ARROW_BEVEL)];
+        w[0].max(w[1]).min(0.0) + w[0].max(0.0).hypot(w[1].max(0.0)) - ARROW_BEVEL
+    }
+
+    /// Repère du plan → modèle (vecteurs) : l'inverse de `ModelView::model_to_plane`.
+    fn plane_to_model(v: [f32; 3], pose: CursorPose) -> [f32; 3] {
+        let (cp, sp) = (pose.pitch.cos(), pose.pitch.sin());
+        let (cy, sy) = (pose.yaw.cos(), pose.yaw.sin());
+        let (x, y) = (v[0] * cy + v[1] * sy, -v[0] * sy + v[1] * cy);
+        [x, y * cp + v[2] * sp, -y * sp + v[2] * cp]
+    }
+
+    /// Miroir CPU de l'ombre du mode 15 en un point `g` du plan (px du plan) : opacité 0..1.
+    fn model_shadow_at(view: &ModelView, g: [f32; 2]) -> f32 {
+        let pose = view.pose;
+        let q = plane_to_model(
+            [(g[0] - view.tip[0]) / view.unit, (g[1] - view.tip[1]) / view.unit, -view.tip[2] / view.unit],
+            pose,
+        );
+        let l = plane_to_model(view.light(), pose);
+        let (lo, hi) = arrow_box();
+        let (mut t0, mut t1) = (f32::MIN, f32::MAX);
+        for k in 0..3 {
+            let inv = 1.0 / if l[k].abs() > 1e-6 { l[k] } else { 1e-6 };
+            let (a, b) = ((lo[k] - MODEL_SHADOW_PAD - q[k]) * inv, (hi[k] + MODEL_SHADOW_PAD - q[k]) * inv);
+            t0 = t0.max(a.min(b));
+            t1 = t1.min(a.max(b));
+        }
+        let mut lit = 1.0f32;
+        if t0 < t1 && t1 > 0.0 {
+            let mut t = t0.max(0.004);
+            for _ in 0..32 {
+                let d = sd_arrow([q[0] + l[0] * t, q[1] + l[1] * t, q[2] + l[2] * t]);
+                lit = lit.min(MODEL_SOFTNESS * d / t);
+                if lit < 0.002 || t > t1 {
+                    break;
+                }
+                t += d.clamp(0.01, 0.2);
+            }
+            let r = lit.clamp(0.0, 1.0);
+            lit = r * r * (3.0 - 2.0 * r);
+        }
+        let u = (sd_arrow(q) / MODEL_CONTACT_RADIUS).clamp(0.0, 1.0);
+        let contact = 1.0 - u * u * (3.0 - 2.0 * u);
+        ((1.0 - lit) * 0.5).max(contact * 0.5)
+    }
+
+    /// La scène dorée, thème par défaut, avec la flèche comme seul sprite (et `text`).
+    fn model_scene() -> Scene {
+        let mut scene = zoomed_golden_scene();
+        scene.cursor.theme = "default".into();
+        for key in ["arrow", "text"] {
+            scene.cursor.cursor_sprites.insert(
+                key.into(),
+                crate::scene::SceneCursorSprite {
+                    path: format!("/{key}.png"),
+                    hotspot_x: 0.119,
+                    hotspot_y: 0.0874,
+                },
             );
-            assert_eq!(cb.mb, [v.extrude_px[0], v.extrude_px[1], v.taps as f32, 0.0]);
-            let e = v.extrude_px;
-            for (x, y) in [
-                (cb.fx[0], cb.fx[1]),
-                (cb.fx[2], cb.fx[3]),
-                (cb.src_prev[0], cb.src_prev[1]),
-                (cb.src_prev[2], cb.src_prev[3]),
-            ] {
-                for (px, py) in [(x, y), (x + e[0], y + e[1])] {
-                    assert!(
-                        px >= -1e-3 && px <= cb.quad_px[0] + 1e-3,
-                        "{rot:?} : x {px} hors bbox"
-                    );
-                    assert!(
-                        py >= -1e-3 && py <= cb.quad_px[1] + 1e-3,
-                        "{rot:?} : y {py} hors bbox"
-                    );
+        }
+        scene
+    }
+
+    fn model_plan(
+        rot: [f32; 3],
+        scene: &Scene,
+        track: &crate::cursor::CursorTrack,
+        t: f32,
+        model3d: bool,
+    ) -> Option<CursorPlan> {
+        let cfg = crate::config::all().pop().expect("cfg");
+        let fg = FrameGeometry { zoom_rotation: rot, ..full_frame_geometry() };
+        plan_cursor(
+            &fg,
+            &CursorPlanInput {
+                render_px: [1920.0, 1080.0],
+                u_max: 1.0,
+                v_max: 1.0,
+                cfg: &cfg,
+                live: LiveParams {
+                    cursor_model3d: model3d,
+                    cursor_bounce_scale: 2.5,
+                    ..LiveParams::default()
+                },
+                scene: Some(scene),
+                track,
+                t,
+            },
+        )
+    }
+
+    fn still_track(clicks: Vec<f32>) -> crate::cursor::CursorTrack {
+        crate::cursor::CursorTrack::new(vec![(0.0, 0.4, 0.6), (4.0, 0.4, 0.6)], clicks, vec![])
+    }
+
+    /// Le creux de `tap` : le contact que la flèche partage avec le rebond et l'impact du clic.
+    const CONTACT_S: f32 = 0.0495;
+
+    #[test]
+    fn the_model_pose_is_a_pure_function_of_time() {
+        let track = crate::cursor::CursorTrack::new(
+            vec![(0.0, 0.2, 0.5), (0.9, 0.3, 0.5), (1.0, 0.7, 0.4), (3.0, 0.7, 0.4)],
+            vec![1.05, 1.4],
+            vec![],
+        );
+        let times: Vec<f32> = (0..400).map(|k| k as f32 * 0.00731).collect();
+        let forward: Vec<CursorPose> = times.iter().map(|&t| cursor_pose(&track, t, 2.5)).collect();
+        let backward: Vec<CursorPose> =
+            times.iter().rev().map(|&t| cursor_pose(&track.clone(), t, 2.5)).collect();
+        assert!(forward.iter().eq(backward.iter().rev()), "l'ordre d'évaluation change la pose");
+        // Continue : pas de saut d'une milliseconde à l'autre, même autour des clics.
+        for k in 0..2999 {
+            let (a, b) = (k as f32 * 0.001, (k + 1) as f32 * 0.001);
+            let (p, q) = (cursor_pose(&track, a, 2.5), cursor_pose(&track, b, 2.5));
+            assert!((p.yaw - q.yaw).abs() < 0.02, "lacet discontinu en {a} : {} -> {}", p.yaw, q.yaw);
+            assert!((p.clearance - q.clearance).abs() < 0.03, "hauteur discontinue en {a}");
+        }
+    }
+
+    #[test]
+    fn the_arrow_touches_the_plane_on_the_click_contact() {
+        let track = still_track(vec![0.5]);
+        let rest = cursor_pose(&track, 0.45, 2.5);
+        assert_eq!(rest.clearance, MODEL_HOVER);
+        assert!((rest.pitch - MODEL_PITCH_IDLE_DEG.to_radians()).abs() < 1e-6);
+        assert_eq!(rest.yaw, 0.0, "immobile : pas de lacet");
+        // Au clic même, rien n'a encore bougé ; au creux, la flèche est posée, plus penchée.
+        assert_eq!(cursor_pose(&track, 0.5, 2.5).clearance, MODEL_HOVER);
+        let down = cursor_pose(&track, 0.5 + CONTACT_S, 2.5);
+        assert_eq!(down.clearance, 0.0, "au creux du contact, la flèche touche le plan");
+        assert!(down.pitch > rest.pitch + 5f32.to_radians(), "la pression penche la flèche");
+        // Posée assez longtemps pour qu'au moins une image la montre, même à 24 i/s…
+        for ms in 30..=70 {
+            assert_eq!(cursor_pose(&track, 0.5 + ms as f32 / 1000.0, 2.5).clearance, 0.0, "{ms} ms");
+        }
+        // …au même instant que la pression du rebond d'échelle, et relevée à la fin de la fenêtre.
+        let press = (0..260).min_by(|&a, &b| {
+            track.bounce(0.5 + a as f32 / 1000.0).total_cmp(&track.bounce(0.5 + b as f32 / 1000.0))
+        });
+        let press_ms = press.expect("un creux") as f32;
+        assert_eq!(cursor_pose(&track, 0.5 + press_ms / 1000.0, 2.5).clearance, 0.0);
+        assert_eq!(cursor_pose(&track, 0.5 + crate::regions::CLICK_IMPACT_WINDOW_S, 2.5), rest);
+        // clickBounce règle la pression, pas le contact.
+        let soft = cursor_pose(&track, 0.5 + CONTACT_S, 0.0);
+        assert_eq!(soft.clearance, 0.0);
+        assert!((soft.pitch - rest.pitch).abs() < 1e-6);
+
+        // Et « posée » veut dire posée : le point le plus bas du modèle affleure le plan.
+        let fg_rot = [-12.0, -18.0, -2.0];
+        let scene = model_scene();
+        let plan = model_plan(fg_rot, &scene, &track, 0.5 + CONTACT_S, true).expect("plan");
+        let view = ModelView::new(plan.placement, plan.size_px, plan.model.expect("modèle"))
+            .expect("vue");
+        let mut lowest = f32::MAX;
+        for i in 0..=45 {
+            for j in 0..=50 {
+                for k in 0..=48 {
+                    let q = [-0.08 + i as f32 * 0.004, -0.1 + j as f32 * 0.004, -k as f32 * 0.004];
+                    if sd_arrow(q) < 0.0 {
+                        lowest = lowest.min(view.model_to_plane(q)[2]);
+                    }
                 }
             }
         }
+        let gap = lowest / view.unit;
+        assert!((-0.002..0.02).contains(&gap), "au contact, le bas de la pointe est à {gap} u du plan");
+    }
+
+    #[test]
+    fn the_arrow_leans_towards_its_motion_and_its_click_target() {
+        let still = still_track(vec![]);
+        assert_eq!(cursor_pose(&still, 1.0, 2.5).yaw, 0.0);
+        let right = crate::cursor::CursorTrack::new(vec![(0.0, 0.1, 0.5), (2.0, 0.9, 0.5)], vec![], vec![]);
+        let left = crate::cursor::CursorTrack::new(vec![(0.0, 0.9, 0.5), (2.0, 0.1, 0.5)], vec![], vec![]);
+        let (r, l) = (cursor_pose(&right, 1.0, 2.5).yaw, cursor_pose(&left, 1.0, 2.5).yaw);
+        assert!(r > 5f32.to_radians() && (r + l).abs() < 1e-5, "droite {r}, gauche {l}");
+        let fast = crate::cursor::CursorTrack::new(vec![(0.0, 0.0, 0.5), (0.2, 1.0, 0.5)], vec![], vec![]);
+        let y = cursor_pose(&fast, 0.1, 2.5).yaw;
+        assert!(y <= MODEL_YAW_MAX_DEG.to_radians() + 1e-6 && y > 20f32.to_radians(), "{y}");
+        // Arrivée sur une cible à droite puis clic : juste avant, la flèche se tourne vers elle
+        // plus que la même arrivée sans clic ; au repos, longtemps après, le lacet revient à 0.
+        // Échantillonnée à 30 Hz comme la télémétrie : la piste de suivi lissée n'interpole pas
+        // à travers des trous de plusieurs secondes.
+        let samples: Vec<(f32, f32, f32)> = (0..120)
+            .map(|k| {
+                let t = k as f32 / 30.0;
+                (t, if t < 0.9 { 0.3 } else { 0.3 + 0.4 * ((t - 0.9) / 0.1).min(1.0) }, 0.5)
+            })
+            .collect();
+        let clicked = crate::cursor::CursorTrack::new(samples.clone(), vec![1.1], vec![]);
+        let quiet = crate::cursor::CursorTrack::new(samples, vec![], vec![]);
+        assert!(cursor_pose(&clicked, 1.05, 2.5).yaw > cursor_pose(&quiet, 1.05, 2.5).yaw + 1e-3);
+        assert!(cursor_pose(&clicked, 3.5, 2.5).yaw.abs() < 1e-3);
+    }
+
+    #[test]
+    fn only_the_default_arrow_is_modelled() {
+        let scene = model_scene();
+        let track = still_track(vec![0.5]);
+        let off = model_plan([0.0; 3], &scene, &track, 0.3, false).expect("plan");
+        assert!(off.model.is_none());
+        assert!(matches!(off.placement, CursorPlacement::Upright { .. }), "réglage éteint : mode 7");
+        let on = model_plan([0.0; 3], &scene, &track, 0.3, true).expect("plan");
+        assert!(on.model.is_some());
+        let CursorPlacement::Tilted { quad, .. } = on.placement else { panic!("écran droit : plan identité") };
+        assert_eq!((quad.scale, quad.rot), (1.0, [0.0; 3]));
+        // Pas de rebond d'échelle en 3D : la taille au creux du clic est celle du repos.
+        let press = model_plan([0.0; 3], &scene, &track, 0.5 + CONTACT_S, true).expect("plan");
+        assert_eq!(press.size_px, on.size_px);
+        let flat_press = model_plan([0.0; 3], &scene, &track, 0.5 + CONTACT_S, false).expect("plan");
+        assert!(flat_press.size_px < off.size_px, "le sprite plat garde son rebond");
+
+        // Un autre état, un autre thème, pas de flèche dans la table : le sprite plat.
+        let typed = crate::cursor::CursorTrack::new(
+            vec![(0.0, 0.4, 0.6), (4.0, 0.4, 0.6)],
+            vec![],
+            vec![(0.0, "text".into())],
+        );
+        assert!(model_plan([0.0; 3], &scene, &typed, 0.3, true).expect("plan").model.is_none());
+        let unknown = crate::cursor::CursorTrack::new(
+            vec![(0.0, 0.4, 0.6), (4.0, 0.4, 0.6)],
+            vec![],
+            vec![(0.0, "zoom-in".into())],
+        );
+        assert!(
+            model_plan([0.0; 3], &scene, &unknown, 0.3, true).expect("plan").model.is_some(),
+            "un état sans sprite retombe sur la flèche, donc sur le modèle"
+        );
+        let mut themed = model_scene();
+        themed.cursor.theme = "black-pixel".into();
+        assert!(model_plan([0.0; 3], &themed, &track, 0.3, true).expect("plan").model.is_none());
+        let bare = zoomed_golden_scene();
+        assert!(model_plan([0.0; 3], &bare, &track, 0.3, true).expect("plan").model.is_none());
+    }
+
+    const LEFT_ROT: [f32; 3] = [-8.0, -16.0, -1.0];
+    const ISO_ROT: [f32; 3] = [-12.0, -18.0, -2.0];
+
+    /// Les poses d'essai : au repos, posée, tournée.
+    fn model_cases() -> Vec<(String, CursorPlan)> {
+        let scene = model_scene();
+        let clicked = still_track(vec![0.5]);
+        let moving = crate::cursor::CursorTrack::new(vec![(0.0, 0.1, 0.6), (2.0, 0.9, 0.6)], vec![], vec![]);
+        let mut out = Vec::new();
+        for (name, rot) in [("flat", [0.0; 3]), ("iso", ISO_ROT), ("left", LEFT_ROT), ("right", [-8.0, 16.0, 1.0])] {
+            for (pose, track, t) in [("hover", &clicked, 0.3), ("touch", &clicked, 0.5 + CONTACT_S), ("yaw", &moving, 1.0)] {
+                let plan = model_plan(rot, &scene, track, t, true).expect("plan");
+                out.push((format!("{name}/{pose}"), plan));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_modelled_tip_lands_on_the_content_pixel() {
+        for (name, plan) in model_cases() {
+            let pose = plan.model.expect("modèle");
+            let view = ModelView::new(plan.placement, plan.size_px, pose).expect("vue");
+            let CursorPlacement::Tilted { plane_pt, quad, center_px, .. } = plan.placement else {
+                unreachable!()
+            };
+            let (bx, by) = quad.point_px(plane_pt[0], plane_pt[1]);
+            let want = [center_px[0] + bx, center_px[1] + by];
+            let got = view.project(view.model_to_plane([0.0; 3])).expect("projection");
+            assert!(
+                (got[0] - want[0]).abs() < 0.02 && (got[1] - want[1]).abs() < 0.02,
+                "{name}: pointe en {got:?}, contenu en {want:?}"
+            );
+            // Le cbuffer rend au shader le même rayon : `local + src.xy` au pixel de la pointe
+            // est la projection EXACTE de la pointe, ancrage ôté.
+            let cb = cursor_model_cb(plan.placement, plan.size_px, pose, 1.0, [0.0; 4]).expect("cb");
+            assert_eq!(cb.mode, 15.0);
+            let local = [want[0] - cb.dst[0] * 1920.0, want[1] - cb.dst[1] * 1080.0];
+            let w = crate::regions::rotate_point(view.tip, view.rot);
+            let f = view.perspective / (view.perspective - w[2]);
+            assert!(
+                (local[0] + cb.src[0] - w[0] * f).abs() < 0.05 && (local[1] + cb.src[1] - w[1] * f).abs() < 0.05,
+                "{name}: le rayon du shader ne passe pas par la pointe"
+            );
+            assert_eq!([cb.src[2], cb.src[3]], [view.perspective, view.unit]);
+            assert_eq!(cb.src_prev, [view.tip[0], view.tip[1], view.tip[2], pose.yaw]);
+            assert_eq!(cb.fx[3], pose.pitch);
+            assert!((cb.dst[2] * 1920.0 - cb.quad_px[0]).abs() < 1e-2);
+        }
+    }
+
+    #[test]
+    fn the_model_box_holds_the_arrow_and_its_shadow() {
+        for (name, plan) in model_cases() {
+            let pose = plan.model.expect("modèle");
+            let view = ModelView::new(plan.placement, plan.size_px, pose).expect("vue");
+            let cb = cursor_model_cb(plan.placement, plan.size_px, pose, 1.0, [0.0; 4]).expect("cb");
+            let (x0, y0) = (cb.dst[0] * 1920.0, cb.dst[1] * 1080.0);
+            let (x1, y1) = (x0 + cb.quad_px[0], y0 + cb.quad_px[1]);
+            let inside = |p: [f32; 2]| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+            let (lo, hi) = arrow_box();
+            let mut solid = 0;
+            for i in 0..=20 {
+                for j in 0..=30 {
+                    for k in 0..=6 {
+                        let q = [
+                            lo[0] + (hi[0] - lo[0]) * i as f32 / 20.0,
+                            lo[1] + (hi[1] - lo[1]) * j as f32 / 30.0,
+                            lo[2] + (hi[2] - lo[2]) * k as f32 / 6.0,
+                        ];
+                        if sd_arrow(q) > 0.0 {
+                            continue;
+                        }
+                        solid += 1;
+                        let p = view.project(view.model_to_plane(q)).expect("projection");
+                        assert!(inside(p), "{name}: le point {q:?} du modèle tombe hors de la boîte");
+                    }
+                }
+            }
+            assert!(solid > 100, "{name}: le modèle échantillonné est vide");
+            // L'ombre : tout point du plan qu'elle assombrit d'au moins 1/255 est dans la boîte.
+            let (step, reach) = (view.unit / 12.0, 3.0 * view.unit);
+            let mut shaded = 0;
+            for i in 0..=72 {
+                for j in 0..=72 {
+                    let g = [view.tip[0] - reach + i as f32 * step, view.tip[1] - reach + j as f32 * step];
+                    if model_shadow_at(&view, g) < 0.5 / 255.0 {
+                        continue;
+                    }
+                    shaded += 1;
+                    let p = view.project([g[0], g[1], 0.0]).expect("projection");
+                    assert!(inside(p), "{name}: l'ombre en {g:?} déborde de la boîte ({p:?})");
+                }
+            }
+            assert!(shaded > 50, "{name}: pas d'ombre échantillonnée");
+        }
+    }
+
+    /// Le backend logiciel ne dessine que la tête de la flèche modélisée ; le GPU et le sprite
+    /// plat gardent leur traînée.
+    #[test]
+    fn the_software_backend_draws_the_modelled_head_only() {
+        let scene = model_scene();
+        let fast = crate::cursor::CursorTrack::new(vec![(0.0, 0.1, 0.6), (0.5, 0.9, 0.6)], vec![], vec![]);
+        let cfg = crate::config::all().pop().expect("cfg");
+        let fg = full_frame_geometry();
+        let plan = |model3d: bool| {
+            plan_cursor(
+                &fg,
+                &CursorPlanInput {
+                    render_px: [1920.0, 1080.0],
+                    u_max: 1.0,
+                    v_max: 1.0,
+                    cfg: &cfg,
+                    live: LiveParams {
+                        cursor_model3d: model3d,
+                        cursor_motion_blur: 1.0,
+                        ..LiveParams::default()
+                    },
+                    scene: Some(&scene),
+                    track: &fast,
+                    t: 0.25,
+                },
+            )
+            .expect("plan")
+        };
+        let taps = plan(true).taps;
+        assert!(taps > 1, "le geste rapide doit donner une traînée");
+        assert_eq!(plan(true).for_backend(false).taps, taps, "GPU : traînée gardée");
+        let cpu = plan(true).for_backend(true);
+        assert_eq!(cpu.taps, 1);
+        assert_eq!(cpu.prev_placement.upright_center(), cpu.placement.upright_center());
+        assert_eq!(plan(false).for_backend(true).taps, plan(false).taps, "le sprite plat garde sa traînée");
     }
 }
-

@@ -37,8 +37,7 @@ function appearance(overrides: Partial<StylePresetAppearance> = {}): StylePreset
 			smoothing: 0.67,
 			motionBlur: 0.35,
 			clickBounce: 2.5,
-			volume: 0,
-			hover: 0,
+			model3d: false,
 			clipToBounds: false,
 		},
 		cursorShow: true,
@@ -108,23 +107,31 @@ describe("parseStylePresetAppearance", () => {
 		).toThrow(/cursor\.size/);
 	});
 
-	it("reads a preset written before cursor.volume as a flat cursor, and bounds it", () => {
-		const { volume: _volume, ...flatCursor } = appearance().cursor;
-		expect(parseStylePresetAppearance({ ...appearance(), cursor: flatCursor }).cursor.volume).toBe(
-			0,
+	it("drops the retired cursor.volume and cursor.hover keys of an older preset", () => {
+		const older = {
+			...appearance(),
+			cursor: { ...appearance().cursor, volume: 0.6, hover: 0.4 },
+		};
+		expect(parseStylePresetAppearance(older).cursor).toEqual(appearance().cursor);
+	});
+
+	it("reads a preset written before the 3D cursor as a flat cursor, and type-checks it", () => {
+		const { model3d: _model3d, ...flat } = appearance().cursor;
+		expect(parseStylePresetAppearance({ ...appearance(), cursor: flat }).cursor.model3d).toBe(
+			false,
 		);
 		expect(
 			parseStylePresetAppearance({
 				...appearance(),
-				cursor: { ...appearance().cursor, volume: 0.4 },
-			}).cursor.volume,
-		).toBe(0.4);
+				cursor: { ...appearance().cursor, model3d: true },
+			}).cursor.model3d,
+		).toBe(true);
 		expect(() =>
 			parseStylePresetAppearance({
 				...appearance(),
-				cursor: { ...appearance().cursor, volume: 1.5 },
+				cursor: { ...appearance().cursor, model3d: 1 },
 			}),
-		).toThrow(/cursor\.volume/);
+		).toThrow(/cursor\.model3d/);
 	});
 
 	it("reads a preset saved before the frame existed as frameless, and rejects an unknown frame", () => {
@@ -133,23 +140,6 @@ describe("parseStylePresetAppearance", () => {
 		expect(() => parseStylePresetAppearance({ ...appearance(), frame: "window-sepia" })).toThrow(
 			/frame/,
 		);
-	});
-
-	it("reads a preset written before cursor.hover as a resting cursor, and bounds it", () => {
-		const { hover: _hover, ...resting } = appearance().cursor;
-		expect(parseStylePresetAppearance({ ...appearance(), cursor: resting }).cursor.hover).toBe(0);
-		expect(
-			parseStylePresetAppearance({
-				...appearance(),
-				cursor: { ...appearance().cursor, hover: 0.4 },
-			}).cursor.hover,
-		).toBe(0.4);
-		expect(() =>
-			parseStylePresetAppearance({
-				...appearance(),
-				cursor: { ...appearance().cursor, hover: 1.5 },
-			}),
-		).toThrow(/cursor\.hover/);
 	});
 
 	it("falls back to the default cursor theme for an id this build does not ship", () => {

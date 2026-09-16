@@ -399,10 +399,9 @@
 	"cursor": {
 		"smoothing": "Smoothing",
 		"clickBounce": "Click Bounce",
-		"depth": "3D Depth",
-		"depthNeedsCursor": "Turn on Show Cursor to give it depth.",
-		"hover": "Float Height",
-		"hoverNeedsCursor": "Turn on Show Cursor to lift it off the screen.",
+		"model3d": "3D cursor",
+		"model3dHint": "Classic arrow only: other cursor shapes stay flat.",
+		"model3dNeedsCursor": "Turn on Show Cursor to use the 3D cursor.",
 		"help": "Cursor rendering from the recorded telemetry: theme, size, smoothing, motion blur, and click-bounce emphasis.",
 		"clipToBoundsDescription": "Keeps the cursor inside the video frame. Turn off to let the cursor extend past the edges - useful when zoomed in or panned.",
 		"size": "Size",

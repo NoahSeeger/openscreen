@@ -20,7 +20,7 @@ vi.mock("./compositorViewClient", () => ({
 
 /**
  * The full key set the addon understands, transcribed from
- * `crates/compositor/src/live.rs` — `set_param_bool` (3), `set_param_num` (9)
+ * `crates/compositor/src/live.rs` — `set_param_bool` (5), `set_param_num` (9)
  * and `set_param_str` (2). Anything the addon accepts and the app never pushes
  * silently keeps its compiled-in default, which is exactly the bug this file
  * guards: `cursorSize` was only ever pushed by the cursor panel's mount effect,
@@ -31,6 +31,8 @@ const ADDON_KEYS = [
 	"backgroundBlur",
 	"webcamMirror",
 	"cursorShow",
+	"cursorAutoHide",
+	"cursorModel3d",
 	"shadow",
 	"roundness",
 	"motionBlur",
@@ -38,8 +40,6 @@ const ADDON_KEYS = [
 	"webcamSize",
 	"cursorSize",
 	"cursorClickBounce",
-	"cursorVolume",
-	"cursorHover",
 	"cursorSmoothing",
 	"cursorMotionBlur",
 	"backgroundColor",
@@ -84,16 +84,14 @@ describe("pushAllNativeParams", () => {
 			cursor: {
 				size: 3,
 				clickBounce: 2.5,
-				volume: 0.4,
-				hover: 0.6,
+				model3d: true,
 				smoothing: 0.67,
 				motionBlur: 0.35,
 			},
 		});
 		expect(pushed.get("cursorSize")).toBe(3);
 		expect(pushed.get("cursorClickBounce")).toBe(2.5);
-		expect(pushed.get("cursorVolume")).toBeCloseTo(0.4, 5);
-		expect(pushed.get("cursorHover")).toBeCloseTo(0.6, 5);
+		expect(pushed.get("cursorModel3d")).toBe(true);
 		expect(pushed.get("cursorSmoothing")).toBeCloseTo(0.67, 5);
 		expect(pushed.get("cursorMotionBlur")).toBeCloseTo(0.35, 5);
 	});

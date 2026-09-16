@@ -399,10 +399,9 @@
 	"cursor": {
 		"smoothing": "Suavizado",
 		"clickBounce": "Rebote al clic",
-		"depth": "Profundidad 3D",
-		"depthNeedsCursor": "Activa «Mostrar cursor» para darle profundidad.",
-		"hover": "Altura flotante",
-		"hoverNeedsCursor": "Activa «Mostrar cursor» para despegarlo de la pantalla.",
+		"model3d": "Cursor 3D",
+		"model3dHint": "Solo la flecha clásica: las demás formas del cursor siguen planas.",
+		"model3dNeedsCursor": "Activa «Mostrar cursor» para usar el cursor 3D.",
 		"help": "Representación del cursor a partir de la telemetría grabada: tema, tamaño, suavizado, desenfoque de movimiento y rebote al hacer clic.",
 		"clipToBoundsDescription": "Mantiene el cursor dentro del cuadro del vídeo. Desactívalo para dejar que el cursor sobrepase los bordes; útil al hacer zoom o desplazar la imagen.",
 		"size": "Tamaño",

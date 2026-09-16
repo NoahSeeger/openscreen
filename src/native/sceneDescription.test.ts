@@ -1073,13 +1073,10 @@ describe("buildSceneDescription.settings mapping", () => {
 		expect(buildSceneDescription(high).layout.webcamSize).toBeCloseTo(0.5, 5);
 	});
 
-	it("keeps the cursor flat and resting for an older project, and clamps both", () => {
-		const older = buildSceneDescription(makeDoc({ legacyEditor: {} }));
-		expect(older.cursor.volume).toBe(0);
-		expect(older.cursor.hover).toBe(0);
-		const tooDeep = makeDoc({ legacyEditor: { cursorVolume: 3, cursorHover: -2 } });
-		expect(buildSceneDescription(tooDeep).cursor.volume).toBe(1);
-		expect(buildSceneDescription(tooDeep).cursor.hover).toBe(0);
+	it("keeps the flat cursor for an older project and carries the 3D cursor switch", () => {
+		expect(buildSceneDescription(makeDoc({ legacyEditor: {} })).cursor.model3d).toBe(false);
+		const on = makeDoc({ legacyEditor: { cursorModel3d: true } });
+		expect(buildSceneDescription(on).cursor.model3d).toBe(true);
 	});
 
 	it("carries depth of field: on by default, off when the project turns it off", () => {
@@ -1095,14 +1092,10 @@ describe("buildSceneDescription.settings mapping", () => {
 				cursorSmoothing: 0.9,
 				cursorMotionBlur: 0.5,
 				cursorClickBounce: 1.5,
-				cursorVolume: 0.7,
-				cursorHover: 0.4,
 				cursorClipToBounds: true,
 			},
 		});
 		const cursor = buildSceneDescription(doc).cursor;
-		expect(cursor.volume).toBe(0.7);
-		expect(cursor.hover).toBe(0.4);
 		expect(cursor.size).toBe(4);
 		expect(cursor.smoothing).toBe(0.9);
 		expect(cursor.motionBlur).toBe(0.5);
