@@ -255,6 +255,9 @@ float4 ps_main(VSOut i) : SV_Target
     // de perspective-correct exact, mais indiscernable à l'œil pour un tilt de 10-22°) et
     // échantillonne la vidéo à l'UV correspondant, sinon transparent (hors du quad projeté).
     // fx.xy/fx.zw = coins TL/TR (px locaux, 0..quad_px) ; src_prev.xy/.zw = coins BR/BL.
+    // mb = [gx, gy, z_focus, k] : profondeur du point r du plan = (r.x - 0.5)*gx + (r.y - 0.5)*gy
+    // en px, positive vers la caméra ; z_focus = celle du focus du zoom (`TiltedQuad::depth_mb`).
+    // Pas encore lu : k = 0, la sortie ne dépend pas de ce slot.
     // mode 11 : texte d'annotation, rastérisé par Direct2D (voir text.rs). D2D écrit sur une
     // surface DXGI en alpha PRÉMULTIPLIÉ, donc contrairement au mode 7 (sprite curseur, alpha
     // droit) il ne faut SURTOUT pas re-multiplier ici : les bords adoucis des glyphes

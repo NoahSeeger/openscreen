@@ -1107,6 +1107,7 @@ impl Compositor {
         s_px: [f32; 2],
         center_px: [f32; 2],
         cut: [f32; 4],
+        focus_plane: [f32; 2],
         radius: f32,
     ) -> LayerCB {
         let (rw, rh) = (self.render_w as f32, self.render_h as f32);
@@ -1141,6 +1142,9 @@ impl Compositor {
             fx: [tl0, tl1, tr0, tr1],
             src_prev: [br0, br1, bl0, bl1],
             dst_prev: [plane_px[0], plane_px[1], 0.0, 0.0],
+            // Gradient de profondeur du plan et profondeur du focus (`depth_mb`) ; `k = 0`,
+            // le shader ne les lit pas encore.
+            mb: quad.depth_mb(s_px, focus_plane),
             ..Default::default()
         }
     }
@@ -1989,7 +1993,9 @@ impl Compositor {
                 mb: [g.mb_taps, g.mb_amount, 1.0, 0.0],
                 ..Default::default()
             },
-            Some(quad) => self.tilted_screen_cb(quad, s_px, quad_center_px, g.cut, g.s_radius),
+            Some(quad) => {
+                self.tilted_screen_cb(quad, s_px, quad_center_px, g.cut, g.focus_plane, g.s_radius)
+            }
         };
         // Bind group construit AVANT le pass (doit vivre pendant tout le pass) ;
         // `_screen_uniform` garde le buffer uniforme en vie (reference par le bind).

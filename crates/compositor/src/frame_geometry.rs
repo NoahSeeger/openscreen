@@ -259,6 +259,27 @@ pub(crate) fn remap_box(base: [f32; 4], cut_ref: [f32; 4], cut: [f32; 4]) -> [f3
         base[3] * (cut[3] - cut[1]) / rh,
     ]
 }
+/// Où tombe le point de focus du zoom dans la coupe DESSINÉE `cut`, en 0..1 de cette coupe.
+///
+/// `focus` est exprimé dans le crop utilisateur (la convention de `screen_source_rect`), pas
+/// dans `cut` : les deux diffèrent dès qu'un crop ou un cover s'en mêle. Le zoom, lui, ne compte
+/// pas : la coupe dessinée est prise à zoom 1 (issue #179). Et le centre de la coupe zoomée
+/// n'est pas le focus dès qu'elle bute sur un bord, d'où le report du point lui-même, sans
+/// jamais supposer (0.5, 0.5).
+pub(crate) fn focus_in_cut(
+    u_max: f32,
+    v_max: f32,
+    crop: Option<SceneCrop>,
+    focus: [f32; 2],
+    cut: [f32; 4],
+) -> [f32; 2] {
+    // Zoom 1 : la coupe est le crop entier, quel que soit le focus.
+    let [cu0, cv0, cu1, cv1] = screen_source_rect(u_max, v_max, crop, 1.0, [0.5, 0.5]);
+    let f = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
+    let (u, v) = (cu0 + f(focus[0]) * (cu1 - cu0), cv0 + f(focus[1]) * (cv1 - cv0));
+    let local = |x: f32, a: f32, b: f32| if b - a > 1e-6 { ((x - a) / (b - a)).clamp(0.0, 1.0) } else { 0.5 };
+    [local(u, cut[0], cut[2]), local(v, cut[1], cut[3])]
+}
 /// Sous-rect SOURCE (en UV de texture) qui remplit une boîte de ratio `box_ar` **sans
 /// déformer** l'image : le plus grand rect centré ayant ce ratio, tiré de la frame
 /// visible — l'équivalent de `object-fit: cover` côté web.
@@ -742,6 +763,10 @@ pub struct FrameGeometry {
     pub padding_scale: f32,
     /// Coupe source de l'écran en UV texture (crop utilisateur + zoom).
     pub cut: [f32; 4],
+    /// Point de focus du zoom (résolu : suivi curseur et rampe compris) en 0..1 DANS la coupe
+    /// dessinée `cut`, c'est-à-dire dans le plan que le mode 8 incline. Borné au plan : un focus
+    /// que le cover a rogné retombe sur le bord. C'est lui qui fixe `z_focus` (`depth_mb`).
+    pub focus_plane: [f32; 2],
     pub s_dst: [f32; 4],
     pub s_dst_prev: [f32; 4],
     /// Boîte écran **sans le zoom** : le conteneur auquel les annotations et les
@@ -1235,6 +1260,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let cut_ref = cover(screen_source_rect(u_max, v_max, active_crop, p.zoom, p.focus));
         let cut_ref_prev = cover(screen_source_rect(u_max, v_max, active_crop, pp.zoom, p.focus));
         let cut = cover(screen_source_rect(u_max, v_max, active_crop, 1.0, p.focus));
+        let focus_plane = focus_in_cut(u_max, v_max, active_crop, p.focus, cut);
         let s_dst = remap_box(s_base, cut_ref, cut);
         let s_dst_prev = remap_box(s_base_prev, cut_ref_prev, cut);
         // le padding n'affecte QUE l'écran (la quantité de fond révélée). La webcam reste ancrée
@@ -1355,6 +1381,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         zoom_rotation,
         padding_scale,
         cut,
+        focus_plane,
         s_dst,
         s_dst_prev,
         // La boîte écran telle qu'elle serait sans zoom : `remap_box` n'est PAS appliqué.
@@ -1796,6 +1823,54 @@ mod tests {
                 "sous le {name}, ancrer sur `s_dst` devrait déplacer le rect — \
                  si les deux coïncident, ce test ne prouve plus rien"
             );
+        }
+    }
+
+    /// Le focus de profondeur (`z_focus`, mode 8) passe par la coupe réellement dessinée.
+    ///
+    /// Crop décalé ET focus collé au bord droit sous un zoom x2 : la coupe zoomée bute sur le
+    /// bord, son centre tombe à 0.75 du crop alors que le point visé est à 0.95. C'est ce point-là
+    /// que le plan doit tenir net, pas le centre, et encore moins (0.5, 0.5).
+    #[test]
+    fn the_depth_focus_goes_through_the_drawn_cut() {
+        let cfg = crate::config::all().pop().expect("au moins une config");
+        let json = zoomed_golden_scene_json()
+            .replace(r#""rotation":"none""#, r#""rotation":"iso""#)
+            .replace(r#""focusX":0.5"#, r#""focusX":0.95"#)
+            .replace(
+                r#""cropByClip":[{"x":0,"y":0,"#,
+                r#""cropByClip":[{"x":0.3,"y":0.1,"#,
+            );
+        let scene = Scene::from_json(&json).expect("scène inclinée recadrée");
+        let input = golden_input(&scene, &cfg);
+        let g = plan_frame(&input);
+        assert!(!crate::regions::is_identity_rotation(g.zoom_rotation), "garde : iso doit incliner");
+        assert!((g.focus_plane[0] - 0.95).abs() < 1e-4, "focus x {:?}", g.focus_plane);
+        assert!((g.focus_plane[1] - 0.3).abs() < 1e-4, "focus y {:?}", g.focus_plane);
+
+        // Garde : la coupe zoomée est bien clampée, son centre n'est PAS le focus.
+        let crop = scene.crop_by_clip[0];
+        let cut_ref = screen_source_rect(input.u_max, input.v_max, crop, 2.0, [0.95, 0.3]);
+        let centre_local = ((cut_ref[0] + cut_ref[2]) * 0.5 - g.cut[0]) / (g.cut[2] - g.cut[0]);
+        assert!((centre_local - 0.75).abs() < 1e-3, "garde : centre de coupe {centre_local}");
+
+        // Et `z_focus` est la profondeur de CE point, pas celle du centre du plan.
+        let render = input.render_px;
+        let s_px = [g.s_dst[2] * render[0], g.s_dst[3] * render[1]];
+        let quad = crate::regions::rotated_quad_corners_px(s_px[0], s_px[1], g.zoom_rotation);
+        let mb = quad.depth_mb(s_px, g.focus_plane);
+        let want = (0.95 - 0.5) * mb[0] + (0.3 - 0.5) * mb[1];
+        assert!((mb[2] - want).abs() < 1e-3 && mb[2].abs() > 1.0, "z_focus {} au lieu de {want}", mb[2]);
+    }
+
+    /// Un cover rogne la coupe dans le crop : le focus s'y reporte, et retombe sur le bord du
+    /// plan quand le cover l'a coupé.
+    #[test]
+    fn the_depth_focus_follows_a_cover_cut_and_clamps_to_it() {
+        let cut = [0.25, 0.0, 0.75, 1.0];
+        for (focus, want) in [([0.6, 0.5], [0.7, 0.5]), ([0.95, 0.5], [1.0, 0.5]), ([f32::NAN, 0.0], [0.5, 0.0])] {
+            let got = focus_in_cut(1.0, 1.0, None, focus, cut);
+            assert!((got[0] - want[0]).abs() < 1e-5 && (got[1] - want[1]).abs() < 1e-5, "{got:?} != {want:?}");
         }
     }
 
@@ -2423,6 +2498,7 @@ mod tests {
             zoom_rotation: [0.0, 0.0, 0.0],
             padding_scale: 1.0,
             cut: [0.0, 0.0, 1.0, 1.0],
+            focus_plane: [0.5, 0.5],
             s_dst: [0.0, 0.0, 1.0, 1.0],
             s_dst_prev: [0.0, 0.0, 1.0, 1.0],
             s_ann: [0.0, 0.0, 1.0, 1.0],

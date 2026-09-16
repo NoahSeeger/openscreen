@@ -358,6 +358,9 @@ fragment float4 ps_main(VSOut i [[stage_in]],
     }
 
     // mode 8 : écran tilté (zoom regions "rotation"). Warp bilinéaire inverse.
+    // mb = [gx, gy, z_focus, k] : profondeur du point r du plan = (r.x - 0.5)*gx + (r.y - 0.5)*gy
+    // en px, positive vers la caméra ; z_focus = celle du focus du zoom (`TiltedQuad::depth_mb`).
+    // Pas encore lu : k = 0, la sortie ne dépend pas de ce slot.
     if (layer.mode > 7.5 && layer.mode < 8.5)
     {
         // PAS de test de clip sur `dst_prev` ici — le port en avait copié un depuis le

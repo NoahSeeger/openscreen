@@ -546,6 +546,22 @@ pub fn is_identity_rotation(r: [f32; 3]) -> bool {
 /// perspective `perspective` (distance en px ; <=0 = orthographique). `None` si le point
 /// passe derrière le plan de projection (cas pathologique, comme le `return 1` du TS).
 fn project_corner(x0: f32, y0: f32, rot: [f32; 3], perspective: f32) -> Option<(f32, f32)> {
+    let (mut px, mut py, pz) = rotate_point(x0, y0, rot);
+    if perspective > 0.0 {
+        let denom = perspective - pz;
+        if denom <= 0.0 {
+            return None;
+        }
+        let f = perspective / denom;
+        px *= f;
+        py *= f;
+    }
+    Some((px, py))
+}
+
+/// La rotation seule de `project_corner` : le point (x0,y0,0) tourné, AVANT perspective.
+/// `pz > 0` = vers la caméra (la perspective divise par `perspective - pz`, donc agrandit).
+fn rotate_point(x0: f32, y0: f32, rot: [f32; 3]) -> (f32, f32, f32) {
     let (a, b, g) = (rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
     let (ca, sa) = (a.cos(), a.sin());
     let (cb, sb) = (b.cos(), b.sin());
@@ -563,16 +579,21 @@ fn project_corner(x0: f32, y0: f32, rot: [f32; 3], perspective: f32) -> Option<(
     let (xy, xz) = (py * ca - pz * sa, py * sa + pz * ca);
     py = xy;
     pz = xz;
-    if perspective > 0.0 {
-        let denom = perspective - pz;
-        if denom <= 0.0 {
-            return None;
-        }
-        let f = perspective / denom;
-        px *= f;
-        py *= f;
-    }
-    Some((px, py))
+    (px, py, pz)
+}
+
+/// `(Kx, Ky)` tels que le `pz` de `rotate_point(x0, y0, rot)` vaille `Kx·x0 + Ky·y0`.
+///
+/// Forme close du `pz` ci-dessus : le point part de z = 0, donc rotateZ ne touche pas z,
+/// rotateY en tire `-x1·sb`, rotateX en tire `y1·sa + z·ca`, où (x1, y1) est le point après
+/// rotateZ. En développant x1 = x0·cg − y0·sg et y1 = x0·sg + y0·cg, `pz` est linéaire en
+/// (x0, y0) — d'où ces deux coefficients, sans rien de plus à calculer par pixel.
+fn depth_coefficients(rot: [f32; 3]) -> (f32, f32) {
+    let (a, b, g) = (rot[0].to_radians(), rot[1].to_radians(), rot[2].to_radians());
+    let (ca, sa) = (a.cos(), a.sin());
+    let sb = b.sin();
+    let (cg, sg) = (g.cos(), g.sin());
+    (sa * sg - sb * ca * cg, sa * cg + sb * ca * sg)
 }
 
 /// Les 4 coins d'un quad `width`×`height` réduit de `scale`, projetés. `None` si un coin part
@@ -606,6 +627,10 @@ pub struct TiltedQuad {
     /// Facteur de containment. Le plan mesure donc `taille_du_rect × scale` dans son PROPRE repère,
     /// avant projection — ce qu'il faut connaître pour y poser un rayon de coin à la bonne échelle.
     pub scale: f32,
+    /// `(Kx, Ky)` : la profondeur d'un point du plan, en px, vaut `Kx·x + Ky·y` pour (x, y) sa
+    /// position en px dans le repère du plan, centre à l'origine, AVANT projection. Positive =
+    /// vers la caméra. Nulle quand le quad est rendu à plat.
+    pub depth_k: (f32, f32),
 }
 
 /// Les 4 coins (TL, TR, BR, BL) du quad tilté en 3D, en px relatifs au CENTRE du rect d'origine
@@ -645,6 +670,7 @@ pub fn rotated_quad_corners_px(width: f32, height: f32, rot: [f32; 3]) -> Tilted
                     (-half_w, half_h),
                 ],
                 scale: 1.0,
+                depth_k: (0.0, 0.0),
             };
         }
     };
@@ -665,7 +691,7 @@ pub fn rotated_quad_corners_px(width: f32, height: f32, rot: [f32; 3]) -> Tilted
             None => break,
         }
     }
-    TiltedQuad { corners, scale }
+    TiltedQuad { corners, scale, depth_k: depth_coefficients(rot) }
 }
 
 impl TiltedQuad {
@@ -683,6 +709,23 @@ impl TiltedQuad {
         let top = (tl.0 + (tr.0 - tl.0) * fx, tl.1 + (tr.1 - tl.1) * fx);
         let bottom = (bl.0 + (br.0 - bl.0) * fx, bl.1 + (br.1 - bl.1) * fx);
         (top.0 + (bottom.0 - top.0) * fy, top.1 + (bottom.1 - top.1) * fy)
+    }
+
+    /// Le `mb` du draw mode 8 : `[gx, gy, z_focus, k]`.
+    ///
+    /// La profondeur du point (s, t) du plan (0..1, ce que le warp inverse du shader retrouve)
+    /// vaut `(s − 0.5)·gx + (t − 0.5)·gy`, en px, positive vers la caméra : deux multiply-add par
+    /// pixel, aucune trigo. `z_focus` est cette profondeur au point de focus du zoom
+    /// (`focus_plane`, 0..1 dans le plan — `FrameGeometry::focus_plane`). `k` reste à 0 : le
+    /// shader n'en lit encore rien, la sortie ne change pas d'un octet.
+    ///
+    /// `screen_px` est la taille du rect d'origine, celle passée à `rotated_quad_corners_px` : le
+    /// plan mesure `screen_px × scale` dans son propre repère.
+    pub fn depth_mb(&self, screen_px: [f32; 2], focus_plane: [f32; 2]) -> [f32; 4] {
+        let gx = screen_px[0] * self.scale * self.depth_k.0;
+        let gy = screen_px[1] * self.scale * self.depth_k.1;
+        let z_focus = (focus_plane[0] - 0.5) * gx + (focus_plane[1] - 0.5) * gy;
+        [gx, gy, z_focus, 0.0]
     }
 
     /// Demi-largeur / demi-hauteur de la bounding box des coins projetés, en px.
@@ -1060,6 +1103,88 @@ mod tilt_tests {
                 );
             }
         }
+    }
+
+    fn presets() -> [(&'static str, [f32; 3]); 3] {
+        [
+            ("iso", rotation3d_for(&Some("iso".into()))),
+            ("left", rotation3d_for(&Some("left".into()))),
+            ("right", rotation3d_for(&Some("right".into()))),
+        ]
+    }
+
+    fn depth_at(mb: [f32; 4], s: f32, t: f32) -> f32 {
+        (s - 0.5) * mb[0] + (t - 0.5) * mb[1]
+    }
+
+    /// La forme close de `depth_mb` doit redonner le `pz` que `project_corner` calcule — sur tout
+    /// le plan, pas seulement aux coins, et dans le repère exact où les coins ont été projetés.
+    #[test]
+    fn the_closed_form_depth_matches_the_rotation() {
+        for (name, rot) in presets() {
+            for (w, h) in [(1920.0f32, 1080.0f32), (1080.0, 1920.0), (800.0, 800.0)] {
+                let quad = rotated_quad_corners_px(w, h, rot);
+                let mb = quad.depth_mb([w, h], [0.5, 0.5]);
+                let perspective = w.min(h) * 1.6;
+                for (i, (s, t)) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].into_iter().enumerate()
+                {
+                    let (x0, y0) = ((s - 0.5) * w * quad.scale, (t - 0.5) * h * quad.scale);
+                    // Même repère que les coins : projeter ce point redonne le coin rendu.
+                    let (px, py) = project_corner(x0, y0, rot, perspective).unwrap();
+                    let (cx, cy) = quad.corners[i];
+                    assert!((px - cx).abs() < 1e-2 && (py - cy).abs() < 1e-2, "{name} coin {i}");
+                }
+                for i in 0..=8 {
+                    for j in 0..=8 {
+                        let (s, t) = (i as f32 / 8.0, j as f32 / 8.0);
+                        let (x0, y0) = ((s - 0.5) * w * quad.scale, (t - 0.5) * h * quad.scale);
+                        let (_, _, pz) = rotate_point(x0, y0, rot);
+                        let z = depth_at(mb, s, t);
+                        assert!(
+                            (z - pz).abs() <= 1e-3 * w.max(h),
+                            "{name} {w}x{h} ({s},{t}) : forme close {z} != pz {pz}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Le signe. Pour iso, le coin haut-droit est le PROCHE (dessiné plus grand), le bas-gauche le
+    /// lointain : z(BL) < z(TR). Un signe inversé flouterait le coin proche, et la règle des 2°
+    /// ne le verrait pas — d'où le recoupement avec la taille réellement dessinée.
+    #[test]
+    fn iso_depth_rises_towards_the_corner_drawn_larger() {
+        let (w, h) = (1920.0f32, 1080.0f32);
+        let rot = rotation3d_for(&Some("iso".into()));
+        let quad = rotated_quad_corners_px(w, h, rot);
+        let mb = quad.depth_mb([w, h], [0.5, 0.5]);
+        let (z_tr, z_bl) = (depth_at(mb, 1.0, 0.0), depth_at(mb, 0.0, 1.0));
+        assert!(z_bl < z_tr, "z(BL) = {z_bl} doit être < z(TR) = {z_tr}");
+        // Grossissement perspective d'un coin = position projetée / position tournée.
+        let magnification = |i: usize, s: f32, t: f32| {
+            let (x0, y0) = ((s - 0.5) * w * quad.scale, (t - 0.5) * h * quad.scale);
+            let (rx, ry, _) = rotate_point(x0, y0, rot);
+            quad.corners[i].0.hypot(quad.corners[i].1) / rx.hypot(ry)
+        };
+        let (m_tr, m_bl) = (magnification(1, 1.0, 0.0), magnification(3, 0.0, 1.0));
+        assert!(m_tr > m_bl * 1.2, "TR x{m_tr} devrait être nettement plus grossi que BL x{m_bl}");
+    }
+
+    /// Le focus au centre du plan est à la profondeur du centre (0), et `k` reste nul : le slot
+    /// ne change rien au rendu tant qu'un shader ne le lit pas.
+    #[test]
+    fn the_depth_slot_is_inert_and_centred() {
+        for (name, rot) in presets() {
+            let quad = rotated_quad_corners_px(1920.0, 1080.0, rot);
+            let mb = quad.depth_mb([1920.0, 1080.0], [0.5, 0.5]);
+            assert_eq!(mb[2], 0.0, "{name}");
+            assert_eq!(mb[3], 0.0, "{name}");
+            let off = quad.depth_mb([1920.0, 1080.0], [0.9, 0.2]);
+            assert!((off[2] - depth_at(off, 0.9, 0.2)).abs() < 1e-4, "{name}");
+        }
+        let flat = rotated_quad_corners_px(1920.0, 1080.0, [0.0, 0.0, 0.0]);
+        assert_eq!(flat.depth_mb([1920.0, 1080.0], [0.1, 0.9]), [0.0; 4]);
     }
 
     #[test]

@@ -27,7 +27,7 @@ struct Layer {
     fx: vec4<f32>,        // mode 2 : spread ombre en px ; modes 8/12/13 : coins TL,TR du quad projeté ; mode 9 : hampe de la flèche ; mode 10 : (flou?, rayon/bloc px, ovale?, teinté?)
     src_prev: vec4<f32>,  // modes 8/12/13 : coins BR,BL du quad projeté ; mode 9 : barbe 1 ; mode 10 incliné : coins BR,BL du masque
     dst_prev: vec4<f32>,  // mode 8 : taille du plan en px AVANT projection (le rayon y vit) ; mode 13 : rect de clip ; mode 9 : barbe 2 ; mode 10 incliné : coins TL,TR du masque
-    mb: vec4<f32>,        // mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné
+    mb: vec4<f32>,        // mode 8 : [gx, gy, z_focus, k], profondeur du plan (pas encore lue, k = 0) ; mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;

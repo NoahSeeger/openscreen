@@ -1139,6 +1139,7 @@ impl Compositor {
         s_px: [f32; 2],
         center_px: [f32; 2],
         cut: [f32; 4],
+        focus_plane: [f32; 2],
         radius: f32,
         y: &metal::Texture,
         uv: &metal::Texture,
@@ -1176,6 +1177,9 @@ impl Compositor {
                 fx: [tl0, tl1, tr0, tr1],
                 src_prev: [br0, br1, bl0, bl1],
                 dst_prev: [plane_px[0], plane_px[1], 0.0, 0.0],
+                // Gradient de profondeur du plan et profondeur du focus (`depth_mb`) ; `k = 0`,
+                // le shader ne les lit pas encore.
+                mb: quad.depth_mb(s_px, focus_plane),
                 ..Default::default()
             },
             y,
@@ -2118,7 +2122,7 @@ impl Compositor {
                 &suv,
             ),
             Some(quad) => self.draw_tilted_screen(
-                enc, quad, s_px, quad_center_px, g.cut, g.s_radius, &sy, &suv,
+                enc, quad, s_px, quad_center_px, g.cut, g.focus_plane, g.s_radius, &sy, &suv,
             ),
         }
 
