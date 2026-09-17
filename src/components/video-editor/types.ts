@@ -149,7 +149,7 @@ export interface ZoomRegion {
 	source?: ZoomRegionSource;
 	/** When true, cursor is hidden during this zoom region. */
 	hideCursor?: boolean;
-	/** When true, each click presses the tilted plane (needs a fixed `rotationPreset`). Omitted when off. */
+	/** When true, each click presses the tilted plane, or recoils the `follow-cursor` camera (needs a `rotationPreset`). Omitted when off. */
 	clickImpact?: true;
 }
 

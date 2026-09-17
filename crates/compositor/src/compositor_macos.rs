@@ -1949,20 +1949,25 @@ impl Compositor {
         model: Option<crate::frame_geometry::CursorPose>,
     ) -> Result<()> {
         let (tex, iw, ih) = self.cached_image(sprite.path.as_str())?;
+        // Sans champ de distance, repli sur le sprite plat plutôt qu'aucun curseur. Parité Linux.
         if let Some(pose) = model {
-            let (sdf, shape) = self.cursor_sdf(sprite.path.as_str())?;
-            let shape = crate::frame_geometry::SpriteShape {
-                hotspot: [sprite.hotspot_x, sprite.hotspot_y],
-                ..shape
-            };
-            if let Some(cb) =
-                crate::frame_geometry::cursor_model_cb(placement, size_px, pose, shape, a, clip)
-            {
-                enc.set_fragment_texture(2, Some(&tex));
-                enc.set_fragment_texture(4, Some(&sdf));
-                self.draw_solid(enc, &cb);
+            match self.cursor_sdf(sprite.path.as_str()) {
+                Ok((sdf, shape)) => {
+                    let shape = crate::frame_geometry::SpriteShape {
+                        hotspot: [sprite.hotspot_x, sprite.hotspot_y],
+                        ..shape
+                    };
+                    if let Some(cb) = crate::frame_geometry::cursor_model_cb(
+                        placement, size_px, pose, shape, a, clip,
+                    ) {
+                        enc.set_fragment_texture(2, Some(&tex));
+                        enc.set_fragment_texture(4, Some(&sdf));
+                        self.draw_solid(enc, &cb);
+                    }
+                    return Ok(());
+                }
+                Err(e) => eprintln!("[curseur] champ de \"{}\" : {e:#}", sprite.path),
             }
-            return Ok(());
         }
         let (rw, rh) = (self.render_w as f32, self.render_h as f32);
         let ar = iw as f32 / ih.max(1) as f32;

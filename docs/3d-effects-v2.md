@@ -86,7 +86,7 @@ ne se lit que si l'œil se déplace autour de l'écran.
   85 % × 83 %.
 - **Cadrage au zoom** : le centrage et le containment s'effacent linéairement jusqu'au zoom 2. Au
   delà, le point visé tombe au centre de l'image, grossi exactement du zoom. Le point visé reste dans
-  `0,5 ± (0,5 − 0,55/zoom)`, comme avant : au centre au zoom 1.
+  `0,5 ± max(0, 0,5 − 0,55/max(zoom, 1))`, comme avant : au centre au zoom 1.
 - **Force 0** = le rendu plat, par le même chemin (mode 0).
 
 **Le cadreur** (`camera::follow`), pure fonction de `t`, sans zone morte : le pointeur, lu dans
@@ -204,8 +204,8 @@ incliné contre le commit de base).
 
 Tuyauterie : `CursorVisualSettings.model3d`, clé legacy `cursorModel3d`, préréglages (absent →
 éteint), `SceneCursor.model3d` (`serde(default)`), `LiveParams.cursor_model3d`, paramètre live
-`cursorModel3d`. Rien de neuf dans le contrat de scène : le modèle se tire du sprite que la
-scène transporte déjà.
+`cursorModel3d`. Le contrat de scène ne gagne que ce champ optionnel, sans donnée de sprite
+neuve : le modèle se tire du sprite que la scène transporte déjà.
 
 ### B.3 Le modèle (mode 15)
 
@@ -421,4 +421,4 @@ La PR 7 ajoute un mode de shader, donc elle se vérifie sur les trois backends :
 Rust de la pose, du contact, de l'ancrage et de la boîte ; rendus D3D11 sur une frame NV12
 synthétique ; le même test de rendu dans les modules Linux (lavapipe) et macOS (CI).
 
-**État** : PR 6 et 7 écrites et testées. 8 et 9 restent à faire.
+**État** : PR 6, 7, 7b et 7c écrites et testées. 8 et 9 restent à faire.

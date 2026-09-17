@@ -653,23 +653,30 @@ mod tests {
     }
 
     /// Le coût ne dépend pas de la longueur de la région : 120 lectures de piste par frame.
+    /// Chaque mesure garde le meilleur de 7 passes : une préemption ne gonfle qu'une passe.
     #[test]
     fn the_follow_cost_is_bounded() {
         let tr = track(|t| (0.5 + 0.4 * (t * 0.9).sin(), 0.5 + 0.3 * (t * 0.4).cos()));
         let f = whole(&tr);
+        let best = |run: &dyn Fn(usize)| {
+            (0..7)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    (0..200).for_each(run);
+                    t0.elapsed() / 200
+                })
+                .min()
+                .unwrap()
+        };
         let time = |t: f32| {
-            let t0 = std::time::Instant::now();
-            for i in 0..200 {
+            best(&|i| {
                 std::hint::black_box(follow(&f, t - i as f32 * 0.01, 2.0));
-            }
-            t0.elapsed() / 200
+            })
         };
         let (early, late) = (time(3.0), time(59.0));
-        let t0 = std::time::Instant::now();
-        for i in 0..200 {
+        let camera = best(&|i| {
             std::hint::black_box(View::new(BOX, pose([i as f32 / 200.0, 0.3], 1.5)));
-        }
-        let camera = t0.elapsed() / 200;
+        });
         println!("cadreur : {early:?} à 3 s, {late:?} à 59 s ; caméra : {camera:?}");
         assert!(late < std::time::Duration::from_millis(1), "{late:?}");
         assert!(late < early * 3 + std::time::Duration::from_micros(50), "{early:?} {late:?}");

@@ -495,8 +495,9 @@ export const zoomRegionSchema = endGteStart(
 		customScale: z.number().positive().optional(),
 		source: z.enum(["auto", "manual"]).optional(),
 		hideCursor: z.boolean().optional(),
-		/** Each click presses the tilted plane toward the clicked side. Only meaningful with a
-		 *  fixed-angle `rotationPreset`; omitted (never `false`) when off. */
+		/** Each click gives an impact: a fixed-angle `rotationPreset` presses the tilted plane
+		 *  toward the clicked side, `follow-cursor` recoils the camera. Needs a `rotationPreset`;
+		 *  omitted (never `false`) when off. */
 		clickImpact: z.literal(true).optional(),
 	}),
 	"endMs",

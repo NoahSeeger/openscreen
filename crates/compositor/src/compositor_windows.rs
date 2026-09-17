@@ -12,7 +12,6 @@ use crate::frame_geometry::{
     cover_crop_uv, cover_uv_rect, decode_data_uri, ease_in_out_cubic, lerp,
     lerp4, parse_hex, preset_placements, remap_box, screen_source_rect, timeline, CursorPlacement,
     FrameParams, Placement, ShadowCaster, SpriteShape, CURSOR_BASE_SIZE_FRAC, FPS,
-    SCREEN_SHADOW_OFFSET_FRAC,
     SCREEN_SHADOW_SPREAD_FRAC, SHADOW_TUNING_REF_PX, WEBCAM_SHADOW_OFFSET_FRAC,
     WEBCAM_SHADOW_OPACITY, WEBCAM_SHADOW_SPREAD_FRAC,
 };
@@ -1583,19 +1582,26 @@ impl Compositor {
     ) -> Result<()> {
         let path = sprite.path.as_str();
         let (srv, iw, ih) = self.cached_image(path)?;
+        // Sans champ de distance, repli sur le sprite plat plutôt que sur le curseur math.
+        // Parité Linux.
         if let Some(pose) = model {
-            let (sdf, shape) = self.cursor_sdf(path)?;
-            let shape = SpriteShape { hotspot: [sprite.hotspot_x, sprite.hotspot_y], ..shape };
-            if let Some(cb) =
-                crate::frame_geometry::cursor_model_cb(placement, size_px, pose, shape, a, clip)
-            {
-                self.upload_cb(&cb);
-                self.ctx.PSSetShaderResources(2, Some(&[Some(srv)]));
-                self.ctx.PSSetShaderResources(4, Some(&[Some(sdf)]));
-                self.ctx.Draw(4, 0);
-                self.ctx.PSSetShaderResources(4, Some(&[None]));
+            match self.cursor_sdf(path) {
+                Ok((sdf, shape)) => {
+                    let shape =
+                        SpriteShape { hotspot: [sprite.hotspot_x, sprite.hotspot_y], ..shape };
+                    if let Some(cb) = crate::frame_geometry::cursor_model_cb(
+                        placement, size_px, pose, shape, a, clip,
+                    ) {
+                        self.upload_cb(&cb);
+                        self.ctx.PSSetShaderResources(2, Some(&[Some(srv)]));
+                        self.ctx.PSSetShaderResources(4, Some(&[Some(sdf)]));
+                        self.ctx.Draw(4, 0);
+                        self.ctx.PSSetShaderResources(4, Some(&[None]));
+                    }
+                    return Ok(());
+                }
+                Err(e) => eprintln!("[curseur] champ de \"{path}\" : {e:#}"),
             }
-            return Ok(());
         }
         let ar = iw as f32 / ih as f32;
         let (pw, ph) = if ar >= 1.0 { (size_px, size_px / ar) } else { (size_px * ar, size_px) };

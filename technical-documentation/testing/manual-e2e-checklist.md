@@ -139,7 +139,7 @@ Sections marked **post-1.10.0** cover what has landed on `main` since the v1.10.
 - [ ] Activate the timeline tool with the visible zoom label and confirm a zoom region appears.
 - [ ] Select the zoom region and cycle its level through multiple available depths; confirm the preview scale changes.
 - [ ] Drag the zoom focus point in the preview and confirm the zoom follows the new focus.
-- [ ] Change the zoom's 3D camera among Off, the three fixed angles and the three moving cameras, and confirm the preview orientation changes; with a moving camera, move the cursor or click from one side of the recording to the other and confirm the screen turns to that side.
+- [ ] Change the zoom's 3D camera among Off, the three fixed angles and the follow-cursor camera, and confirm the preview orientation changes; with the follow-cursor camera, move the cursor or click from one side of the recording to the other and confirm the screen turns to that side.
 - [ ] Set a zoom region to automatic focus and confirm its focus follows cursor telemetry across the whole region.
 - [ ] Use the automatic-zooms menu and confirm it adds suggested zoom regions when cursor telemetry supports suggestions.
 - [ ] Select a zoom region and delete it from the selection inspector; confirm it disappears from the lane.
