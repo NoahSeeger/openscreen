@@ -27,6 +27,20 @@ vi.mock("../RightPanes", () => ({
 	VideoEffectsPane: () => <div data-testid="effects-pane">VideoEffectsPane</div>,
 }));
 
+const editorSettings = vi.hoisted(() => ({ cursorShow: true }));
+vi.mock("@/lib/ai-edition/store/useEditorSettings", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@/lib/ai-edition/store/useEditorSettings")>();
+	return {
+		useEditorSettings: () => {
+			const result = actual.useEditorSettings();
+			return {
+				...result,
+				settings: { ...result.settings, cursorShow: editorSettings.cursorShow },
+			};
+		},
+	};
+});
+
 vi.mock("../CaptionsPane", () => ({
 	CaptionsPane: () => <div data-testid="captions-pane">CaptionsPane</div>,
 }));
@@ -117,6 +131,20 @@ describe("FloatingInspector", () => {
 				screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" }),
 			).toBeDisabled();
 			expect(screen.getByText("settings.zoom.clickImpact.needsCursor")).toBeInTheDocument();
+		});
+
+		it("is disabled with its reason when the cursor is hidden globally", () => {
+			editorSettings.cursorShow = false;
+			try {
+				const { tl } = zoomTl({ rotationPreset: "iso" });
+				render(<FloatingInspector {...defaultProps} tl={tl} />);
+				expect(
+					screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" }),
+				).toBeDisabled();
+				expect(screen.getByText("settings.zoom.clickImpact.needsCursor")).toBeInTheDocument();
+			} finally {
+				editorSettings.cursorShow = true;
+			}
 		});
 
 		it("toggles the region's clickImpact under a 3D preset", () => {
