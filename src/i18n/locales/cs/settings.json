@@ -346,26 +346,23 @@
 				"iso": "Šikmo shora",
 				"left": "Obrazovka natočená doleva",
 				"right": "Obrazovka natočená doprava",
-				"followCursor": "Sleduje kurzor",
-				"swingClicks": "Natočí se ke každému kliknutí",
-				"orbit": "Pomalý oblet"
+				"followCursor": "Sleduje kurzor"
 			},
 			"description": {
 				"off": "Obrazovka zůstane rovná.",
 				"iso": "Drží jednu pózu: natočená doleva a viděná shora.",
 				"left": "Drží jednu pózu: obrazovka hledí doleva, její pravý okraj vystupuje dopředu.",
 				"right": "Drží jednu pózu: obrazovka hledí doprava, její levý okraj vystupuje dopředu.",
-				"followCursor": "Natáčí se ke straně záznamu, kde je kurzor, s mírným zpožděním.",
-				"swingClicks": "Drží svůj úhel a pak se natočí ke každému kliknutí.",
-				"orbit": "Během zoomu se pomalu přesune z jedné strany na druhou, začíná na straně kurzoru."
+				"followCursor": "Obrazovka zůstává v klidu; kamera se natáčí, aby udržela kurzor v záběru."
 			},
-			"needsCursor": "Kurzor je skrytý: tato kamera nemá co sledovat a zůstane v čelním pohledu."
+			"needsCursor": "Kurzor je skrytý: tato kamera nemá co sledovat a drží svůj výchozí úhel."
 		},
 		"clickImpact": {
 			"title": "Odezva kliknutí",
 			"description": "Každé kliknutí zatlačí nakloněnou obrazovku: kliknutá strana se prohne a vrátí zpět.",
 			"needsRotation": "Nejprve zvolte 3D kameru: zatlačit lze jen nakloněnou obrazovku.",
-			"needsCursor": "Kurzor je skrytý: obrazovka reaguje jen na viditelná kliknutí."
+			"needsCursor": "Kurzor je skrytý: obrazovka reaguje jen na viditelná kliknutí.",
+			"fixedOnly": "Obrazovku naklání jen pevný úhel: s touto kamerou zůstává obrazovka v klidu."
 		},
 		"level": "Úroveň přiblížení",
 		"previewHold": "Podržte pro náhled efektu přiblížení",

@@ -313,8 +313,6 @@ const CAMERA_KEYS: Record<Rotation3DPreset, string> = {
 	left: "left",
 	right: "right",
 	"follow-cursor": "followCursor",
-	"swing-clicks": "swingClicks",
-	orbit: "orbit",
 };
 
 /** « Click impact » : une case à cocher, et dessous ce qu'elle fait — ou pourquoi elle ne peut
@@ -633,9 +631,7 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 							{
 								// A moving camera reads the cursor track, which the export only loads while the
 								// cursor is shown: say so rather than offer a camera that silently holds still.
-								!settings.cursorShow &&
-								(region.rotationPreset === "follow-cursor" ||
-									region.rotationPreset === "swing-clicks")
+								!settings.cursorShow && region.rotationPreset === "follow-cursor"
 									? ts("zoom.camera.needsCursor")
 									: ts(
 											`zoom.camera.description.${region.rotationPreset ? CAMERA_KEYS[region.rotationPreset] : "off"}`,
@@ -646,13 +642,16 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 					<ClickImpactToggle
 						checked={region.clickImpact === true}
 						// The click presses the TILTED plane and follows the visible pointer: without a
-						// preset, or with the cursor hidden, the checkbox would move nothing.
+						// preset, or with the cursor hidden, the checkbox would move nothing. The moving
+						// camera keeps the screen still, so there is nothing to press either.
 						blocker={
 							!region.rotationPreset
 								? ts("zoom.clickImpact.needsRotation")
-								: !settings.cursorShow || region.hideCursor
-									? ts("zoom.clickImpact.needsCursor")
-									: null
+								: region.rotationPreset === "follow-cursor"
+									? ts("zoom.clickImpact.fixedOnly")
+									: !settings.cursorShow || region.hideCursor
+										? ts("zoom.clickImpact.needsCursor")
+										: null
 						}
 						label={ts("zoom.clickImpact.title")}
 						description={ts("zoom.clickImpact.description")}

@@ -122,6 +122,15 @@ describe("FloatingInspector", () => {
 			expect(screen.getByText("settings.zoom.clickImpact.needsCursor")).toBeInTheDocument();
 		});
 
+		it("is disabled with its reason under the follow camera, whose screen stays still", () => {
+			const { tl } = zoomTl({ rotationPreset: "follow-cursor" });
+			render(<FloatingInspector {...defaultProps} tl={tl} />);
+			expect(
+				screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" }),
+			).toBeDisabled();
+			expect(screen.getByText("settings.zoom.clickImpact.fixedOnly")).toBeInTheDocument();
+		});
+
 		it("toggles the region's clickImpact under a 3D preset", () => {
 			const { tl, updateZoomClickImpact } = zoomTl({ rotationPreset: "iso" });
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
@@ -170,18 +179,18 @@ describe("FloatingInspector", () => {
 			]);
 			expect(groups).toEqual([
 				["settings.zoom.camera.fixed", ["iso", "left", "right"]],
-				["settings.zoom.camera.moving", ["follow-cursor", "swing-clicks", "orbit"]],
+				["settings.zoom.camera.moving", ["follow-cursor"]],
 			]);
 		});
 
-		it("writes a moving camera into rotationPreset, and off by absence", () => {
-			const { tl, updateZoomRotation } = zoomTl({ rotationPreset: "swing-clicks" });
+		it("writes the camera into rotationPreset, and off by absence", () => {
+			const { tl, updateZoomRotation } = zoomTl({ rotationPreset: "follow-cursor" });
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
 			const select = screen.getByRole("combobox", { name: "settings.zoom.camera.title" });
-			expect(select).toHaveValue("swing-clicks");
-			expect(screen.getByText("settings.zoom.camera.description.swingClicks")).toBeInTheDocument();
-			fireEvent.change(select, { target: { value: "follow-cursor" } });
-			expect(updateZoomRotation).toHaveBeenCalledWith("z", "follow-cursor");
+			expect(select).toHaveValue("follow-cursor");
+			expect(screen.getByText("settings.zoom.camera.description.followCursor")).toBeInTheDocument();
+			fireEvent.change(select, { target: { value: "iso" } });
+			expect(updateZoomRotation).toHaveBeenCalledWith("z", "iso");
 			fireEvent.change(select, { target: { value: "off" } });
 			expect(updateZoomRotation).toHaveBeenLastCalledWith("z", undefined);
 		});

@@ -346,26 +346,23 @@
 				"iso": "Picado en diagonal",
 				"left": "Pantalla girada a la izquierda",
 				"right": "Pantalla girada a la derecha",
-				"followCursor": "Sigue el cursor",
-				"swingClicks": "Gira con cada clic",
-				"orbit": "Órbita lenta"
+				"followCursor": "Sigue el cursor"
 			},
 			"description": {
 				"off": "La pantalla se queda plana.",
 				"iso": "Mantiene una sola pose: girada a la izquierda y vista desde arriba.",
 				"left": "Mantiene una sola pose: la pantalla mira a la izquierda y su borde derecho avanza.",
 				"right": "Mantiene una sola pose: la pantalla mira a la derecha y su borde izquierdo avanza.",
-				"followCursor": "Gira hacia el lado de la grabación donde está el cursor, con un ligero retraso.",
-				"swingClicks": "Mantiene su ángulo y luego gira hacia cada clic.",
-				"orbit": "Pasa lentamente de un lado a otro durante el zoom, empezando por el lado del cursor."
+				"followCursor": "La pantalla no se mueve; la cámara gira para mantener el cursor a la vista."
 			},
-			"needsCursor": "El cursor está oculto: esta cámara no tiene nada que seguir y se queda de frente."
+			"needsCursor": "El cursor está oculto: esta cámara no tiene nada que seguir y mantiene su ángulo inicial."
 		},
 		"clickImpact": {
 			"title": "Impacto del clic",
 			"description": "Cada clic presiona la pantalla inclinada: el lado pulsado se hunde y luego vuelve.",
 			"needsRotation": "Elige primero una cámara 3D: solo se puede presionar una pantalla inclinada.",
-			"needsCursor": "El cursor está oculto: la pantalla solo reacciona a los clics visibles."
+			"needsCursor": "El cursor está oculto: la pantalla solo reacciona a los clics visibles.",
+			"fixedOnly": "Solo un ángulo fijo inclina la pantalla: con esta cámara la pantalla no se mueve."
 		},
 		"level": "Nivel de zoom",
 		"previewHold": "Mantener para previsualizar el efecto de zoom",
