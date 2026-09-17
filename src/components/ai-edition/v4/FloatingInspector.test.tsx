@@ -122,13 +122,14 @@ describe("FloatingInspector", () => {
 			expect(screen.getByText("settings.zoom.clickImpact.needsCursor")).toBeInTheDocument();
 		});
 
-		it("is disabled with its reason under the follow camera, whose screen stays still", () => {
-			const { tl } = zoomTl({ rotationPreset: "follow-cursor" });
+		it("says the orbiting camera recoils on a click, since its screen stays still", () => {
+			const { tl, updateZoomClickImpact } = zoomTl({ rotationPreset: "follow-cursor" });
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
-			expect(
-				screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" }),
-			).toBeDisabled();
-			expect(screen.getByText("settings.zoom.clickImpact.fixedOnly")).toBeInTheDocument();
+			const box = screen.getByRole("checkbox", { name: "settings.zoom.clickImpact.title" });
+			expect(box).toBeEnabled();
+			expect(screen.getByText("settings.zoom.clickImpact.descriptionCamera")).toBeInTheDocument();
+			fireEvent.click(box);
+			expect(updateZoomClickImpact).toHaveBeenCalledWith("z", true);
 		});
 
 		it("toggles the region's clickImpact under a 3D preset", () => {

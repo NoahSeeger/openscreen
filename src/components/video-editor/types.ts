@@ -80,9 +80,10 @@ export const FIXED_ROTATION_3D_PRESETS = ["iso", "left", "right"] as const;
 export type FixedRotation3DPreset = (typeof FIXED_ROTATION_3D_PRESETS)[number];
 
 /**
- * A moving 3D camera. `follow-cursor` keeps the screen still and turns a real camera to look at
- * the cursor; the native compositor renders it (`crates/compositor/src/camera.rs`). It needs the
- * cursor track, which the export only loads while the cursor is shown.
+ * A moving 3D camera. `follow-cursor` keeps the screen still and moves a real camera around it:
+ * the camera orbits to the side the cursor is on and rises or dips with it, always level. The
+ * native compositor renders it (`crates/compositor/src/camera.rs`). It needs the cursor track,
+ * which the export only loads while the cursor is shown.
  */
 export const MOVING_ROTATION_3D_PRESETS = ["follow-cursor"] as const;
 export type MovingRotation3DPreset = (typeof MOVING_ROTATION_3D_PRESETS)[number];
@@ -106,14 +107,16 @@ export function isRotation3DPreset(value: unknown): value is Rotation3DPreset {
 // recording is truncated" while the plane was in fact drawn whole. `regions.rs` holds the same
 // numbers and a test asserting no edge comes within 2° of an axis.
 //
-// A moving camera has no single pose. Its entry is its resting angle (`REST_DEG` in `camera.rs`:
-// seen from the left, level), what a renderer without the cursor track draws. It is a camera
-// angle, not a screen rotation, so this is the nearest equivalent rather than the same picture.
+// A moving camera has no single pose. Its entry is its resting angle (`ELEVATION_DEG` in
+// `camera.rs`: cursor centred, the camera 4° above the screen, facing it), what a renderer without
+// the cursor track draws. A camera above tips the top edge toward the viewer, which is a negative X
+// rotation of the screen. It is a camera angle, not a screen rotation, so this is the nearest
+// equivalent rather than the same picture.
 export const ROTATION_3D_PRESETS: Record<Rotation3DPreset, Rotation3D> = {
 	iso: { rotationX: -12, rotationY: -18, rotationZ: -2 },
 	left: { rotationX: -8, rotationY: -16, rotationZ: -1 },
 	right: { rotationX: -8, rotationY: 16, rotationZ: 1 },
-	"follow-cursor": { rotationX: 0, rotationY: 12, rotationZ: 0 },
+	"follow-cursor": { rotationX: -4, rotationY: 0, rotationZ: 0 },
 };
 
 /** Perspective distance in CSS px is this factor times min(viewport w, h). Same

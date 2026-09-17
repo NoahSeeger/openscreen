@@ -346,14 +346,14 @@
 				"iso": "Dall'alto di sbieco",
 				"left": "Schermo ruotato a sinistra",
 				"right": "Schermo ruotato a destra",
-				"followCursor": "Segue il cursore"
+				"followCursor": "Ruota con il cursore"
 			},
 			"description": {
 				"off": "Lo schermo resta piatto.",
 				"iso": "Mantiene una sola posa: ruotato a sinistra e visto dall'alto.",
 				"left": "Mantiene una sola posa: lo schermo guarda a sinistra e il bordo destro avanza.",
 				"right": "Mantiene una sola posa: lo schermo guarda a destra e il bordo sinistro avanza.",
-				"followCursor": "Lo schermo resta fermo; la telecamera ruota per tenere in vista il cursore."
+				"followCursor": "Lo schermo resta fermo; la telecamera gli gira intorno dal lato del cursore e sale o scende con esso."
 			},
 			"needsCursor": "Il cursore è nascosto: questa telecamera non ha nulla da seguire e mantiene l'angolo iniziale."
 		},
@@ -362,7 +362,7 @@
 			"description": "Ogni clic preme lo schermo inclinato: il lato cliccato si abbassa, poi torna.",
 			"needsRotation": "Scegli prima una camera 3D: si può premere solo uno schermo inclinato.",
 			"needsCursor": "Il cursore è nascosto: lo schermo reagisce solo ai clic visibili.",
-			"fixedOnly": "Solo un angolo fisso inclina lo schermo: con questa telecamera lo schermo resta fermo."
+			"descriptionCamera": "Ogni clic fa arretrare un po' la telecamera, che poi torna avanti."
 		},
 		"level": "Livello zoom",
 		"previewHold": "Tieni premuto per vedere l'anteprima dell'effetto zoom",

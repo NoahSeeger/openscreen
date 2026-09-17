@@ -346,14 +346,14 @@
 				"iso": "Chéo từ trên xuống",
 				"left": "Màn hình xoay sang trái",
 				"right": "Màn hình xoay sang phải",
-				"followCursor": "Theo con trỏ"
+				"followCursor": "Xoay quanh theo con trỏ"
 			},
 			"description": {
 				"off": "Màn hình giữ phẳng.",
 				"iso": "Giữ một tư thế: xoay sang trái và nhìn từ trên xuống.",
 				"left": "Giữ một tư thế: màn hình hướng sang trái, cạnh phải nhô về phía trước.",
 				"right": "Giữ một tư thế: màn hình hướng sang phải, cạnh trái nhô về phía trước.",
-				"followCursor": "Màn hình đứng yên; máy quay xoay để luôn giữ con trỏ trong khung hình."
+				"followCursor": "Màn hình đứng yên; máy quay bay vòng quanh, sang phía có con trỏ và nâng lên hay hạ xuống theo nó."
 			},
 			"needsCursor": "Con trỏ đang bị ẩn: máy quay này không có gì để theo dõi và giữ nguyên góc ban đầu."
 		},
@@ -362,7 +362,7 @@
 			"description": "Mỗi lần nhấp sẽ ấn màn hình nghiêng: phía được nhấp lún xuống rồi bật lại.",
 			"needsRotation": "Hãy chọn camera 3D trước: chỉ màn hình nghiêng mới ấn được.",
 			"needsCursor": "Con trỏ đang ẩn: màn hình chỉ phản ứng với các lần nhấp nhìn thấy được.",
-			"fixedOnly": "Chỉ góc cố định mới làm nghiêng màn hình: với máy quay này, màn hình đứng yên."
+			"descriptionCamera": "Mỗi cú nhấp đẩy máy quay lùi lại một chút rồi trở về."
 		},
 		"level": "Mức độ thu phóng",
 		"previewHold": "Giữ để xem trước hiệu ứng phóng to",

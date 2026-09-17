@@ -346,14 +346,14 @@
 				"iso": "Angled from above",
 				"left": "Screen turned left",
 				"right": "Screen turned right",
-				"followCursor": "Follows the cursor"
+				"followCursor": "Orbits with the cursor"
 			},
 			"description": {
 				"off": "The screen stays flat.",
 				"iso": "Holds one pose: turned left and seen from above.",
 				"left": "Holds one pose: the screen faces left, its right edge comes forward.",
 				"right": "Holds one pose: the screen faces right, its left edge comes forward.",
-				"followCursor": "The screen stays still; the camera turns to keep the cursor in view."
+				"followCursor": "The screen stays still; the camera circles it, swinging to the cursor's side and rising or dipping with it."
 			},
 			"needsCursor": "The cursor is hidden: this camera has nothing to follow and holds its starting angle."
 		},
@@ -362,7 +362,7 @@
 			"description": "Each click presses the tilted screen: the clicked side dips, then springs back.",
 			"needsRotation": "Pick a 3D camera first: only a tilted screen can be pressed.",
 			"needsCursor": "The cursor is hidden: the screen only reacts to clicks you can see.",
-			"fixedOnly": "Only a fixed angle tilts the screen: with this camera the screen stays still."
+			"descriptionCamera": "Each click pushes the camera back a little, then it springs forward."
 		},
 		"level": "Zoom Level",
 		"previewHold": "Hold to preview zoom effect",
