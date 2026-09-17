@@ -261,6 +261,17 @@ describe("migrateAxcutDocumentToProjectData", () => {
 		expect(back.editor.webcamMaskShape).toBe("circle");
 	});
 
+	it("round-trips depthOfField: on by default, an explicit off stays off", () => {
+		const roundTrip = (depthOfField: boolean) =>
+			migrateAxcutDocumentToProjectData(
+				migrateProjectDataToAxcutDocument(
+					makeV2Project({ editor: { ...makeV2Project().editor, depthOfField } }),
+				),
+			).editor.depthOfField;
+		expect(roundTrip(true)).toBe(true);
+		expect(roundTrip(false)).toBe(false);
+	});
+
 	it("round-trips zoomRegions and annotationRegions back to ms", () => {
 		const v2 = makeV2Project({
 			editor: {

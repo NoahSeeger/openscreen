@@ -1611,6 +1611,16 @@ fn dof_sharpness(rgba: &[u8], w: u32, c: (u32, u32), r: u32) -> f64 {
     acc / n
 }
 
+/// Octets RGBA de la fenetre `r`x`r` centree en `c`.
+fn dof_window_bytes(rgba: &[u8], w: u32, c: (u32, u32), r: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    for y in c.1 - r / 2..c.1 + r / 2 {
+        let i = ((y * w + c.0 - r / 2) * 4) as usize;
+        out.extend_from_slice(&rgba[i..i + (r * 4) as usize]);
+    }
+    out
+}
+
 /// Coin du plan (hors fond magenta) extreme dans la direction `dir`, rentre de `inset`
 /// vers le centroide.
 fn dof_corner(rgba: &[u8], w: u32, h: u32, dir: (i64, i64), inset: f64) -> (u32, u32) {
@@ -1686,7 +1696,10 @@ fn compose_linux_profondeur_de_champ() {
         "compose_linux dof : proche {near_off:.2} -> {near_on:.2}, lointain {far_off:.2} -> {far_on:.2}"
     );
     assert!(far_off > 2.0, "fenetre lointaine sans detail ({far_off})");
-    assert!(near_on == near_off, "coin proche modifie : {near_off} -> {near_on}");
+    assert!(
+        dof_window_bytes(&on, w, near, r) == dof_window_bytes(&off, w, near, r),
+        "coin proche modifie : {near_off} -> {near_on}"
+    );
     assert!(far_on < far_off * 0.7, "coin lointain pas floute : {far_off} -> {far_on}");
     assert!(flat_on == flat_off, "rotation nulle : la profondeur de champ a change la frame");
 }
