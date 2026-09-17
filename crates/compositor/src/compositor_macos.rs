@@ -34,7 +34,7 @@ use crate::ffi::AVFrame;
 pub use crate::frame_geometry::{
     live_params_from_scene, webcam_shape_code, FIXTURE_FRAMES, LayerCB, LiveParams, OUT_H, OUT_W,
 };
-use crate::frame_geometry::{parse_hex, FrameGeometryInput, ShadowCaster, SCREEN_SHADOW_OFFSET_FRAC,
+use crate::frame_geometry::{parse_hex, FrameGeometryInput, ShadowCaster,
     SCREEN_SHADOW_SPREAD_FRAC, WEBCAM_SHADOW_OFFSET_FRAC, WEBCAM_SHADOW_OPACITY,
     WEBCAM_SHADOW_SPREAD_FRAC};
 use crate::scene::{Scene, SceneBackground};
@@ -1210,8 +1210,8 @@ impl Compositor {
         );
     }
 
-    /// Écran incliné (mode 8) : warp bilinéaire inverse dans la bbox du quad projeté.
-    /// Pas de motion blur sur ce chemin — le tilt est bref, la simplification ne se voit pas.
+    /// Écran incliné (mode 8) : le calque partagé (`frame_geometry::tilted_screen_cb`), avec la
+    /// pyramide de profondeur de champ en texture(2).
     #[allow(clippy::too_many_arguments)]
     unsafe fn draw_tilted_screen(
         &self,
@@ -1228,50 +1228,23 @@ impl Compositor {
         uv: &metal::Texture,
         dof_pyramid: Option<&metal::Texture>,
     ) {
-        let (rw, rh) = (self.render_w as f32, self.render_h as f32);
-        let corners = quad.corners;
-        // Taille du plan dans son propre repère, avant projection : c'est là que vit le rayon,
-        // pour qu'il reste constant le long du bord au lieu de s'étirer avec la perspective.
-        let plane_px = [s_px[0] * quad.scale, s_px[1] * quad.scale];
-        let (min_x, max_x) =
-            corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
-        let (min_y, max_y) =
-            corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| (mn.min(y), mx.max(y)));
-        let bbox_w = (max_x - min_x).max(1.0);
-        let bbox_h = (max_y - min_y).max(1.0);
-        // coins en px LOCAUX à la bbox, pour matcher `i.local` du shader.
-        let local = |(x, y): (f32, f32)| -> [f32; 2] { [x - min_x, y - min_y] };
-        let [tl0, tl1] = local(corners[0]);
-        let [tr0, tr1] = local(corners[1]);
-        let [br0, br1] = local(corners[2]);
-        let [bl0, bl1] = local(corners[3]);
+        let render_px = [self.render_w as f32, self.render_h as f32];
         // texture(2) EXPLICITE : `draw_video` ne lie que 0/1, et le slot 2 garde sinon ce que
         // le draw précédent y a laissé. `None` quand l'effet est coupé : `k = 0`, rien n'y est lu.
         enc.set_fragment_texture(2, dof_pyramid.map(|t| &**t));
-        self.draw_video(
-            enc,
-            &LayerCB {
-                dst: [
-                    (center_px[0] + min_x) / rw,
-                    (center_px[1] + min_y) / rh,
-                    bbox_w / rw,
-                    bbox_h / rh,
-                ],
-                src: cut,
-                quad_px: [bbox_w, bbox_h],
-                radius_px: radius * quad.scale,
-                mode: 8.0,
-                fx: [tl0, tl1, tr0, tr1],
-                src_prev: [br0, br1, bl0, bl1],
-                dst_prev: [plane_px[0], plane_px[1], square_top, 0.0],
-                // Gradient de profondeur du plan, profondeur du focus et `k` (`depth_mb`) : la
-                // pyramide liée décide seule si l'effet tourne.
-                mb: quad.depth_mb(s_px, focus_plane, dof_pyramid.is_some()),
-                ..Default::default()
-            },
-            y,
-            uv,
+        // La pyramide liée décide seule si la profondeur de champ tourne.
+        let cb = crate::frame_geometry::tilted_screen_cb(
+            quad,
+            s_px,
+            center_px,
+            cut,
+            focus_plane,
+            radius,
+            square_top,
+            dof_pyramid.is_some(),
+            render_px,
         );
+        self.draw_video(enc, &cb, y, uv);
     }
 
 
@@ -2154,7 +2127,7 @@ impl Compositor {
         ];
         if cfg.shadow {
             let spread = SCREEN_SHADOW_SPREAD_FRAC * g.frame_min_px;
-            let offset = [0.0, SCREEN_SHADOW_OFFSET_FRAC * g.frame_min_px];
+            let offset = g.screen_shadow_offset();
             let opacity = 0.45 * lp.shadow_scale;
             // L'ombre suit la silhouette réellement affichée : rect arrondi quand l'écran est
             // droit, quadrilatère projeté quand il est penché. Un rect droit derrière un écran
