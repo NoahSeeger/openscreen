@@ -27,10 +27,12 @@ calculée sur la **base seule** (« échelle gelée »), la part dynamique ne fa
 
 ### A.2 Le modèle : une seule liste « caméra 3D »
 
-**Révisé après test produit.** La première version séparait l'attitude (`rotationPreset`) du
-mouvement (`cameraMotion` : `still`, `sway`, `follow`, `flip`). Rejetée : deux sélecteurs dont
-les effets ne se distinguaient pas, et des bugs (cf. A.3.1). Il n'y a plus qu'**un** champ,
-`rotationPreset`, et **un** sélecteur « 3D camera » :
+**Révisé deux fois après test produit.** La première version séparait l'attitude
+(`rotationPreset`) du mouvement (`cameraMotion` : `still`, `sway`, `follow`, `flip`) ; la
+deuxième fusionnait tout en un sélecteur avec trois caméras mobiles (`follow-cursor`,
+`swing-clicks`, `orbit`) qui faisaient tourner **l'écran** sur un chemin de poses à roulis
+permanent (5,5 à 8,5°). Rejetées : « pour chacune, le métrage est de travers ». Il reste **un**
+champ, `rotationPreset`, et **un** sélecteur « 3D camera » :
 
 | groupe | valeur | libellé (EN) | ce que ça fait |
 |---|---|---|---|
@@ -38,110 +40,120 @@ les effets ne se distinguaient pas, et des bugs (cf. A.3.1). Il n'y a plus qu'**
 | Angle fixe | `iso` | Angled from above | tourné vers la gauche, plongée marquée |
 | Angle fixe | `left` | Turned left | tourné vers la gauche |
 | Angle fixe | `right` | Turned right | tourné vers la droite |
-| Caméra mobile | `follow-cursor` | Follows the cursor | se tourne du côté du curseur |
-| Caméra mobile | `swing-clicks` | Turns to each click | pivote vers chaque clic, tient entre deux |
-| Caméra mobile | `orbit` | Slow orbit | balaie d'un côté à l'autre pendant le zoom |
+| Caméra mobile | `follow-cursor` | Follows the cursor | l'écran est immobile, une vraie caméra vise le curseur |
 
-Les trois angles fixes gardent leurs valeurs (rendu d'un projet existant inchangé à l'octet),
-avec la parallaxe de vitesse. Les caméras mobiles n'ont pas de parallaxe (la pose bouge déjà) ;
-l'impact du clic (réglage à part) s'ajoute à tous les présets, dans le même budget. Sous la
-liste, une ligne dit ce que fait l'option choisie.
+`swing-clicks` et `orbit` sont retirés (jamais livrés) : ils reviendront un par un sur le modèle
+de caméra ci-dessous. Un projet qui les porte encore s'ouvre à plat (valeur inconnue).
+
+Les trois angles fixes gardent leurs valeurs et leur rendu **à l'octet** (vérifié contre le
+commit de base : présets, cadre, flou de confidentialité, profondeur de champ, parallaxe, impact
+du clic, flèche modélisée), avec la parallaxe de vitesse et l'impact du clic.
 
 « Turned right » veut dire que la face de l'écran regarde vers la droite : le bord droit
-recule. C'est ce que fait `right` [−8, 16, 1] depuis toujours ; « From the right » aurait
-décrit l'inverse.
+recule. C'est ce que fait `right` [−8, 16, 1] depuis toujours.
 
-### A.3 Les caméras mobiles
+### A.3 `follow-cursor` : une caméra pan-tilt-zoom
 
-Les trois partagent **un** chemin de poses, `regions::camera_pose(u, v)`, `u` le côté (−1
-gauche, +1 droite), `v` la hauteur (−1 haut, +1 bas) :
+`crates/compositor/src/camera.rs`. **L'écran ne bouge pas** : c'est le plan z = 0 du monde, en
+px de sa boîte. **L'œil ne bouge pas** non plus. La caméra pivote sur lui pour viser le
+pointeur, un point juste au-dessus du contenu, et zoome en resserrant son champ.
 
-```
-X = −3 − 2,5·v        plongée plus marquée quand le curseur est bas (l'écran se tourne vers lui)
-Y = 16·u              toute l'amplitude de left/right : la caméra change vraiment de côté
-Z = −(5,5 + 3·u²)     roulis anti-horaire, de signe constant, −5,5° au centre, −8,5° aux bords
-```
+- **Orientation** : `lookAt` à haut fixe, lacet puis tangage. **Roulis nul par construction** :
+  l'axe horizontal de l'image reste horizontal dans le monde, une verticale qui passe par le
+  point visé reste verticale (mesuré au pixel sur le rendu D3D11 : ≤ 0,02°).
+- **Objectif** : champ de 12° sur le petit côté de la boîte (~15° sur un cadre paddé).
+- **Repos** : l'œil à 12° à gauche du centre, à sa hauteur (lacet 12°, tangage 0). Le bord
+  gauche, plus proche, est ~9 % plus haut que le droit. Distance : celle où l'écran remplit sa
+  boîte, puis la focale est réduite juste assez pour qu'il y tienne vu du repos (containment
+  mesuré une fois, donc constant pendant que la caméra pivote).
+- **Zoom** : la boîte grandit du facteur de zoom autour de son centre (pas de glissement 2D :
+  le focus de la région est ignoré), ce qui revient à resserrer le champ. Force 0 = le rendu
+  plat, par le même chemin (mode 0).
+- **Pivot borné en douceur** à ±12° de lacet, ±8° de tangage autour du repos (identité jusqu'à
+  75 % de la borne, puis `tanh`). Mesuré : 8,4° / 4,8° au pire au zoom 5, la borne ne s'engage
+  pas sur le chemin normal.
 
-**Pourquoi un roulis.** Tant qu'aucune arête ne franchit son axe, le signe de l'angle de chaque
-arête est constant le long d'un chemin continu. À Y = 0, les deux arêtes horizontales ont le
-signe de Z (une rotation X seule les laisse horizontales) ; à |Y| = 16 avec un petit Z, elles ont
-des signes opposés, et opposés dans l'autre sens de l'autre côté (`left` : haut −, bas + ;
-`right` : haut +, bas −). **Aucun chemin continu ne relie `left` à `right` sans qu'une arête
-horizontale passe par 0°** : c'est exactement pourquoi l'ancien `flip` sautait. Recherche
-numérique (toutes les familles X, Y, Z, impact ±1,9° compris) : la seule famille qui franchit
-Y = 0 est celle où Z domine toutes les fuites, les quatre arêtes penchant du même côté que le
-roulis. D'où |Z| ≥ ~5,5 au centre et ~8,5 aux bords, et une plongée X modeste (la fuite
-verticale qu'elle crée doit rester sous le roulis).
+**Pourquoi un objectif long et un repos sans tangage.** Une caméra qui tourne à la fois en lacet
+et en tangage penche les horizontales de `atan(tan(lacet)·sin(tangage))`. Ce n'est pas un
+roulis (les verticales restent droites), mais un écran plein de lignes de texte qui penchent
+toutes du même côté se lit comme « de travers ». Premier réglage (champ 18°, repos 7° / 5°) :
+2,5° de pente vers le coin haut-droit au zoom 2,2, visible. Réglage retenu, mesuré sur tout le
+chemin (`the_content_stays_level_along_the_path`) : 0,17° au zoom 1,25, **0,66° au zoom 1,8
+(défaut)**, 0,91° à 2,2, 1,37° à 3,5, 1,63° à 5.
 
-**Échelle gelée.** L'échelle de containment d'une caméra mobile est le minimum sur toute
-l'enveloppe (`moving_envelope_scale` : 5 × 2 poses × 4 coins d'impact, porte d'ease-in
-comprise), constante pendant le zoom : le plan ne respire pas. Prix : il est ~18 % plus petit
-qu'un angle fixe (0,674 contre 0,82–0,84 en 16:9).
+**Le cadreur** (`follow_aim`), pure fonction de `t` : rejoué depuis le début de l'entrée de la
+région à pas fixe (1/60 s), le dernier pas partiel prolongeant le ressort jusqu'à `t`.
 
-Mesuré à l'échelle gelée sur la grille fine (41 × 9 poses × 25 impacts) : arête la plus proche
-d'un axe à 2,45° en 16:9, 2,31° en 16:10, 2,26° en 21:9, 2,09° en 4:3
-(`the_moving_sweep_keeps_every_edge_off_axis`), aucun débordement sur cinq formats
-(`the_moving_sweep_stays_inside_at_one_frozen_scale`). En portrait la règle des 2° ne tient
-pas, comme pour les présets fixes (elle n'est posée qu'en paysage).
+- **Anticipation** : le pointeur moyen sur `[t, t + 1,2 s]` (7 échantillons, bornés à la fenêtre
+  du clip), lu dans l'image source recadrée.
+- **Zone morte** : 45 % de la vue autour de la cible. Sortie, la cible poursuit le pointeur
+  jusqu'à le viser à moins de 5 % de la vue (hystérésis), puis se fige.
+- **Vitesse** : la cible glisse vers le pointeur à 1,5 vue par seconde au plus, en ligne droite.
+  Le mode 8 n'a pas de flou de mouvement : à la vitesse du geste, un pan d'un coin à l'autre
+  montait à 140 px par image à 30 i/s et saccadait.
+- **Ressort critique** ω = 6 rad/s (95 % en 0,8 s).
+- **Portée** : la visée reste dans `0,5 ± (0,5 − 0,55/zoom)`, là où la vue reste dans l'écran
+  (la marge de 10 % absorbe le containment et le rétrécissement du côté lointain). Zoom 1 : pas
+  de pivot.
+- Mesuré (portage Python du cadreur) sur un aller-retour d'un coin à l'autre en 0,6 s au
+  zoom 2,2 : les clics restent dans la vue, le pointeur n'en sort que de 20 % de la demi-vue
+  pendant le geste. Coût : ~5 ms par frame pour une région d'une minute en debug.
 
-Le curseur se lit dans l'**image source recadrée** (`CameraFrame::crop`), jamais dans la coupe
-zoomée. `aim_uv` ramène chaque axe à [−1, 1] par un smoothstep sur 15 %..85 % : « le curseur
-dans la partie droite » donne presque toute la pose de droite.
+Sans piste (curseur masqué : l'export ne la charge pas), la caméra vise le centre, à son repos.
 
-- **`follow-cursor`** : moyenne de la piste sur une fenêtre de Hann de 1,4 s (24 échantillons,
-  retard ~0,7 s), bornée à la fenêtre du clip. Pure fonction de `t`, sans à-coup.
-- **`swing-clicks`** : pose du curseur au début du zoom, puis à chaque clic (dans la fenêtre du
-  clip et le recadrage) un pivot smoothstep de 0,7 s vers la pose du clic. Les clics sont
-  rejoués depuis le début de la région à chaque frame ; un clic en plein pivot repart de la
-  pose atteinte.
-- **`orbit`** : de `u = ±1` (côté du curseur au début du zoom) à `u = ∓1`, smoothstep sur la
-  durée de la région, `v = 0`.
+**Ce qui suit la caméra** : l'écran (mode 8), son ombre (mode 12), le cadre de fenêtre (mode 14),
+le curseur plat (mode 13) et modélisé (mode 15), le flou de confidentialité (mode 10) et la
+profondeur de champ, dont la mise au point suit le point visé. **L'impact du clic est coupé**
+sous cette caméra : l'écran est immobile, le presser contredirait le modèle ; le panneau le dit.
+L'ombre de l'écran tombe le long de la lumière de la flèche modélisée (haut-gauche) au lieu de
+tomber droit, en glissant avec le poids de la caméra. Une lampe posée sur la caméra éclaire un peu
+plus le côté proche (±4 %, `CAMERA_LIGHT_GAIN`).
 
-Entre deux caméras mobiles chaînées, on interpole `(u, v)`, pas les angles : la pose reste sur
-le chemin. Sans piste (curseur masqué : l'export ne la charge pas), `follow-cursor` et
-`swing-clicks` tiennent la pose de face, `orbit` part de la gauche.
+Chaînée à un angle fixe, une région `follow-cursor` ne mélange jamais les deux modèles : la
+transition passe par l'écran droit à mi-course.
 
-### A.3.1 Ce qui clochait dans `cameraMotion`
+**Rendu exact.** Le warp bilinéaire des angles fixes s'écarte de la projection de cette caméra de
+39 px (zoom 1,25) à 183 px (zoom 5) au pire pixel visible. Les modes 8, 10, 13 et 14 prennent donc
+un warp **projectif** exact sous cette caméra : l'homographie des quatre coins (forme de Heckbert)
+résolue à l'envers dans le shader, drapeau par mode (`TiltedQuad::warp_flag` : `dst_prev.w` au
+mode 8, `mb.w` au 10, `mb.x` au 13, `src.x` au 14). Mesuré sur une grille rendue par D3D11 :
+0,04 px d'écart à la projection. `TiltedQuad` porte la caméra complète : rotation (tangage X,
+lacet Y), distance `P` et translation de l'image du centre de l'écran (`offset`).
 
+**Règle des 2°.** Le roulis est nul : une arête ne penche que par la perspective, de 0 à 2,1° sur
+tout le chemin. Une arête sous 2° n'est visible qu'au bord du cadre, jamais à plus de 26 % de la
+demi-largeur vers le centre (le bord droit, zoom 5, visée en haut à droite), avec ses coins
+arrondis et son ombre : elle se lit comme le bord de l'écran, pas comme une troncature.
+
+### A.3.1 Ce qui clochait avant
+
+- **Les caméras mobiles sur l'écran tournant** (`camera_pose`) : le roulis que la règle des 2°
+  imposait pour relier `left` à `right` rendait tout le métrage de travers.
 - **`flip` clignotait en focus auto** : le seuil était le centre de la coupe zoomée, que le focus
   auto place sur le curseur lissé. Le côté se jouait au bruit flottant : 44 bascules miroir en
-  6 s sur une dérive lente (mesuré avant suppression). En focus manuel, une bascule sèche d'une
-  frame, lue comme un glitch.
-- **`follow` ne faisait rien en focus auto** (même cause : position mesurée dans la coupe
-  zoomée), et plafonnait au budget dynamique (±1,9° / ±3°) en manuel : à peine visible.
+  6 s sur une dérive lente (mesuré avant suppression).
+- **`follow` ne faisait rien en focus auto** (même cause), et plafonnait au budget dynamique
+  (±1,9° / ±3°) en manuel : à peine visible.
 - **`still` et `sway` indiscernables** : la parallaxe d'une dérive lente culmine à ~1,2°.
-- **Saut en fin de transition chaînée** : le mouvement était pris sur la région sortante pendant
-  toute la transition, puis sur l'entrante — un `flip` suivi d'un autre mouvement sautait de
-  pose à la dernière frame.
-- **Réglage mort sans curseur** : curseur masqué, aucune piste à l'export, donc aucun mouvement,
-  sans que le sélecteur le dise. Le nouveau sélecteur l'écrit sous la liste.
-- `iso` [−12, −18, −2] et `left` [−8, −16, −1] se ressemblent (tous deux tournés vers la gauche) :
-  inchangés pour ne pas modifier les projets existants, mais les libellés le disent désormais.
+- **Réglage mort sans curseur** : curseur masqué, aucune piste à l'export. Le sélecteur l'écrit
+  sous la liste.
 
-### A.4 Ce qui n'est pas livré ici, et pourquoi
+### A.4 Ce qui n'est pas livré ici
 
-- **`dolly`** (vertigo) : moduler la **distance de fuite** par frame. `PERSPECTIVE_FACTOR` est
-  une constante, et c'est elle qui donne l'échelle de containment — le « gel » de v1 est
-  exactement la machinerie qu'il faut pour un dolly-zoom (garder la taille projetée constante
-  pendant que la perspective change). PR dédiée : le facteur devient un paramètre par région,
-  et la géométrie le reçoit dans `TiltedQuad` (les trois backends sont déjà branchés dessus).
-- **`roll`** : une rotation Z animée. Le budget Z vaut **0** aujourd'hui parce que c'est l'axe
-  le plus étroit (~1° avant de casser la règle des 2°) — cette PR doit d'abord mesurer le
-  budget Z réel, comme v1 l'avait fait pour X et Y.
-- **`handheld`** : une vibration procédurale (somme de sinusoïdes, aucun curseur requis). Se lit
-  comme un bug en dessous d'une certaine subtilité et casse la règle des 2° au-dessus : à
-  calibrer sur un export réel avant de l'exposer.
-- **`crane`** : l'inclinaison qui se pose à l'ease-in (angle qui décroît vers l'attitude). Le
-  pendant de v1 PR 2b côté entrée ; même budget, même porte.
+- **`swing-clicks`, `orbit`** : à refaire sur `camera.rs` (l'œil qui se déplace pour l'orbite).
+- **`dolly`** (vertigo) : la distance de l'œil par frame, que `TiltedQuad::perspective` sait
+  déjà transporter.
+- **Flou de mouvement sous la caméra** : le mode 8 n'en a pas, d'où la vitesse bornée.
+- **Lumière du curseur modélisé** : elle reste fixée à la caméra ; sous un pivot de 8°, son ombre
+  se déplace de quelques px sur l'écran. À fixer au monde avec le propriétaire du mode 15.
 
 ### A.5 Portée TS
 
 Le natif porte la preview **et** l'export (`sceneDescription` → `scene.rs`). Le seul autre
 consommateur de l'attitude est `getRotation3D` (`types.ts`), lu par
-`computeRotation3DContainScale` via `zoomRegionUtils` — donc la preview CSS
-(`VirtualPreview.tsx`) ne porte **aucun** tilt aujourd'hui. Pour une caméra mobile,
-`getRotation3D` rend une pose représentative (`camera_pose(0, 0)` = [−3, 0, −5,5]) : le chemin
-canvas n'a pas la piste curseur.
+`computeRotation3DContainScale` via `zoomRegionUtils` — la preview CSS (`VirtualPreview.tsx`) ne
+porte **aucun** tilt. Pour `follow-cursor`, `getRotation3D` rend l'angle de repos de la caméra
+(Y = 12°) : le chemin canvas n'a ni la piste ni la caméra.
 
 ---
 
@@ -193,17 +205,18 @@ pixel dans la boîte de dessin :
 
 La caméra est reconstruite par pixel exactement comme `regions.rs` projette le plan : rotation
 dessinée (`TiltedQuad::rot`, base + dynamique), Z puis Y puis X, perspective `P/(P − z)` avec
-`P = min(w, h) × 1,6`, échelle de containment. Un écran droit prend un plan identité : même
-caméra, même mode.
+`P = TiltedQuad::perspective` (`min(w, h) × 1,6` sous un angle fixe), translation du plan dans le
+repère caméra (`TiltedQuad::offset`, en `mb.zw`, nulle sous un angle fixe, cf. A.3), échelle de
+containment. Un écran droit prend un plan identité : même caméra, même mode.
 
 Deux décisions :
 
 1. **Le hotspot est sur le rayon de vue** du point de contenu visé, à sa hauteur. La pointe ne
    glisse donc jamais à l'écran quand la flèche monte ou descend : seule l'ombre dit la hauteur.
-2. **Ancrage** : la vidéo est dessinée par un warp **bilinéaire** des coins projetés, qui
-   s'écarte de la perspective exacte de quelques pixels. Tout le rendu est décalé de
-   `point_px(plane_pt) − projection exacte`, pour que la pointe tombe sur le pixel que
-   l'écran montre.
+2. **Ancrage** : sous un angle fixe, la vidéo est dessinée par un warp **bilinéaire** des coins
+   projetés, qui s'écarte de la perspective exacte de quelques pixels. Tout le rendu est décalé
+   de `point_px(plane_pt) − projection exacte`, pour que la pointe tombe sur le pixel que
+   l'écran montre. Sous la caméra réelle le warp est exact et ce décalage est nul.
 
 ### B.5 La pose (fonction pure de `t`)
 
@@ -245,14 +258,14 @@ Deux décisions :
 
 | PR | Titre | Contenu | Dépend de |
 |---|---|---|---|
-| **6** | `feat(zoom): add moving 3D camera presets` | `rotationPreset` étendu (`follow-cursor`/`swing-clicks`/`orbit`), `camera_pose` dans `regions.rs`, un seul sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
+| **6** | `feat(zoom): add the follow-cursor 3D camera` | `rotationPreset` étendu (`follow-cursor`), caméra réelle dans `camera.rs`, warp projectif (modes 8, 10, 13, 14), un seul sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
 | **7** | `feat(cursor): model the default arrow in 3D` | `cursor.model3d`, mode 15, pose, ombre, retrait de `volume`/`hover` | PR 6 |
 | **8** | `feat(zoom): dolly the camera` | distance de fuite par région, dolly-zoom | PR 6 |
 | **9** | `feat(cursor): the cursor picks things up` *(plus tard)* | long press : le plan reste pressé pendant un glisser (v1 §PR 2b « Later ») | 7 |
 
-La PR 6 est CPU seulement : 0 shader, aucune nouvelle constante de buffer. Elle touche la
-géométrie partagée par les trois backends, donc elle est testable sans GPU — c'est la
-première raison de son ordre.
+La PR 6 touche surtout la géométrie partagée par les trois backends, testable sans GPU ; ses
+shaders n'ajoutent qu'un warp projectif et une lampe, derrière un drapeau que les angles fixes
+laissent à 0 (rendu inchangé à l'octet).
 
 La PR 7 ajoute un mode de shader, donc elle se vérifie sur les trois backends : tests unitaires
 Rust de la pose, du contact, de l'ancrage et de la boîte ; rendus D3D11 sur une frame NV12
