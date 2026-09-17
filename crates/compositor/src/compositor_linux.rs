@@ -5119,14 +5119,14 @@ mod tests {
             }
         }
         let screen = FakeFrame::from_planes(&gpu, w, h, &yp, &uvp);
-        // Arrivee sur la cible a 1,9 s, depart a 2,1 s, clic a `tc` ; lisse a 0,5.
+        // Arrivee sur la cible a 1,7 s, depart a 2,1 s, clic a `tc` entre les deux ; lisse a 0,5.
         let target = (tx / w as f32, ty / h as f32);
         let gesture = |tc: f32| {
             let samples = (0..=240)
                 .map(|k| {
                     let t = k as f32 / 60.0;
-                    let (x, y) = if t < 1.9 {
-                        let f = t / 1.9;
+                    let (x, y) = if t < 1.7 {
+                        let f = t / 1.7;
                         (0.1 + (target.0 - 0.1) * f, 0.8 + (target.1 - 0.8) * f)
                     } else if t < 2.1 {
                         target
