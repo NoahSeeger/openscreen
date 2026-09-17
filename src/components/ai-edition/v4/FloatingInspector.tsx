@@ -641,20 +641,22 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 					</div>
 					<ClickImpactToggle
 						checked={region.clickImpact === true}
-						// The click presses the TILTED plane and follows the visible pointer: without a
-						// preset, or with the cursor hidden, the checkbox would move nothing. The moving
-						// camera keeps the screen still, so there is nothing to press either.
+						// The click follows the visible pointer: without a preset, or with the cursor
+						// hidden, the checkbox would move nothing. A fixed angle presses the tilted
+						// screen; the orbiting camera keeps the screen still and recoils instead.
 						blocker={
 							!region.rotationPreset
 								? ts("zoom.clickImpact.needsRotation")
-								: region.rotationPreset === "follow-cursor"
-									? ts("zoom.clickImpact.fixedOnly")
-									: !settings.cursorShow || region.hideCursor
-										? ts("zoom.clickImpact.needsCursor")
-										: null
+								: !settings.cursorShow || region.hideCursor
+									? ts("zoom.clickImpact.needsCursor")
+									: null
 						}
 						label={ts("zoom.clickImpact.title")}
-						description={ts("zoom.clickImpact.description")}
+						description={ts(
+							region.rotationPreset === "follow-cursor"
+								? "zoom.clickImpact.descriptionCamera"
+								: "zoom.clickImpact.description",
+						)}
 						onChange={(on) => void tl.updateZoomClickImpact(region.id, on)}
 					/>
 					{paneRow(

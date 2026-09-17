@@ -346,14 +346,14 @@
 				"iso": "Yukarıdan çapraz",
 				"left": "Ekran sola dönük",
 				"right": "Ekran sağa dönük",
-				"followCursor": "İmleci takip eder"
+				"followCursor": "İmleçle birlikte döner"
 			},
 			"description": {
 				"off": "Ekran düz kalır.",
 				"iso": "Tek bir pozda kalır: sola dönük ve yukarıdan görünür.",
 				"left": "Tek bir pozda kalır: ekran sola bakar, sağ kenarı öne çıkar.",
 				"right": "Tek bir pozda kalır: ekran sağa bakar, sol kenarı öne çıkar.",
-				"followCursor": "Ekran sabit kalır; kamera imleci görüş alanında tutmak için döner."
+				"followCursor": "Ekran sabit kalır; kamera etrafında imlecin olduğu tarafa döner ve imleçle birlikte yükselip alçalır."
 			},
 			"needsCursor": "İmleç gizli: bu kameranın izleyecek bir şeyi yok ve başlangıç açısında kalır."
 		},
@@ -362,7 +362,7 @@
 			"description": "Her tıklama eğik ekranı bastırır: tıklanan taraf çöker, sonra geri döner.",
 			"needsRotation": "Önce bir 3D kamera seçin: yalnızca eğik bir ekran bastırılabilir.",
 			"needsCursor": "İmleç gizli: ekran yalnızca görünen tıklamalara tepki verir.",
-			"fixedOnly": "Ekranı yalnızca sabit bir açı eğer: bu kamerayla ekran sabit kalır."
+			"descriptionCamera": "Her tıklama kamerayı biraz geri iter, ardından kamera geri gelir."
 		},
 		"level": "Yakınlaştırma Seviyesi",
 		"previewHold": "Yakınlaştırma efektini önizlemek için basılı tutun",

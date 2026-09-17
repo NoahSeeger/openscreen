@@ -1,54 +1,73 @@
-//! Caméra 3D réelle, pan-tilt-zoom, pour `follow-cursor`.
+//! Caméra 3D réelle, en orbite, pour `follow-cursor`.
 //!
-//! L'ÉCRAN NE BOUGE PAS. L'œil est posé une fois pour toutes, un peu à gauche et sous le centre de
-//! l'écran ; la caméra pivote sur lui (lacet autour de la verticale du monde, puis tangage autour
-//! de son propre axe horizontal, le `lookAt` classique à haut fixe) pour viser un point, et zoome
-//! en resserrant son champ. Le roulis est donc nul PAR CONSTRUCTION : l'axe horizontal de l'image
-//! reste horizontal dans le monde, et une verticale qui passe par le point visé reste verticale à
-//! l'image. Ce qui penche encore, c'est la perspective, et elle seule (règle des 2° : cf. tests).
+//! L'ÉCRAN NE BOUGE PAS. L'œil tourne autour de lui sur une sphère : l'azimut suit la position
+//! horizontale du pointeur (à droite, on voit l'écran par la droite et son côté droit vient vers
+//! nous), l'élévation sa position verticale (en haut, la caméra monte et plonge sur le haut de
+//! l'écran), autour d'une petite élévation de repos. L'œil regarde toujours son point visé, haut du
+//! monde fixe (le `lookAt` classique) : le roulis est donc nul PAR CONSTRUCTION. L'axe horizontal
+//! de l'image reste horizontal dans le monde, et une verticale qui passe par le point visé reste
+//! verticale à l'image. Ce qui penche encore, c'est la perspective, et elle seule.
+//!
+//! Pourquoi une orbite et pas un pivot sur place : depuis un œil fixe, tourner la caméra n'est
+//! presque qu'un pan à plat, l'angle sous lequel on voit l'écran change à peine. L'orientation ne
+//! se lit que si l'œil se DÉPLACE autour de l'écran.
 //!
 //! Repère du monde : celui de l'écran, en px de sa boîte (`s_dst`, zoom compris), origine au
-//! centre de l'écran, x à droite, y vers le bas, z vers l'œil ; l'écran est le plan z = 0. Prendre
-//! la boîte zoomée comme unité revient à multiplier tout le monde ET la focale par le zoom : la
-//! perspective (angles, fuite) ne change pas, l'image grossit d'autant autour du point principal.
-//! C'est un zoom optique, sans aucun glissement 2D : le cadrage vient du seul pivot de la caméra.
+//! centre de l'écran, x à droite, y vers le bas, z vers l'œil ; l'écran est le plan z = 0.
 //!
-//! Le rendu passe par `TiltedQuad`, que les modes 8, 12, 13, 14 et 15 savent déjà dessiner : la
+//! Le rendu passe par `TiltedQuad`, que les modes 8, 10, 12, 13, 14 et 15 savent déjà dessiner : la
 //! rotation de la caméra y est une rotation X (tangage) puis Y (lacet) du plan, exactement celle de
-//! `regions::rotate_point`, plus une translation de l'image du centre de l'écran (`offset`),
-//! puisque la caméra ne vise plus ce centre, et le warp devient projectif (`projective`).
+//! `regions::rotate_point`, plus une translation de l'image du centre de l'écran (`offset`) et un
+//! warp projectif (`projective`). Cette convention décrit n'importe quel œil sans roulis : l'orbite
+//! n'ajoute rien aux shaders.
 
-use crate::cursor::CursorTrack;
 use crate::regions::{CameraFrame, TiltedQuad};
 
-/// Champ de l'objectif à zoom 1, mesuré sur le petit côté de la boîte écran (degrés), soit ~15° sur
-/// un cadre paddé (la boîte en occupe ~80 %). Un objectif LONG, et c'est ce qui garde le texte
-/// droit : une caméra qui tourne à la fois en lacet et en tangage penche les horizontales de
-/// `atan(tan(lacet)·sin(tangage))` (ce n'est pas un roulis, les verticales restent droites), et
-/// plus l'objectif est long, plus les pivots qu'il faut pour suivre le pointeur sont petits.
-/// Mesuré : à 18° avec un repos de (7°, 5°), les lignes de texte penchaient de 2,5° vers le coin
-/// haut-droit à zoom 2,2 ; à 12° avec le repos ci-dessous, 0,9° (cf.
-/// `the_content_stays_level_along_the_path`).
-pub const FOV_DEG: f32 = 12.0;
-/// Pose de repos, (lacet, tangage) en degrés : l'œil à gauche du centre de l'écran, à sa hauteur ;
-/// la caméra regarde donc vers la droite. Le côté gauche, plus proche, est ~9 % plus haut que le
-/// droit : c'est le relief. Pas de tangage au repos : il s'ajouterait à celui du suivi et
-/// pencherait tout le texte (cf. `FOV_DEG`).
-pub const REST_DEG: [f32; 2] = [12.0, 0.0];
-/// Débattement maximal du pivot autour du repos, (lacet, tangage) en degrés, borné en douceur.
-pub const TURN_LIMIT_DEG: [f32; 2] = [12.0, 8.0];
-/// Hauteur du point visé au-dessus de l'écran, en fraction du petit côté de la boîte : le pointeur
-/// flotte juste au-dessus du contenu.
-const AIM_LIFT: f32 = 0.01;
+/// Distance de l'œil au point visé, en `min(w, h)` de la boîte au zoom 1 : l'objectif des angles
+/// fixes (`regions::PERSPECTIVE_FACTOR`), ~35° de champ sur le petit côté. Assez court pour que la
+/// perspective se lise : c'est elle qui montre l'orientation.
+pub const DISTANCE: f32 = crate::regions::PERSPECTIVE_FACTOR;
+/// Azimut (degrés) quand le pointeur touche le bord droit de l'image (+), ou gauche (−).
+pub const AZIMUTH_DEG: f32 = 22.0;
+/// Élévation (degrés) : au repos, puis le débattement, pointeur au bord haut (+) ou bas (−). Le
+/// repos regarde un peu d'en haut : les bords verticaux convergent, l'écran ne se tient jamais
+/// parfaitement droit au milieu de son orbite.
+pub const ELEVATION_DEG: [f32; 2] = [4.0, 12.0];
+/// Part du zoom prise en travelling plutôt qu'en focale : la distance est divisée par
+/// `zoom^DOLLY`. Un zoom purement optique (0) aplatit d'autant la perspective de la vue ; en
+/// s'approchant, la caméra garde assez de fuite pour que l'orbite se lise encore au zoom. Plus
+/// (0,75), la vue zoomée tourne au grand-angle et tout le texte penche.
+const DOLLY: f32 = 0.5;
+/// Zoom à partir duquel le cadrage « écran entier » (containment de l'enveloppe, centrage) a
+/// cédé la place au cadrage « point visé au centre ». Entre 1 et lui, fondu linéaire.
+const FULL_VIEW_ZOOM: f32 = 2.0;
+/// Recul de l'œil au contact d'un clic, en fraction de sa distance (impact du clic).
+pub const PRESS: f32 = 0.04;
+/// Marge du containment : l'enveloppe n'est échantillonnée qu'en 3×3, et le centrage déplace un
+/// peu le pire cas entre ces points (mesuré : 0,3 % au plus).
+const FIT_MARGIN: f32 = 0.995;
 
 /// Ce que la caméra reçoit d'une frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraPose {
-    /// Poids de la caméra (0..1) : la force de la région de zoom. Les angles de repos en sont
-    /// multipliés ; à 0, la caméra regarde l'écran de face et la projection est l'identité.
+    /// Poids de la caméra (0..1) : la force de la région de zoom. À 0, la caméra regarde l'écran
+    /// de face et la projection est l'identité.
     pub weight: f32,
     /// Point visé dans l'écran (0..1 depuis son coin haut-gauche), déjà pondéré.
     pub aim: [f32; 2],
+    /// Le pointeur lissé dans l'écran (0..1), déjà pondéré : il place l'œil sur l'orbite.
+    pub orbit: [f32; 2],
+    /// Zoom courant (≥ 1) : l'œil s'approche de `zoom^DOLLY`, la focale fait le reste.
+    pub zoom: f32,
+    /// Impact des clics (somme de `regions::tap`, −1 au contact), déjà passé par ses portes :
+    /// l'œil recule de `PRESS` au contact. 0 sans impact.
+    pub press: f32,
+}
+
+impl CameraPose {
+    /// La caméra au repos, pointeur au centre : ce que rend une région sans piste.
+    pub const REST: CameraPose =
+        CameraPose { weight: 1.0, aim: [0.5; 2], orbit: [0.5; 2], zoom: 1.0, press: 0.0 };
 }
 
 /// Une caméra posée : œil, orientation et focale, dans le repère du monde.
@@ -58,7 +77,6 @@ pub struct View {
     /// Lacet et tangage (rad) : positif = vers la droite, vers le haut.
     yaw: f32,
     pitch: f32,
-    rest: [f32; 2],
     /// Focale en px de sortie.
     focal: f32,
 }
@@ -76,59 +94,90 @@ fn forward(yaw: f32, pitch: f32) -> [f32; 3] {
     [yaw.sin() * pitch.cos(), -pitch.sin(), -yaw.cos() * pitch.cos()]
 }
 
-/// Lacet et tangage qui visent `target` depuis `eye`.
-fn look_at(eye: [f32; 3], target: [f32; 3]) -> [f32; 2] {
-    let d = sub(target, eye);
-    [d[0].atan2(-d[2]), (-d[1]).atan2(d[0].hypot(d[2]))]
+/// Azimut et élévation (rad) d'un pointeur en `orbit` (0..1, déjà pondéré), au poids `w`.
+fn orbit_angles(orbit: [f32; 2], w: f32) -> [f32; 2] {
+    let [rest, swing] = ELEVATION_DEG;
+    [
+        (AZIMUTH_DEG * (2.0 * orbit[0] - 1.0)).to_radians(),
+        (rest * w + swing * (1.0 - 2.0 * orbit[1])).to_radians(),
+    ]
 }
 
-/// Borne douce : l'identité jusqu'aux trois quarts de `limit`, puis une tangente hyperbolique qui
-/// n'atteint jamais `limit`. Dérivée continue au genou, donc pas d'à-coup quand elle s'engage.
-fn soft_clamp(x: f32, limit: f32) -> f32 {
-    let knee = 0.75 * limit;
-    if x.abs() <= knee {
-        return x;
+/// L'œil à `dist` du point `target` de l'écran, dans la direction (azimut, élévation), qui le
+/// regarde.
+fn orbit_view(target: [f32; 2], dist: f32, [az, el]: [f32; 2], focal: f32) -> View {
+    let eye = [
+        target[0] + dist * az.sin() * el.cos(),
+        target[1] - dist * el.sin(),
+        dist * az.cos() * el.cos(),
+    ];
+    View { eye, yaw: -az, pitch: -el, focal }
+}
+
+/// Boîte englobante `[x0, x1, y0, y1]` de l'écran `unit` (petit côté 1) vu à `DISTANCE` de
+/// `target`, focale `DISTANCE` : en unités du petit côté, relative au point principal.
+fn unit_bbox(unit: [f32; 2], angles: [f32; 2], target: [f32; 2]) -> [f32; 4] {
+    let v = orbit_view(target, DISTANCE, angles, DISTANCE);
+    let mut b = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
+    for [x, y] in corners(unit[0], unit[1]) {
+        let [px, py] = v.project([x, y, 0.0]).unwrap_or([x, y]);
+        b = [b[0].min(px), b[1].max(px), b[2].min(py), b[3].max(py)];
     }
-    let room = limit - knee;
-    x.signum() * (knee + room * ((x.abs() - knee) / room).tanh())
+    b
+}
+
+/// Le point à viser pour que l'écran vu sous `angles` soit CENTRÉ dans sa boîte, en unités du
+/// petit côté. Vu de biais, le côté proche grandit et le lointain rétrécit : viser le centre de
+/// l'écran le décentrerait, et le containment paierait ce décalage (0,77 au lieu de 0,83 en
+/// 16:9). Quatre passes : 0,2 px d'écart à 1080p.
+fn centring(unit: [f32; 2], angles: [f32; 2]) -> [f32; 2] {
+    let mut l = [0.0f32; 2];
+    for _ in 0..4 {
+        let b = unit_bbox(unit, angles, l);
+        l = [l[0] + 0.5 * (b[0] + b[1]), l[1] + 0.5 * (b[2] + b[3])];
+    }
+    l
+}
+
+/// Le containment d'une région : le facteur qui fait tenir l'écran centré dans sa boîte depuis
+/// TOUTE l'enveloppe de l'orbite au poids `w`. Il ne dépend ni du pointeur ni du temps, donc
+/// l'écran ne respire pas pendant que la caméra tourne.
+fn envelope_fit(unit: [f32; 2], w: f32) -> f32 {
+    let mut fit = 1.0f32;
+    for ox in [0.0, 0.5, 1.0] {
+        for oy in [0.0, 0.5, 1.0] {
+            let orbit = [0.5 + (ox - 0.5) * w, 0.5 + (oy - 0.5) * w];
+            let angles = orbit_angles(orbit, w);
+            let b = unit_bbox(unit, angles, centring(unit, angles));
+            let (mx, my) = (b[0].abs().max(b[1].abs()), b[2].abs().max(b[3].abs()));
+            fit = fit.min(0.5 * unit[0] / mx).min(0.5 * unit[1] / my);
+        }
+    }
+    if fit < 1.0 { fit * FIT_MARGIN } else { 1.0 }
 }
 
 impl View {
     /// La caméra qui filme une boîte écran de `box_px` px (zoom compris) sous `pose`.
     ///
-    /// L'œil est à la distance où la focale de repos rend l'écran à sa taille, puis la focale est
-    /// réduite juste assez pour que l'écran, vu de la pose de repos, tienne dans sa boîte : c'est
-    /// le containment des angles fixes, mais mesuré une fois sur le repos, donc constant pendant
-    /// que la caméra pivote (le plan ne respire pas).
+    /// - L'œil est sur l'orbite de `pose.orbit`, à `DISTANCE × min(boîte) × zoom^(−DOLLY)` du point
+    ///   visé : la vue se resserre moitié par travelling, moitié par focale.
+    /// - Au zoom 1, le point visé est décalé pour centrer l'écran (`centring`) et la focale réduite
+    ///   pour qu'il tienne dans sa boîte depuis toute l'orbite (`envelope_fit`). Dès le zoom
+    ///   `FULL_VIEW_ZOOM`, le point visé tombe au centre de l'image, grossi du zoom.
     pub fn new(box_px: [f32; 2], pose: CameraPose) -> View {
         let w = pose.weight.clamp(0.0, 1.0);
         let [bw, bh] = box_px;
-        let f0 = bw.min(bh) * 0.5 / (FOV_DEG.to_radians() * 0.5).tan();
-        let eye = forward(REST_DEG[0].to_radians() * w, REST_DEG[1].to_radians() * w).map(|c| -f0 * c);
-        let lift = AIM_LIFT * bw.min(bh);
-        // Le repos vise le centre de l'écran, à la hauteur du pointeur.
-        let rest = look_at(eye, [0.0, 0.0, lift]);
-        let fit = View { eye, yaw: rest[0], pitch: rest[1], rest, focal: f0 }.fit(bw, bh);
-        let [yaw, pitch] = look_at(eye, [(pose.aim[0] - 0.5) * bw, (pose.aim[1] - 0.5) * bh, lift]);
-        let limit = TURN_LIMIT_DEG.map(f32::to_radians);
-        View {
-            eye,
-            yaw: rest[0] + soft_clamp(yaw - rest[0], limit[0]),
-            pitch: rest[1] + soft_clamp(pitch - rest[1], limit[1]),
-            rest,
-            focal: f0 * fit,
-        }
-    }
-
-    /// Le facteur (≤ 1) qui fait tenir les quatre coins projetés dans la boîte.
-    fn fit(&self, bw: f32, bh: f32) -> f32 {
-        let (mut mx, mut my) = (0.0f32, 0.0f32);
-        for [x, y] in corners(bw, bh) {
-            if let Some([px, py]) = self.project([x, y, 0.0]) {
-                (mx, my) = (mx.max(px.abs()), my.max(py.abs()));
-            }
-        }
-        if mx > 0.0 && my > 0.0 { (bw * 0.5 / mx).min(bh * 0.5 / my).min(1.0) } else { 1.0 }
+        let m = bw.min(bh).max(1e-3);
+        let zoom = pose.zoom.max(1.0);
+        let unit = [bw / m, bh / m];
+        let fade = ((zoom - 1.0) / (FULL_VIEW_ZOOM - 1.0)).clamp(0.0, 1.0);
+        let fit = envelope_fit(unit, w);
+        let fit = fit + (1.0 - fit) * fade;
+        let angles = orbit_angles(pose.orbit, w);
+        let shift = centring(unit, angles).map(|c| c * m * (1.0 - fade));
+        let dist = DISTANCE * m * zoom.powf(-DOLLY);
+        let target = [(pose.aim[0] - 0.5) * bw + shift[0], (pose.aim[1] - 0.5) * bh + shift[1]];
+        orbit_view(target, dist * (1.0 - PRESS * pose.press * w), angles, dist * fit)
     }
 
     /// Axes de la caméra dans le monde : droite, bas, visée.
@@ -146,9 +195,9 @@ impl View {
         (z > 1e-3).then(|| [self.focal * dot(r, q) / z, self.focal * dot(u, q) / z])
     }
 
-    /// Le pivot par rapport au repos, (lacet, tangage) en degrés.
-    pub fn turn_deg(&self) -> [f32; 2] {
-        [(self.yaw - self.rest[0]).to_degrees(), (self.pitch - self.rest[1]).to_degrees()]
+    /// Azimut et élévation de l'œil, en degrés.
+    pub fn angles_deg(&self) -> [f32; 2] {
+        [-self.yaw.to_degrees(), -self.pitch.to_degrees()]
     }
 
     /// L'écran `box_px` vu par cette caméra, dans la convention de `TiltedQuad`.
@@ -185,263 +234,106 @@ fn corners(bw: f32, bh: f32) -> [[f32; 2]; 4] {
 
 // ---- Le cadreur ----------------------------------------------------------------------------
 
-/// Pas de la simulation, en secondes. Le ressort est intégré EXACTEMENT sur chaque pas : le pas ne
-/// fixe que la cadence à laquelle la zone morte relit le pointeur.
+/// Pulsation du lissage (rad/s) : une réponse critique, 95 % d'un saut en 0,95 s, sans
+/// dépassement.
+const FOLLOW_OMEGA: f32 = 5.0;
+/// Anticipation (s) : un enregistrement se monte après coup, la caméra part avant le geste. Le
+/// retard moyen du lissage est `2/ω` = 0,4 s ; il en reste 0,15.
+const FOLLOW_LOOKAHEAD_S: f32 = 0.25;
+/// Pas et longueur du noyau : ω·τ va jusqu'à 10, la queue coupée pèse 5·10⁻⁴.
 const FOLLOW_STEP_S: f32 = 1.0 / 60.0;
-/// Pulsation du ressort critique (rad/s) : 95 % du chemin en 0,8 s, sans dépassement.
-const FOLLOW_OMEGA: f32 = 6.0;
-/// Vitesse maximale de la cible, en vues par seconde. Le mode 8 n'a pas de flou de mouvement :
-/// un pan d'un coin à l'autre à la vitesse du geste (140 px par image mesurés à 30 i/s) saccade.
-/// La cible glisse donc vers le pointeur à ce rythme au plus, et le ressort en arrondit les bouts.
-const FOLLOW_MAX_SPEED: f32 = 1.5;
-/// Anticipation : le pointeur est lu en moyenne sur `[t, t + 1,2 s]`, soit 0,6 s devant. Un
-/// enregistrement se monte après coup : la caméra part avant le geste, ce qui lui laisse le temps
-/// d'arriver sans aller plus vite que `FOLLOW_MAX_SPEED`. Mesuré sur un aller-retour d'un coin à
-/// l'autre de l'écran en 0,6 s au zoom 2,2 : le clic reste dans la vue, le pointeur n'en sort
-/// que de 20 % de la demi-vue pendant le geste (0,4 s d'anticipation : le clic tombait dehors).
-const FOLLOW_LOOKAHEAD_S: f32 = 1.2;
-const FOLLOW_LOOKAHEAD_TAPS: usize = 7;
-/// Zone morte, en fraction de la vue et centrée sur la cible : tant que le pointeur y reste, la
-/// caméra ne bouge pas.
-pub const DEAD_ZONE: f32 = 0.45;
-/// Hystérésis : sortie de la zone morte, la caméra poursuit le pointeur jusqu'à le viser à moins de
-/// cette fraction de la vue, puis se fige de nouveau.
-const RELOCK: f32 = 0.05;
-
-/// La vue comptée plus large que `1/zoom` de l'écran : vu de biais, l'écran est un peu plus petit
-/// que sa boîte (containment du repos) et son côté lointain rétrécit encore. Sans cette marge, la
-/// caméra tournée vers un bord laisse voir le fond au bord du cadre.
+const FOLLOW_TAPS: usize = 120;
+/// La vue comptée plus large que `1/zoom` de l'écran, pour la portée du point visé.
 const VIEW_MARGIN: f32 = 1.1;
 
-/// Un axe du cadreur : position visée (fraction de l'écran), vitesse, cible, et s'il poursuit.
-#[derive(Clone, Copy)]
-struct Axis {
-    x: f32,
-    v: f32,
-    target: f32,
-    tracking: bool,
+/// Ce que le cadreur rend pour une frame, en fractions de l'écran recadré : le point visé et le
+/// pointeur lissé.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Follow {
+    pub aim: [f32; 2],
+    pub orbit: [f32; 2],
 }
 
-impl Axis {
-    fn at(p: f32) -> Axis {
-        Axis { x: p, v: 0.0, target: p, tracking: false }
-    }
-
-    /// Où la cible veut aller : le pointeur quand l'axe le poursuit, sinon là où elle est.
-    fn want(&mut self, pointer: f32, dead: f32, relock: f32) -> f32 {
-        if !self.tracking && (pointer - self.target).abs() > dead {
-            self.tracking = true;
-        }
-        if !self.tracking {
-            return self.target;
-        }
-        if (self.x - pointer).abs() < relock {
-            self.tracking = false;
-        }
-        pointer
-    }
-
-    /// Ressort critique vers `target`, solution exacte sur `dt` (cible constante).
-    fn spring(&mut self, dt: f32) {
-        let x = self.x - self.target;
-        let e = (-FOLLOW_OMEGA * dt).exp();
-        let k = self.v + FOLLOW_OMEGA * x;
-        self.x = self.target + (x + k * dt) * e;
-        self.v = (self.v - FOLLOW_OMEGA * k * dt) * e;
-    }
+impl Follow {
+    pub const CENTRE: Follow = Follow { aim: [0.5; 2], orbit: [0.5; 2] };
 }
 
-/// Où `follow-cursor` vise à `t` (0..1 dans l'écran recadré), pour une région de zoom `zoom` dont
-/// l'entrée commence à `anchor`. Sans piste : le centre.
+/// Où `follow-cursor` vise à `t` et où il place l'œil, pour une région de zoom `zoom`. Sans
+/// piste : le centre, caméra au repos.
 ///
-/// Pure fonction de `t` : le cadreur est rejoué depuis `anchor` à chaque appel, à pas fixe, et le
-/// dernier pas partiel prolonge le ressort jusqu'à `t` exactement, donc la visée est continue.
-/// Aucune mémoire d'une frame à l'autre : lecture, seek et export donnent la même image.
+/// Le pointeur (lu dans l'image source recadrée, borné à l'écran et à la fenêtre du clip) passe
+/// par la réponse impulsionnelle d'un ressort critique, `h(τ) = ω²·τ·e^(−ωτ)`, avancée de
+/// `FOLLOW_LOOKAHEAD_S` : une convolution sur 2 s de piste. C'est une pure fonction de `t`, sans
+/// mémoire d'une frame à l'autre, au coût borné (120 lectures) quelle que soit la longueur de la
+/// région. Pas de zone morte : la caméra vit avec le pointeur, le lissage la garde calme.
 ///
-/// - Zone morte de `DEAD_ZONE` de la vue autour de la cible, hystérésis `RELOCK`.
-/// - Cible qui glisse vers le pointeur à `FOLLOW_MAX_SPEED` au plus, en ligne droite.
-/// - Ressort critique (`FOLLOW_OMEGA`), anticipation `FOLLOW_LOOKAHEAD_S`.
-/// - La visée reste là où la vue reste dans l'écran (`0,5 ± (0,5 − 0,5·VIEW_MARGIN/zoom)`) : la
-///   caméra ne montre pas le fond au bord du cadre, comme le zoom plat.
-///
-/// ponytail: rejoue toute la région à chaque frame (60 pas par seconde de région) ; mémoriser le
-/// dernier état par piste si des régions de plusieurs minutes pèsent sur la preview.
-pub fn follow_aim(frame: &CameraFrame, anchor: f32, t: f32, zoom: f32) -> [f32; 2] {
-    let Some(track) = frame.track else { return [0.5; 2] };
-    let view = 1.0 / zoom.max(1.0);
-    let reach = (0.5 - 0.5 * VIEW_MARGIN * view).max(0.0);
-    let (dead, relock) = (0.5 * DEAD_ZONE * view, RELOCK * view);
-    let glide = FOLLOW_MAX_SPEED * view * FOLLOW_STEP_S;
-    let pointer = |s: f32| {
-        lookahead(track, frame, s).map(|p| p.map(|c| c.clamp(0.5 - reach, 0.5 + reach)))
-    };
-    let Some(p0) = pointer(anchor) else { return [0.5; 2] };
-    let mut axes = p0.map(Axis::at);
-    for k in 0u32.. {
-        let tk = anchor + k as f32 * FOLLOW_STEP_S;
-        let dt = (t - tk).min(FOLLOW_STEP_S);
-        if !(dt > 0.0) {
-            break;
-        }
-        if let Some(p) = pointer(tk) {
-            let want = [axes[0].want(p[0], dead, relock), axes[1].want(p[1], dead, relock)];
-            let d = [want[0] - axes[0].target, want[1] - axes[1].target];
-            let k = (glide / d[0].hypot(d[1]).max(1e-9)).min(1.0);
-            for (axis, d) in axes.iter_mut().zip(d) {
-                axis.target += d * k;
-            }
-        }
-        for axis in &mut axes {
-            axis.spring(dt);
-        }
-    }
-    axes.map(|a| a.x)
-}
-
-/// Le pointeur moyen sur `[s, s + FOLLOW_LOOKAHEAD_S]`, borné à la fenêtre du clip, en fraction du
-/// recadrage.
-fn lookahead(track: &CursorTrack, frame: &CameraFrame, s: f32) -> Option<[f32; 2]> {
-    let (mut x, mut y) = (0.0f32, 0.0f32);
-    for k in 0..FOLLOW_LOOKAHEAD_TAPS {
-        let e = k as f32 / (FOLLOW_LOOKAHEAD_TAPS - 1) as f32;
-        let at = (s + e * FOLLOW_LOOKAHEAD_S).max(frame.window[0]).min(frame.window[1]);
-        let (px, py) = track.at(at)?;
-        (x, y) = (x + px, y + py);
-    }
-    let n = FOLLOW_LOOKAHEAD_TAPS as f32;
+/// - `orbit` : le pointeur lissé, sur tout l'écran.
+/// - `aim` : le même, borné avant lissage à `0,5 ± (0,5 − 0,5·VIEW_MARGIN/zoom)`, là où la vue
+///   reste dans l'écran ; au zoom 1, le centre.
+pub fn follow(frame: &CameraFrame, t: f32, zoom: f32) -> Follow {
+    let Some(track) = frame.track else { return Follow::CENTRE };
+    let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom.max(1.0)).max(0.0);
     let [x0, y0, x1, y1] = frame.crop;
-    Some([(x / n - x0) / (x1 - x0).max(1e-6), (y / n - y0) / (y1 - y0).max(1e-6)])
+    let size = [(x1 - x0).max(1e-6), (y1 - y0).max(1e-6)];
+    let (mut aim, mut orbit, mut total) = ([0.0f32; 2], [0.0f32; 2], 0.0f32);
+    for k in 1..=FOLLOW_TAPS {
+        let tau = k as f32 * FOLLOW_STEP_S;
+        let weight = tau * (-FOLLOW_OMEGA * tau).exp();
+        let at = (t + FOLLOW_LOOKAHEAD_S - tau).max(frame.window[0]).min(frame.window[1]);
+        let Some((px, py)) = track.at(at) else { return Follow::CENTRE };
+        let p = [((px - x0) / size[0]).clamp(0.0, 1.0), ((py - y0) / size[1]).clamp(0.0, 1.0)];
+        for i in 0..2 {
+            orbit[i] += weight * p[i];
+            aim[i] += weight * p[i].clamp(0.5 - reach, 0.5 + reach);
+        }
+        total += weight;
+    }
+    Follow { aim: aim.map(|a| a / total), orbit: orbit.map(|o| o / total) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cursor::CursorTrack;
 
     const BOX: [f32; 2] = [1536.0, 864.0];
 
-    fn view(aim: [f32; 2]) -> View {
-        View::new(BOX, CameraPose { weight: 1.0, aim })
+    fn pose(orbit: [f32; 2], zoom: f32) -> CameraPose {
+        let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom).max(0.0);
+        let aim = orbit.map(|o| o.clamp(0.5 - reach, 0.5 + reach));
+        CameraPose { weight: 1.0, aim, orbit, zoom, press: 0.0 }
     }
 
-    /// Une verticale du monde qui passe par le point regardé reste verticale à l'image, et
-    /// l'horizontale de l'image reste horizontale dans le monde : roulis nul, partout, pivot borné
-    /// compris.
-    #[test]
-    fn the_roll_is_zero_by_construction() {
-        for ax in [-0.5f32, 0.2, 0.5, 0.8, 1.5] {
-            for ay in [-0.5f32, 0.2, 0.5, 0.8, 1.5] {
-                let v = view([ax, ay]);
-                let (r, _, f) = v.basis();
-                assert_eq!(r[1], 0.0, "l'axe horizontal de l'image quitte l'horizontale");
-                let looked = [0, 1, 2].map(|k| v.eye[k] + 2500.0 * f[k]);
-                for dy in [-400.0f32, -150.0, 150.0, 400.0] {
-                    let p = v.project([looked[0], looked[1] + dy, looked[2]]).unwrap();
-                    assert!(p[0].abs() < 2e-3, "{ax},{ay} dy {dy} : {p:?}");
-                }
-            }
-        }
+    fn view(orbit: [f32; 2], zoom: f32) -> (View, [f32; 2]) {
+        let bx = BOX.map(|b| b * zoom);
+        (View::new(bx, pose(orbit, zoom)), bx)
     }
 
-    /// Le point visé tombe au point principal (quand le pivot n'est pas borné).
-    #[test]
-    fn the_camera_looks_at_its_aim() {
-        let v = view([0.62, 0.41]);
-        let aim = [0.12 * BOX[0], -0.09 * BOX[1], AIM_LIFT * BOX[1]];
-        let p = v.project(aim).unwrap();
-        assert!(p[0].abs() < 1e-2 && p[1].abs() < 1e-2, "{p:?}");
-    }
-
-    /// À poids nul, la caméra regarde l'écran de face et le rend à sa taille : le rendu plat.
-    #[test]
-    fn a_zero_weight_is_the_flat_layout() {
-        let v = View::new(BOX, CameraPose { weight: 0.0, aim: [0.5; 2] });
-        let q = v.quad(BOX);
-        for (c, e) in q.corners.iter().zip(corners(BOX[0], BOX[1])) {
-            assert!((c.0 - e[0]).abs() < 0.05 && (c.1 - e[1]).abs() < 0.05, "{c:?} {e:?}");
-        }
-        assert!((q.scale - 1.0).abs() < 1e-4 && q.rot == [0.0; 3], "{} {:?}", q.scale, q.rot);
-    }
-
-    /// Au repos, l'écran entier tient dans sa boîte, et la remplit sur un axe.
-    #[test]
-    fn at_rest_the_screen_fills_its_box() {
-        for bx in [BOX, [864.0, 1536.0], [1000.0, 1000.0], [2560.0, 1080.0]] {
-            let q = View::new(bx, CameraPose { weight: 1.0, aim: [0.5; 2] }).quad(bx);
-            let (mx, my) = q.half_extents_px();
-            assert!(mx <= bx[0] * 0.5 + 0.01 && my <= bx[1] * 0.5 + 0.01, "{bx:?} {mx} {my}");
-            assert!(mx > bx[0] * 0.5 - 0.5 || my > bx[1] * 0.5 - 0.5, "{bx:?} {mx} {my}");
-        }
-    }
-
-    /// Le pivot est borné à ±12° de lacet et ±8° de tangage autour du repos, sans à-coup.
-    #[test]
-    fn the_turn_is_softly_clamped() {
-        let mut last = view([-1.0, 1.5]).turn_deg();
-        for i in 0..=400 {
-            let a = -1.0 + i as f32 / 200.0;
-            let t = view([a, 0.5 - a]).turn_deg();
-            assert!(t[0].abs() <= TURN_LIMIT_DEG[0] && t[1].abs() <= TURN_LIMIT_DEG[1], "{a} {t:?}");
-            assert!((t[0] - last[0]).abs() < 0.3 && (t[1] - last[1]).abs() < 0.3, "{a} {t:?} {last:?}");
-            last = t;
-        }
-        // Garde : la borne s'engage bien, loin hors de l'écran.
-        assert!(view([-1.0, 1.5]).turn_deg()[0] < -0.9 * TURN_LIMIT_DEG[0]);
-        assert_eq!(soft_clamp(0.1, 1.0), 0.1);
-    }
-
-    /// Le quad, sa translation, sa focale et sa rotation reproduisent la caméra : ce que le mode 15
-    /// reconstruit (rayon par pixel) tombe exactement sur ce que le mode 8 dessine.
-    #[test]
-    fn the_quad_convention_reproduces_the_camera() {
-        for aim in [[0.5, 0.5], [0.8, 0.3], [0.15, 0.9]] {
-            let v = view(aim);
-            let q = v.quad(BOX);
-            let s = q.scale;
-            for (fx, fy) in [(0.0, 0.0), (0.3, 0.7), (1.0, 1.0), (0.9, 0.1), (-0.05, 1.05)] {
-                let p = [(fx - 0.5) * BOX[0], (fy - 0.5) * BOX[1], 0.0];
-                let want = v.project(p).unwrap();
-                let w = crate::regions::rotate_point(p.map(|c| c * s), q.rot);
-                let (wx, wy) = (w[0] + q.offset[0], w[1] + q.offset[1]);
-                let d = q.perspective - w[2];
-                let got = [wx * q.perspective / d, wy * q.perspective / d];
-                assert!(
-                    (got[0] - want[0]).abs() < 0.05 && (got[1] - want[1]).abs() < 0.05,
-                    "{aim:?} {got:?} {want:?}"
-                );
-                // Et la correspondance directe du warp (homographie des coins) est la même.
-                let h = q.point_px(fx, fy);
-                assert!(
-                    (h.0 - want[0]).abs() < 0.05 && (h.1 - want[1]).abs() < 0.05,
-                    "{aim:?} {h:?} {want:?}"
-                );
-            }
-            // L'œil, dans le repère du plan, est celui de la caméra.
-            let eye = crate::regions::rotate_point_inv(
-                [-q.offset[0], -q.offset[1], q.perspective],
-                q.rot,
-            );
-            for k in 0..3 {
-                assert!((eye[k] - v.eye[k] * s).abs() < 0.1, "{aim:?} {eye:?} {:?}", v.eye);
-            }
-        }
-    }
-
-    /// Les poses extrêmes du cadreur : visée aux coins et aux milieux de la zone atteignable, à
-    /// chaque zoom de l'app, pendant l'entrée aussi (le zoom et le poids montent ensemble, comme
-    /// dans `zoom_state_in`). Boîte 16:9 à 80 % d'un cadre 1920×1080.
-    fn extreme_quads() -> Vec<(f32, f32, [f32; 2], TiltedQuad)> {
+    /// L'enveloppe du chemin : pointeur sur une grille de l'écran, à chaque zoom de l'app et au
+    /// zoom 1, pendant l'entrée aussi (le zoom et le poids montent ensemble, comme dans
+    /// `zoom_state_in`), et au creux d'un clic.
+    fn envelope() -> Vec<(f32, f32, [f32; 2], View, [f32; 2])> {
         let mut out = Vec::new();
-        for zoom in [1.25f32, 1.5, 1.8, 2.2, 3.5, 5.0] {
+        for zoom in [1.0f32, 1.25, 1.5, 1.8, 2.2, 3.5, 5.0] {
             let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom).max(0.0);
-            for k in 1..=10 {
+            for k in [2, 5, 8, 10] {
                 let weight = k as f32 / 10.0;
                 let z = 1.0 + (zoom - 1.0) * weight;
-                let bx = [BOX[0] * z, BOX[1] * z];
-                for i in -2..=2 {
-                    for j in -2..=2 {
-                        let aim = [0.5 + i as f32 * reach / 2.0, 0.5 + j as f32 * reach / 2.0];
-                        let pose = CameraPose { weight, aim: aim.map(|a| 0.5 + (a - 0.5) * weight) };
-                        out.push((zoom, weight, aim, View::new(bx, pose).quad(bx)));
+                let bx = BOX.map(|b| b * z);
+                for i in 0..=4 {
+                    for j in 0..=4 {
+                        let o = [i as f32 / 4.0, j as f32 / 4.0];
+                        let aim = o.map(|c| c.clamp(0.5 - reach, 0.5 + reach));
+                        for press in [0.0, -1.0] {
+                            let p = CameraPose {
+                                weight,
+                                aim: aim.map(|a| 0.5 + (a - 0.5) * weight),
+                                orbit: o.map(|a| 0.5 + (a - 0.5) * weight),
+                                zoom: z,
+                                press,
+                            };
+                            out.push((zoom, weight, o, View::new(bx, p), bx));
+                        }
                     }
                 }
             }
@@ -449,8 +341,166 @@ mod tests {
         out
     }
 
-    /// Le warp bilinéaire des angles fixes s'écarte de la projection exacte de plusieurs px sous
-    /// cette caméra (mesuré sur la partie visible du cadre) : le warp projectif est nécessaire.
+    /// L'axe horizontal de l'image reste horizontal dans le monde, et une verticale du monde qui
+    /// passe par le point regardé reste verticale à l'image : roulis nul sur toute l'enveloppe.
+    #[test]
+    fn the_roll_is_zero_on_the_whole_envelope() {
+        for (zoom, weight, o, v, _) in envelope() {
+            let (r, _, f) = v.basis();
+            assert_eq!(r[1], 0.0, "l'axe horizontal de l'image quitte l'horizontale");
+            let looked = [0, 1, 2].map(|k| v.eye[k] + 2500.0 * f[k]);
+            for dy in [-400.0f32, -150.0, 150.0, 400.0] {
+                let p = v.project([looked[0], looked[1] + dy, looked[2]]).unwrap();
+                assert!(p[0].abs() < 2e-3, "zoom {zoom} poids {weight} {o:?} dy {dy} : {p:?}");
+            }
+        }
+    }
+
+    /// Pointeur à droite : l'œil passe à droite, le bord droit de l'écran est plus proche, donc
+    /// plus haut à l'image que le gauche. En haut : l'œil monte, le bord haut est plus large que le
+    /// bas. En bas : l'inverse. Plus le pointeur s'écarte, plus l'angle grandit.
+    #[test]
+    fn the_orbit_follows_the_pointer_side() {
+        let height = |q: &TiltedQuad, a: usize, b: usize| (q.corners[b].1 - q.corners[a].1).abs();
+        let width = |q: &TiltedQuad, a: usize, b: usize| (q.corners[b].0 - q.corners[a].0).abs();
+        for zoom in [1.0f32, 1.8, 3.5] {
+            let (right, bx) = view([0.9, 0.5], zoom);
+            let (left, _) = view([0.1, 0.5], zoom);
+            let (top, _) = view([0.5, 0.1], zoom);
+            let (bottom, _) = view([0.5, 0.9], zoom);
+            let (mid, _) = view([0.5, 0.5], zoom);
+            let (qr, ql, qt, qb) = (right.quad(bx), left.quad(bx), top.quad(bx), bottom.quad(bx));
+            // Coins TL, TR, BR, BL : bord gauche 0→3, droit 1→2, haut 0→1, bas 3→2.
+            assert!(height(&qr, 1, 2) > 1.1 * height(&qr, 0, 3), "zoom {zoom} droite");
+            assert!(height(&ql, 0, 3) > 1.1 * height(&ql, 1, 2), "zoom {zoom} gauche");
+            assert!(width(&qt, 0, 1) > 1.05 * width(&qt, 3, 2), "zoom {zoom} haut");
+            assert!(width(&qb, 3, 2) > 1.03 * width(&qb, 0, 1), "zoom {zoom} bas");
+            let ([az_r, el_r], [az_l, _]) = (right.angles_deg(), left.angles_deg());
+            let ([_, el_t], [_, el_b], [az_m, el_m]) = (top.angles_deg(), bottom.angles_deg(), mid.angles_deg());
+            assert!((az_r - 0.8 * AZIMUTH_DEG).abs() < 1e-3 && (az_l + 0.8 * AZIMUTH_DEG).abs() < 1e-3);
+            assert!(az_m.abs() < 1e-4 && (el_m - ELEVATION_DEG[0]).abs() < 1e-3 && el_r == el_m);
+            assert!(el_t > el_m + 9.0 && el_b < el_m - 9.0, "{el_t} {el_m} {el_b}");
+            // L'œil est bien du côté du pointeur.
+            assert!(right.eye[0] > 0.0 && left.eye[0] < 0.0 && top.eye[1] < bottom.eye[1]);
+        }
+        let [a, b, c] = [0.6f32, 0.75, 0.95].map(|x| view([x, 0.5], 1.0).0.angles_deg()[0]);
+        assert!(0.0 < a && a < b && b < c, "{a} {b} {c}");
+    }
+
+    /// Dès `FULL_VIEW_ZOOM`, le point visé tombe au point principal.
+    #[test]
+    fn the_camera_looks_at_its_aim() {
+        for zoom in [2.0f32, 3.5] {
+            let p = pose([0.62, 0.41], zoom);
+            let bx = BOX.map(|b| b * zoom);
+            let v = View::new(bx, p);
+            let aim = [(p.aim[0] - 0.5) * bx[0], (p.aim[1] - 0.5) * bx[1], 0.0];
+            let q = v.project(aim).unwrap();
+            assert!(q[0].abs() < 1e-2 && q[1].abs() < 1e-2, "{q:?}");
+        }
+    }
+
+    /// À poids nul, la caméra regarde l'écran de face et le rend à sa taille : le rendu plat,
+    /// quels que soient le zoom et les clics.
+    #[test]
+    fn a_zero_weight_is_the_flat_layout() {
+        for zoom in [1.0f32, 1.8, 5.0] {
+            for press in [0.0, -1.0, 0.4] {
+                let bx = BOX.map(|b| b * zoom);
+                let p = CameraPose { weight: 0.0, aim: [0.5; 2], orbit: [0.5; 2], zoom, press };
+                let q = View::new(bx, p).quad(bx);
+                for (c, e) in q.corners.iter().zip(corners(bx[0], bx[1])) {
+                    assert!((c.0 - e[0]).abs() < 0.05 && (c.1 - e[1]).abs() < 0.05, "{c:?} {e:?}");
+                }
+                assert!((q.scale - 1.0).abs() < 1e-4 && q.rot == [0.0; 3], "{} {:?}", q.scale, q.rot);
+            }
+        }
+    }
+
+    /// Au zoom 1, l'écran entier tient dans sa boîte depuis toute l'orbite, et la touche au pire
+    /// de l'enveloppe : le containment est juste, pas une marge au jugé.
+    #[test]
+    fn at_zoom_1_the_whole_screen_stays_in_its_box() {
+        for bx in [BOX, [864.0, 1536.0], [1000.0, 1000.0], [2560.0, 1080.0]] {
+            let mut tightest = f32::MAX;
+            for k in [1, 4, 7, 10] {
+                let weight = k as f32 / 10.0;
+                for i in 0..=20 {
+                    for j in 0..=20 {
+                        let o = [i as f32 / 20.0, j as f32 / 20.0].map(|c| 0.5 + (c - 0.5) * weight);
+                        let p = CameraPose { weight, aim: [0.5; 2], orbit: o, zoom: 1.0, press: 0.0 };
+                        let (mx, my) = View::new(bx, p).quad(bx).half_extents_px();
+                        assert!(
+                            mx <= bx[0] * 0.5 + 0.5 && my <= bx[1] * 0.5 + 0.5,
+                            "{bx:?} poids {weight} {o:?} : {mx} {my}"
+                        );
+                        tightest = tightest.min((bx[0] * 0.5 - mx).min(bx[1] * 0.5 - my));
+                    }
+                }
+            }
+            println!("{bx:?} : au plus près, {tightest:.1} px du bord de la boîte");
+            assert!(tightest < 0.01 * bx[0].min(bx[1]), "{bx:?} {tightest}");
+        }
+        let (mx, my) = View::new(BOX, CameraPose::REST).quad(BOX).half_extents_px();
+        println!("repos 16:9 : {:.3} × {:.3} de la boîte", mx / (BOX[0] * 0.5), my / (BOX[1] * 0.5));
+        assert!(mx > 0.8 * BOX[0] * 0.5 && my > 0.8 * BOX[1] * 0.5, "{mx} {my}");
+    }
+
+    /// Le containment est gelé par région : à zoom et poids donnés, la focale ne dépend ni du
+    /// pointeur ni du point visé. L'écran ne respire pas pendant que la caméra tourne.
+    #[test]
+    fn the_scale_is_frozen_per_region() {
+        for zoom in [1.0f32, 1.25, 1.8, 3.5] {
+            let focal = view([0.5, 0.5], zoom).0.focal;
+            for i in 0..=10 {
+                for j in 0..=10 {
+                    let v = view([i as f32 / 10.0, j as f32 / 10.0], zoom).0;
+                    assert_eq!(v.focal, focal, "zoom {zoom} ({i}, {j})");
+                }
+            }
+        }
+        // Le clic recule l'œil sans toucher la focale : l'écran rapetisse, puis revient.
+        let (still, bx) = view([0.7, 0.4], 1.0);
+        let pressed = View::new(bx, CameraPose { press: -1.0, ..pose([0.7, 0.4], 1.0) });
+        assert_eq!(still.focal, pressed.focal);
+        let (s, p) = (still.quad(bx).half_extents_px(), pressed.quad(bx).half_extents_px());
+        assert!(p.0 < s.0 * 0.975 && p.1 < s.1 * 0.975, "{s:?} {p:?}");
+    }
+
+    /// Le quad, sa translation, sa focale et sa rotation reproduisent la caméra : ce que le mode 15
+    /// reconstruit (rayon par pixel) tombe exactement sur ce que le mode 8 dessine.
+    #[test]
+    fn the_quad_convention_reproduces_the_camera() {
+        for (_, _, o, v, bx) in envelope().into_iter().step_by(37) {
+            let q = v.quad(bx);
+            let s = q.scale;
+            let tol = 2e-4 * bx[0];
+            for (fx, fy) in [(0.0, 0.0), (0.3, 0.7), (1.0, 1.0), (0.9, 0.1), (-0.05, 1.05)] {
+                let p = [(fx - 0.5) * bx[0], (fy - 0.5) * bx[1], 0.0];
+                let want = v.project(p).unwrap();
+                let w = crate::regions::rotate_point(p.map(|c| c * s), q.rot);
+                let (wx, wy) = (w[0] + q.offset[0], w[1] + q.offset[1]);
+                let d = q.perspective - w[2];
+                let got = [wx * q.perspective / d, wy * q.perspective / d];
+                assert!(
+                    (got[0] - want[0]).abs() < tol && (got[1] - want[1]).abs() < tol,
+                    "{o:?} {got:?} {want:?}"
+                );
+                // Et la correspondance directe du warp (homographie des coins) est la même.
+                let h = q.point_px(fx, fy);
+                assert!((h.0 - want[0]).abs() < tol && (h.1 - want[1]).abs() < tol, "{o:?} {h:?} {want:?}");
+            }
+            // L'œil, dans le repère du plan, est celui de la caméra.
+            let eye = crate::regions::rotate_point_inv([-q.offset[0], -q.offset[1], q.perspective], q.rot);
+            for k in 0..3 {
+                assert!((eye[k] - v.eye[k] * s).abs() < tol, "{o:?} {eye:?} {:?}", v.eye);
+            }
+        }
+    }
+
+    /// Le warp bilinéaire des angles fixes s'écarte de la projection exacte de plusieurs dizaines
+    /// de px sous cette caméra (partie visible d'un cadre 1920×1080) : le warp projectif est
+    /// nécessaire.
     #[test]
     fn the_bilinear_warp_is_too_far_from_the_camera() {
         let bilinear = |c: &[(f32, f32); 4], u: f32, v: f32| {
@@ -458,107 +508,57 @@ mod tests {
             let bottom = (c[3].0 + (c[2].0 - c[3].0) * u, c[3].1 + (c[2].1 - c[3].1) * u);
             (top.0 + (bottom.0 - top.0) * v, top.1 + (bottom.1 - top.1) * v)
         };
-        let mut worst_by_zoom: Vec<(f32, f32)> = Vec::new();
-        for (zoom, _, _, q) in extreme_quads() {
-            for i in 0..=40 {
-                for j in 0..=40 {
-                    let (u, v) = (i as f32 / 40.0, j as f32 / 40.0);
-                    let exact = q.point_px(u, v);
+        let mut worst = 0.0f32;
+        for (_, weight, _, v, bx) in envelope() {
+            if weight < 1.0 {
+                continue;
+            }
+            let q = v.quad(bx);
+            for i in 0..=20 {
+                for j in 0..=20 {
+                    let (u, t) = (i as f32 / 20.0, j as f32 / 20.0);
+                    let exact = q.point_px(u, t);
                     if exact.0.abs() > 960.0 || exact.1.abs() > 540.0 {
                         continue;
                     }
-                    let b = bilinear(&q.corners, u, v);
-                    let e = (b.0 - exact.0).hypot(b.1 - exact.1);
-                    match worst_by_zoom.last_mut() {
-                        Some((z, w)) if *z == zoom => *w = w.max(e),
-                        _ => worst_by_zoom.push((zoom, e)),
-                    }
+                    let b = bilinear(&q.corners, u, t);
+                    worst = worst.max((b.0 - exact.0).hypot(b.1 - exact.1));
                 }
             }
         }
-        println!("écart bilinéaire / projectif, pire px visible par zoom : {worst_by_zoom:?}");
-        assert!(worst_by_zoom.iter().all(|&(_, w)| w > 0.5), "{worst_by_zoom:?}");
+        println!("écart bilinéaire / projectif, pire px visible : {worst:.0}");
+        assert!(worst > 20.0, "{worst}");
     }
 
-    /// Règle des 2°. Le roulis est nul : une arête ne penche que par la perspective. Mesuré sur tout
-    /// le chemin du cadreur, pour chaque arête VISIBLE dans le cadre : son écart à l'axe le plus
-    /// proche, et, quand il passe sous 2°, où elle se trouve. Une arête quasi droite ne doit jamais
-    /// traverser le milieu du cadre, où elle se lirait comme une troncature.
+    /// Ce qui penche, et où. Le roulis est nul : une arête ne penche que par la perspective. La
+    /// règle des 2° est relâchée pour cette caméra (une arête peut croiser un axe pendant que
+    /// l'œil passe), mais au repos, pointeur au milieu, aucun bord vertical visible n'est droit :
+    /// l'élévation de repos les fait converger. La pente du contenu au centre de la vue,
+    /// `atan(tan(azimut)·sin(élévation))`, reste bornée : c'est ce qui se lit comme « penché »
+    /// quand l'œil passe dans un coin.
     #[test]
-    fn the_edges_only_slope_through_perspective() {
+    fn what_slopes_and_where() {
         let (half_w, half_h) = (960.0f32, 540.0f32);
-        let (mut min_angle, mut max_angle) = (f32::MAX, 0.0f32);
-        let (mut worst_inset, mut worst_at) = (0.0f32, String::new());
-        for (zoom, weight, aim, q) in extreme_quads() {
-            let c = q.corners;
-            for k in 0..4 {
+        for zoom in [1.0f32, 1.25, 1.8, 2.2, 3.5, 5.0] {
+            let (v, bx) = view([0.5, 0.5], zoom);
+            let c = v.quad(bx).corners;
+            for k in [1usize, 3] {
                 let (a, b) = (c[k], c[(k + 1) % 4]);
                 let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-                // Arêtes paires (haut, bas) horizontales, impaires verticales.
-                let deg = if k % 2 == 0 { dy.atan2(dx.abs()) } else { dx.atan2(dy.abs()) }
-                    .to_degrees()
-                    .abs();
-                // La partie visible : l'arête coupée au cadre (échantillonnée).
-                let visible: Vec<(f32, f32)> = (0..=64)
-                    .map(|i| {
-                        let t = i as f32 / 64.0;
-                        (a.0 + dx * t, a.1 + dy * t)
-                    })
-                    .filter(|p| p.0.abs() <= half_w && p.1.abs() <= half_h)
-                    .collect();
-                if visible.len() < 2 {
-                    continue;
-                }
-                min_angle = min_angle.min(deg);
-                max_angle = max_angle.max(deg);
-                if deg < 2.0 {
-                    // Distance au bord du cadre, en fraction de la demi-largeur (ou hauteur).
-                    let inset = visible
-                        .iter()
-                        .map(|p| if k % 2 == 0 { 1.0 - p.1.abs() / half_h } else { 1.0 - p.0.abs() / half_w })
-                        .fold(0.0f32, f32::max);
-                    if inset > worst_inset {
-                        worst_inset = inset;
-                        worst_at = format!("arête {k} à {deg:.2}°, zoom {zoom}, poids {weight}, visée {aim:?}");
-                    }
-                    assert!(
-                        inset < 0.35,
-                        "arête {k} à {deg:.2}° à {:.0} % du bord (zoom {zoom}, poids {weight}, visée {aim:?})",
-                        inset * 100.0
-                    );
-                }
+                let visible = (0..=64)
+                    .map(|i| (a.0 + dx * i as f32 / 64.0, a.1 + dy * i as f32 / 64.0))
+                    .any(|p| p.0.abs() <= half_w && p.1.abs() <= half_h);
+                let deg = dx.atan2(dy.abs()).to_degrees().abs();
+                assert!(!visible || deg > 1.0, "zoom {zoom} arête {k} à {deg:.2}°");
             }
         }
-        println!(
-            "pente des arêtes visibles : {min_angle:.2}° .. {max_angle:.2}° ; sous 2°, jamais à plus de {:.0} % du bord vers le centre ({worst_at})",
-            worst_inset * 100.0
-        );
-        assert!(max_angle < 8.0, "{max_angle}");
-    }
-
-    /// Ce qui se lit comme « penché » : l'horizontale du contenu au centre de la vue. Nulle en
-    /// roulis, elle ne penche que du produit lacet × tangage, borné sur tout le chemin : moins d'un
-    /// degré jusqu'au zoom 2,2 (1,8 par défaut), moins de 1,7° au zoom maximal.
-    #[test]
-    fn the_content_stays_level_along_the_path() {
-        let mut worst: Vec<(f32, f32)> = Vec::new();
-        for zoom in [1.25f32, 1.5, 1.8, 2.2, 3.5, 5.0] {
-            let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom).max(0.0);
-            let bx = [BOX[0] * zoom, BOX[1] * zoom];
-            let mut w = 0.0f32;
-            for i in -4..=4 {
-                for j in -4..=4 {
-                    let aim = [0.5 + i as f32 * reach / 4.0, 0.5 + j as f32 * reach / 4.0];
-                    let v = View::new(bx, CameraPose { weight: 1.0, aim });
-                    w = w.max((v.yaw.tan() * v.pitch.sin()).atan().to_degrees().abs());
-                }
-            }
-            worst.push((zoom, w));
+        let mut worst = 0.0f32;
+        for (_, _, _, v, _) in envelope() {
+            let [az, el] = v.angles_deg().map(f32::to_radians);
+            worst = worst.max((az.tan() * el.sin()).atan().to_degrees().abs());
         }
-        println!("pente du contenu au centre de la vue, par zoom : {worst:?}");
-        for (zoom, w) in worst {
-            assert!(w < if zoom <= 2.2 { 1.0 } else { 1.7 }, "zoom {zoom} : {w:.2}°");
-        }
+        println!("pente du contenu au centre de la vue, au pire de l'orbite : {worst:.2}°");
+        assert!(worst < 7.0, "{worst}");
     }
 
     fn track(at: impl Fn(f32) -> (f32, f32)) -> CursorTrack {
@@ -579,87 +579,100 @@ mod tests {
         CameraFrame { track: Some(track), crop: [0.0, 0.0, 1.0, 1.0], window: [0.0, 100.0] }
     }
 
-    /// Lecture, seek arrière, sauts : même visée pour le même `t`, et aucune frame ne saute.
+    /// Lecture, seek arrière, sauts : même cadrage pour le même `t`, et aucune frame ne saute.
     #[test]
-    fn the_aim_is_a_pure_continuous_function_of_time() {
+    fn the_follow_is_a_pure_continuous_function_of_time() {
         let tr = track(|t| (0.5 + 0.4 * (t * 1.3).sin(), 0.5 + 0.3 * (t * 0.7).cos()));
         let f = whole(&tr);
-        let at = |i: usize| follow_aim(&f, 1.0, 1.0 + i as f32 / 60.0, 2.0);
+        let at = |i: usize| follow(&f, 1.0 + i as f32 / 60.0, 2.0);
         let forward: Vec<_> = (0..600).map(at).collect();
         for i in (0..600).rev().step_by(7) {
             assert_eq!(at(i), forward[i], "frame {i}");
         }
-        // Jamais plus vite que `FOLLOW_MAX_SPEED` vues par seconde (la vue fait 1/2 de l'écran).
-        let cap = FOLLOW_MAX_SPEED * 0.5 / 60.0;
-        for pair in forward.windows(2) {
-            let d = (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
-            assert!(d <= cap * 1.02, "trop vite : {pair:?} ({d} > {cap})");
+        // Le pointeur va jusqu'à 0,56 écran par seconde : le cadrage reste en dessous, sans à-coup.
+        let speed = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]).hypot(b[1] - a[1]) * 60.0;
+        for w in forward.windows(3) {
+            let (v0, v1) = (speed(w[0].orbit, w[1].orbit), speed(w[1].orbit, w[2].orbit));
+            assert!(v1 < 0.56 && (v1 - v0).abs() < 0.02, "{w:?}");
         }
     }
 
-    /// Le pointeur qui bouge dans la zone morte ne fait rien ; sorti, la caméra le rejoint en
-    /// ~1 s et le garde au centre de la vue une fois posée.
+    /// Un saut du pointeur : la caméra part avant (anticipation), ne dépasse jamais, et s'est
+    /// posée à 95 % moins d'une seconde après. Le point visé fait le même chemin, borné à la
+    /// portée du zoom.
     #[test]
-    fn the_dead_zone_holds_then_the_camera_settles_on_the_pointer() {
-        let zoom = 2.0;
-        let dead = 0.5 * DEAD_ZONE / zoom;
-        // Petits gestes autour du centre (moins d'une zone morte d'écart avec la cible de départ,
-        // anticipation comprise), puis un saut en bas à droite à 4 s.
-        let tr = track(|t| {
-            if t < 4.0 { (0.5 + 0.45 * dead * (t * 3.0).sin(), 0.5) } else { (0.72, 0.62) }
-        });
+    fn a_jump_settles_in_about_a_second() {
+        let tr = track(|t| if t < 4.0 { (0.3, 0.6) } else { (0.8, 0.2) });
         let f = whole(&tr);
-        let start = follow_aim(&f, 0.0, 0.0, zoom);
-        // L'anticipation lit 1,2 s devant : on s'arrête avant que le saut n'y entre.
-        for i in 0..100 {
-            let a = follow_aim(&f, 0.0, 1.0 + i as f32 / 60.0, zoom);
-            assert_eq!(a, start, "la caméra a bougé dans la zone morte");
+        let at = |t: f32| follow(&f, t, 2.0);
+        assert!((at(3.5).orbit[0] - 0.3).abs() < 1e-4);
+        assert!(at(3.9).orbit[0] > 0.31, "l'anticipation doit faire partir la caméra avant le saut");
+        let progress = |t: f32| (at(t).orbit[0] - 0.3) / 0.5;
+        let (mut last, mut settled) = (0.0, None);
+        for i in 0..=300 {
+            let t = 3.5 + i as f32 / 100.0;
+            let p = progress(t);
+            assert!(p >= last - 1e-5 && p <= 1.0 + 1e-4, "t {t} : {p} après {last}");
+            if settled.is_none() && p >= 0.95 {
+                settled = Some(t - 4.0);
+            }
+            last = p;
         }
-        // Anticipation : la caméra part avant le saut.
-        assert!(follow_aim(&f, 0.0, 3.95, zoom)[0] > 0.52);
-        // Posée en ~1 s : une demi-vue à une vue par seconde, puis le ressort.
-        let settled = follow_aim(&f, 0.0, 5.1, zoom);
-        assert!((settled[0] - 0.72).abs() < 0.02 && (settled[1] - 0.62).abs() < 0.02, "{settled:?}");
-        // Au repos, le pointeur est au centre de la vue, à l'hystérésis près.
-        let late = follow_aim(&f, 0.0, 8.0, zoom);
-        let r = RELOCK / zoom;
-        assert!((late[0] - 0.72).abs() < r && (late[1] - 0.62).abs() < r, "{late:?}");
+        let settled = settled.expect("jamais posée");
+        println!("95 % du saut {settled:.2} s après lui");
+        assert!((0.6..=1.0).contains(&settled), "{settled}");
+        // Le point visé : borné à 0,5 ± 0,225 au zoom 2.
+        let posed = at(8.0);
+        assert!((posed.aim[0] - 0.725).abs() < 1e-3 && (posed.aim[1] - 0.275).abs() < 1e-3, "{posed:?}");
+        assert!((posed.orbit[0] - 0.8).abs() < 1e-3);
     }
 
-    /// La visée reste là où la vue reste dans l'écran : jamais plus loin que
-    /// `0,5 ± (0,5 − 0,5·VIEW_MARGIN/zoom)`, et au centre à zoom 1. Recadrage compris ; sans piste,
-    /// le centre.
+    /// Le point visé reste là où la vue reste dans l'écran (au centre au zoom 1), l'orbite lit
+    /// tout l'écran. Recadrage compris ; sans piste, le centre.
     #[test]
     fn the_aim_keeps_the_view_on_the_screen() {
         let corner = track(|_| (0.99, 0.01));
         for zoom in [1.0f32, 1.5, 2.0, 3.0] {
-            let a = follow_aim(&whole(&corner), 0.0, 5.0, zoom);
+            let got = follow(&whole(&corner), 5.0, zoom);
             let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom).max(0.0);
             assert!(
-                (a[0] - (0.5 + reach)).abs() < 1e-3 && (a[1] - (0.5 - reach)).abs() < 1e-3,
-                "{zoom} {a:?}"
+                (got.aim[0] - (0.5 + reach)).abs() < 1e-3 && (got.aim[1] - (0.5 - reach)).abs() < 1e-3,
+                "{zoom} {got:?}"
             );
+            assert!((got.orbit[0] - 0.99).abs() < 1e-3 && (got.orbit[1] - 0.01).abs() < 1e-3);
         }
-        // Dans un recadrage [0,2 ; 0,4], x = 0,38 est tout à droite de ce qu'on voit.
+        // Dans un recadrage [0,2 ; 0,4], x = 0,38 est tout à droite de ce qu'on voit ; hors du
+        // recadrage, le pointeur compte pour le bord.
         let tr = track(|_| (0.38, 0.5));
         let cropped = CameraFrame { crop: [0.2, 0.0, 0.4, 1.0], ..whole(&tr) };
-        assert!(follow_aim(&cropped, 0.0, 5.0, 2.0)[0] > 0.72);
-        assert!(follow_aim(&whole(&tr), 0.0, 5.0, 2.0)[0] < 0.4);
-        assert_eq!(follow_aim(&CameraFrame::NONE, 0.0, 5.0, 2.0), [0.5; 2]);
+        assert!(follow(&cropped, 5.0, 2.0).orbit[0] > 0.89);
+        assert!(follow(&whole(&tr), 5.0, 2.0).orbit[0] < 0.4);
+        let outside = CameraFrame { crop: [0.0, 0.0, 0.3, 1.0], ..whole(&tr) };
+        assert!((follow(&outside, 5.0, 2.0).orbit[0] - 1.0).abs() < 1e-5);
+        assert_eq!(follow(&CameraFrame::NONE, 5.0, 2.0), Follow::CENTRE);
     }
 
-    /// Même sur une région d'une minute, rejouer le cadreur à chaque frame reste bon marché.
+    /// Le coût ne dépend pas de la longueur de la région : 120 lectures de piste par frame.
     #[test]
-    fn a_long_region_stays_cheap() {
+    fn the_follow_cost_is_bounded() {
         let tr = track(|t| (0.5 + 0.4 * (t * 0.9).sin(), 0.5 + 0.3 * (t * 0.4).cos()));
         let f = whole(&tr);
+        let time = |t: f32| {
+            let t0 = std::time::Instant::now();
+            for i in 0..200 {
+                std::hint::black_box(follow(&f, t - i as f32 * 0.01, 2.0));
+            }
+            t0.elapsed() / 200
+        };
+        let (early, late) = (time(3.0), time(59.0));
         let t0 = std::time::Instant::now();
-        let n = 20;
-        for i in 0..n {
-            std::hint::black_box(follow_aim(&f, 0.0, 60.0 - i as f32 * 0.01, 2.0));
+        for i in 0..200 {
+            std::hint::black_box(View::new(BOX, pose([i as f32 / 200.0, 0.3], 1.5)));
         }
-        let per_frame = t0.elapsed() / n;
-        println!("cadreur, région de 60 s : {per_frame:?} par frame");
-        assert!(per_frame < std::time::Duration::from_millis(20), "{per_frame:?}");
+        let camera = t0.elapsed() / 200;
+        println!("cadreur : {early:?} à 3 s, {late:?} à 59 s ; caméra : {camera:?}");
+        assert!(late < std::time::Duration::from_millis(1), "{late:?}");
+        assert!(late < early * 3 + std::time::Duration::from_micros(50), "{early:?} {late:?}");
+        assert!(camera < std::time::Duration::from_millis(1), "{camera:?}");
     }
 }

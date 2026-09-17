@@ -346,14 +346,14 @@
 				"iso": "Plongée de biais",
 				"left": "Écran tourné à gauche",
 				"right": "Écran tourné à droite",
-				"followCursor": "Suit le curseur"
+				"followCursor": "Tourne avec le curseur"
 			},
 			"description": {
 				"off": "L'écran reste à plat.",
 				"iso": "Garde une seule pose : tourné vers la gauche et vu d'en haut.",
 				"left": "Garde une seule pose : l'écran regarde vers la gauche, son bord droit avance.",
 				"right": "Garde une seule pose : l'écran regarde vers la droite, son bord gauche avance.",
-				"followCursor": "L'écran reste immobile ; la caméra pivote pour garder le curseur en vue."
+				"followCursor": "L'écran reste immobile ; la caméra tourne autour, du côté du curseur, et monte ou descend avec lui."
 			},
 			"needsCursor": "Le curseur est masqué : cette caméra n'a rien à suivre et garde son angle de départ."
 		},
@@ -362,7 +362,7 @@
 			"description": "Chaque clic enfonce l'écran incliné : le côté cliqué s'abaisse, puis revient.",
 			"needsRotation": "Choisissez d'abord une caméra 3D : seul un écran incliné peut être enfoncé.",
 			"needsCursor": "Le curseur est masqué : l'écran ne réagit qu'aux clics visibles.",
-			"fixedOnly": "Seul un angle fixe incline l'écran : avec cette caméra, l'écran reste immobile."
+			"descriptionCamera": "Chaque clic fait reculer un peu la caméra, puis elle revient."
 		},
 		"level": "Niveau de zoom",
 		"previewHold": "Maintenir pour prévisualiser l'effet de zoom",

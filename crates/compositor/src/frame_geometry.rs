@@ -630,8 +630,9 @@ pub fn cursor_sprite_cb(
 
 /// Gain de l'éclairage de la caméra réelle : une lampe posée sur la caméra, dont la lumière
 /// décroît avec le carré de la distance. 1 = la décroissance physique ; moins, pour que le
-/// contenu reste lisible.
-pub const CAMERA_LIGHT_GAIN: f32 = 0.5;
+/// contenu reste lisible. L'œil en orbite passe loin de l'axe : à 22° d'azimut, l'écart d'un bord
+/// à l'autre vaut `0,42·gain` en 16:9, soit ±4 % ici.
+pub const CAMERA_LIGHT_GAIN: f32 = 0.2;
 
 /// `LayerCB` de l'écran incliné (mode 8), pour les trois backends : le quad projeté est dessiné
 /// dans sa BBOX et le fragment remonte au (s, t) du plan par le warp inverse. Pas de flou de
@@ -1649,6 +1650,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let mut zoom_click_impact = 0.0f32;
         let mut zoom_camera = 0.0f32;
         let mut zoom_aim = [0.5f32; 2];
+        let mut zoom_orbit = [0.5f32; 2];
         // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, caméra
         // `follow-cursor`) : l'export ne charge la piste que si le curseur est affiché
         // (`timeline_walk`), la preview toujours. Sans cette porte, la preview pencherait un
@@ -1676,6 +1678,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             zoom_click_impact = zs.click_impact;
             zoom_camera = zs.camera;
             zoom_aim = zs.aim;
+            zoom_orbit = zs.orbit;
             let zs_p = crate::regions::zoom_state_at(zoom_regions, source_t_prev, cursor_for_zoom);
             pp.zoom = zs_p.scale;
             pp.focus = zs_p.focus;
@@ -1855,15 +1858,28 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let cut_ref = cover(screen_source_rect(u_max, v_max, active_crop, p.zoom, p.focus));
         let cut_ref_prev = cover(screen_source_rect(u_max, v_max, active_crop, pp.zoom, p.focus));
         let cut = cover(screen_source_rect(u_max, v_max, active_crop, 1.0, p.focus));
-        // Sous la caméra réelle, la visée vit dans le recadrage, comme le focus : même report dans
-        // la coupe (un cover la rogne). C'est aussi là que se fait la mise au point : le flou suit
-        // le point visé quand la caméra pivote.
+        // Impact du clic : mêmes piste, coupe, porte et budget que la parallaxe sous un angle fixe ;
+        // sous la caméra réelle, les mêmes clics font reculer l'œil.
+        let (impact, press) = match (scene, parallax_track) {
+            (Some(s), Some(track)) if zoom_click_impact > 0.0 => {
+                let (tilt, press) = click_impact_at(s, cfg, &lp, track, source_t, cut, [u_max, v_max]);
+                (tilt.map(|d| d * zoom_click_impact), press * zoom_click_impact)
+            }
+            _ => ([0.0; 3], 0.0),
+        };
+        // Sous la caméra réelle, la visée et l'orbite vivent dans le recadrage, comme le focus :
+        // même report dans la coupe (un cover la rogne). La mise au point suit le pointeur lissé
+        // (l'orbite), pas le point visé : celui-ci reste au centre au zoom 1 et bute sur sa portée
+        // au zoom, là où le spectateur regarde le pointeur.
         let camera = (zoom_camera > 0.0).then(|| crate::camera::CameraPose {
             weight: zoom_camera,
             aim: focus_in_cut(u_max, v_max, active_crop, zoom_aim, cut),
+            orbit: focus_in_cut(u_max, v_max, active_crop, zoom_orbit, cut),
+            zoom: p.zoom,
+            press,
         });
         let focus_plane = match camera {
-            Some(pose) => pose.aim,
+            Some(pose) => pose.orbit,
             None => focus_in_cut(u_max, v_max, active_crop, p.focus, cut),
         };
         let s_dst = remap_box(s_base, cut_ref, cut);
@@ -1877,14 +1893,6 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             cut_ref[2] / u_max.max(1e-6),
             cut_ref[3] / v_max.max(1e-6),
         ];
-        // Impact du clic : mêmes piste, coupe, porte et budget que la parallaxe.
-        let impact = match (scene, parallax_track) {
-            (Some(s), Some(track)) if zoom_click_impact > 0.0 => {
-                click_impact_at(s, cfg, &lp, track, source_t, cut, [u_max, v_max])
-                    .map(|d| d * zoom_click_impact)
-            }
-            _ => [0.0; 3],
-        };
         let zoom_rotation_dyn = crate::regions::dynamic_tilt(
             source_t,
             parallax_track,
@@ -2162,23 +2170,26 @@ fn click_impact_at(
     t: f32,
     cut: [f32; 4],
     uv_max: [f32; 2],
-) -> [f32; 3] {
-    let Some(clip) = scene.clips.get(scene.active_clip_index) else { return [0.0; 3] };
+) -> ([f32; 3], f32) {
+    let Some(clip) = scene.clips.get(scene.active_clip_index) else { return ([0.0; 3], 0.0) };
     let masked = scene.annotations.iter().any(|a| {
         a.kind == "blur" && a.blur.is_some() && t >= a.start_sec as f32 && t < a.end_sec as f32
     });
     if masked {
-        return [0.0; 3];
+        return ([0.0; 3], 0.0);
     }
     let speed = crate::regions::speed_at(&scene.speed_regions, scene.active_clip_index, t as f64);
     let speed_weight = (2.0 - speed as f32).clamp(0.0, 1.0);
     let weight = cursor_alpha(Some(scene), cfg, live, track, t) * speed_weight;
     if weight <= 0.0 {
-        return [0.0; 3];
+        return ([0.0; 3], 0.0);
     }
     let window = [clip.source_start_sec as f32, clip.source_end_sec as f32];
-    crate::regions::click_impact(t, track, window, |p| cursor_plane_point(cut, uv_max, p))
-        .map(|d| d * weight)
+    let aim = |p| cursor_plane_point(cut, uv_max, p);
+    (
+        crate::regions::click_impact(t, track, window, aim).map(|d| d * weight),
+        crate::regions::click_press(t, track, window, aim) * weight,
+    )
 }
 
 /// `None` = rien à dessiner cette frame : curseur masqué, pointeur hors du rect source
@@ -3619,10 +3630,10 @@ mod tests {
         }
     }
 
-    /// `follow-cursor` passe par `plan_frame` : l'écran n'est ni incliné ni pressé par les clics,
-    /// la caméra vise le pointeur dans le RECADRAGE, la boîte zoome sur son centre sans glisser, la
-    /// mise au point suit la visée, et curseur masqué (l'export n'a alors pas de piste) la caméra
-    /// vise le centre.
+    /// `follow-cursor` passe par `plan_frame` : l'écran n'est pas incliné, la caméra vise et tourne
+    /// avec le pointeur lu dans le RECADRAGE, la boîte zoome sur son centre sans glisser, la mise au
+    /// point suit la visée, un clic fait reculer l'œil sans presser l'écran, et curseur masqué
+    /// (l'export n'a alors pas de piste) la caméra vise le centre, au repos.
     #[test]
     fn the_follow_camera_aims_at_the_pointer_in_the_crop() {
         let cfg = crate::config::all().pop().expect("au moins une config");
@@ -3647,8 +3658,11 @@ mod tests {
         assert_eq!(cr.weight, 1.0);
         // Zoom 2 : la vue reste dans l'écran tant que la visée reste dans [0,275 ; 0,725].
         assert!(cr.aim[0] > 0.72 && cl.aim[0] < 0.28, "{:?} {:?}", cr.aim, cl.aim);
+        // L'orbite lit tout le recadrage, sans la borne du zoom : 0,55 y tombe à 0,9.
+        assert!(cr.orbit[0] > 0.89 && cl.orbit[0] < 0.1, "{:?} {:?}", cr.orbit, cl.orbit);
+        assert_eq!((cr.zoom, cr.press), (2.0, 0.0));
         assert_eq!((right.zoom_rotation, right.zoom_rotation_dyn), ([0.0; 3], [0.0; 3]));
-        assert_eq!(right.focus_plane, cr.aim, "la mise au point suit la visée");
+        assert_eq!(right.focus_plane, cr.orbit, "la mise au point suit le pointeur");
         assert_eq!(right.s_dst, left.s_dst, "la boîte ne glisse pas");
         assert!(right.tilted() && right.depth_of_field_on(false) == right.depth_of_field);
 
@@ -3657,8 +3671,11 @@ mod tests {
         let (qr, ql) = (right.screen_tilt(s_px).expect("caméra"), left.screen_tilt(s_px).expect("caméra"));
         assert!(qr.projective && ql.projective);
         assert!((qr.scale - ql.scale).abs() < 0.03, "{} {}", qr.scale, ql.scale);
-        // Tournée vers la droite, la caméra rejette le centre de l'écran à gauche de l'image.
+        // Visant à droite, la caméra rejette le centre de l'écran à gauche de l'image ; vue de la
+        // droite, le bord droit de l'écran est le plus haut.
         assert!(qr.offset[0] < -100.0 && ql.offset[0] > 100.0, "{:?} {:?}", qr.offset, ql.offset);
+        let edge = |q: &crate::regions::TiltedQuad, a: usize, b: usize| q.corners[b].1 - q.corners[a].1;
+        assert!(edge(&qr, 1, 2) > edge(&qr, 0, 3) && edge(&ql, 0, 3) > edge(&ql, 1, 2));
 
         // L'ombre de l'écran tombe du côté de celle de la flèche (lumière en haut à gauche), sur la
         // même longueur que l'ombre droite, qui reste verticale.
@@ -3667,13 +3684,20 @@ mod tests {
         assert!(fx == 0.0 && fy > 0.0, "{fx} {fy}");
         assert!(cx > 0.0 && cy > 0.0 && (cx.hypot(cy) - fy).abs() < 1e-3, "{cx} {cy}");
 
-        // Un clic ne presse pas l'écran immobile.
+        // Un clic ne presse pas l'écran immobile : l'œil recule, au creux de `tap` 50 ms après.
         let clicked = plan(&scene, parked(0.55, vec![1.45]));
         assert_eq!((clicked.zoom_rotation, clicked.zoom_rotation_dyn), ([0.0; 3], [0.0; 3]));
+        let pose = clicked.camera.expect("caméra");
+        assert!(pose.press < -0.9, "{pose:?}");
+        let pushed = clicked.screen_tilt(s_px).expect("caméra");
+        assert!(pushed.half_extents_px().0 < 0.98 * qr.half_extents_px().0);
+        let off = Scene::from_json(&json.replace(r#","clickImpact":true"#, "")).expect("scène");
+        assert_eq!(plan(&off, parked(0.55, vec![1.45])).camera.expect("caméra").press, 0.0);
 
         let hidden = Scene::from_json(&json.replace(r#""show":true"#, r#""show":false"#)).expect("scène");
         let front = plan(&hidden, parked(0.55, vec![])).camera.expect("caméra au repos");
         assert!((front.aim[0] - 0.5).abs() < 1e-4 && (front.aim[1] - 0.5).abs() < 1e-4, "{:?}", front.aim);
+        assert!((front.orbit[0] - 0.5).abs() < 1e-4 && (front.orbit[1] - 0.5).abs() < 1e-4, "{:?}", front.orbit);
     }
 
     /// Sous un préset 3D, le masque est le quad du contenu, warpé comme le mode 8 le dessine.

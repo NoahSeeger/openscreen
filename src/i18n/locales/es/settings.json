@@ -346,14 +346,14 @@
 				"iso": "Picado en diagonal",
 				"left": "Pantalla girada a la izquierda",
 				"right": "Pantalla girada a la derecha",
-				"followCursor": "Sigue el cursor"
+				"followCursor": "Gira con el cursor"
 			},
 			"description": {
 				"off": "La pantalla se queda plana.",
 				"iso": "Mantiene una sola pose: girada a la izquierda y vista desde arriba.",
 				"left": "Mantiene una sola pose: la pantalla mira a la izquierda y su borde derecho avanza.",
 				"right": "Mantiene una sola pose: la pantalla mira a la derecha y su borde izquierdo avanza.",
-				"followCursor": "La pantalla no se mueve; la cámara gira para mantener el cursor a la vista."
+				"followCursor": "La pantalla no se mueve; la cámara la rodea hacia el lado del cursor y sube o baja con él."
 			},
 			"needsCursor": "El cursor está oculto: esta cámara no tiene nada que seguir y mantiene su ángulo inicial."
 		},
@@ -362,7 +362,7 @@
 			"description": "Cada clic presiona la pantalla inclinada: el lado pulsado se hunde y luego vuelve.",
 			"needsRotation": "Elige primero una cámara 3D: solo se puede presionar una pantalla inclinada.",
 			"needsCursor": "El cursor está oculto: la pantalla solo reacciona a los clics visibles.",
-			"fixedOnly": "Solo un ángulo fijo inclina la pantalla: con esta cámara la pantalla no se mueve."
+			"descriptionCamera": "Cada clic hace retroceder un poco la cámara, que luego vuelve."
 		},
 		"level": "Nivel de zoom",
 		"previewHold": "Mantener para previsualizar el efecto de zoom",

@@ -5199,9 +5199,11 @@ mod tests {
             .collect();
         let uv = vec![128u8; (w * (h / 2)) as usize];
         let screen = FakeFrame::from_planes(&gpu, w, h, &y, &uv);
+        // Profondeur de champ coupee (allumee par defaut) : l'orbite a une vraie profondeur, et un
+        // trait floute ne se mesure plus a +-8 px.
         let json = model_scene_json(r#""follow-cursor""#, None, "none", true, 0.05)
             .replace(r#""scale":1,"#, r#""scale":2.2,"#)
-            .replace(r#""roundnessFrac":0.03"#, r#""roundnessFrac":0"#);
+            .replace(r#""roundnessFrac":0.03"#, r#""roundnessFrac":0,"depthOfField":false"#);
         let scene = crate::scene::Scene::from_json(&json).expect("scene json");
         let track = crate::cursor::CursorTrack::new(vec![(0.0, 0.93, 0.08), (9.0, 0.93, 0.08)], vec![], vec![]);
         let rgba = compose_model(&comp, &screen, &json, &track);
