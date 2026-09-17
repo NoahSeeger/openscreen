@@ -717,10 +717,10 @@ fn contact_sheets() {
     let Some(gpu) = gpu() else { return };
     let comp = Compositor::new_sized(&gpu, 1280, 720).expect("compositor");
     let screen = FakeFrame::new(&gpu, Tint::Blue);
-    const CELL: u32 = 280;
+    const CELL: u32 = 300;
     let crop = |rgba: &[u8], p: Probe| {
         let img = image::RgbaImage::from_raw(1280, 720, rgba.to_vec()).expect("readback");
-        let (x, y) = ((p.tip[0] - 1.05 * p.unit).max(0.0) as u32, (p.tip[1] - 1.05 * p.unit).max(0.0) as u32);
+        let (x, y) = ((p.tip[0] - 0.7 * p.unit).max(0.0) as u32, (p.tip[1] - 0.7 * p.unit).max(0.0) as u32);
         image::imageops::crop_imm(&img, x, y, CELL, CELL).to_image()
     };
 
