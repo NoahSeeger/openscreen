@@ -5100,6 +5100,10 @@ mod tests {
         let (mut yp, mut uvp) = model_screen_planes(false);
         for row in 0..h {
             for col in 0..w {
+                // Un carre uni autour de la cible : l'anneau s'y mesure sans les barres.
+                if (col as f32 - tx).abs() < 45.0 && (row as f32 - ty).abs() < 45.0 {
+                    yp[(row * w + col) as usize] = 150;
+                }
                 if red(col as f32 + 0.5, row as f32 + 0.5) {
                     yp[(row * w + col) as usize] = 63;
                 }
