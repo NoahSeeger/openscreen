@@ -2234,7 +2234,11 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
             })
         })
     };
-    let placement = place(input.track.at(input.t), g.s_dst)?;
+    // Le curseur modélisé touche le plan à chaque clic : il se pose sur le point cliqué brut
+    // (`pinned_at`), pas sur la piste lissée qui traîne derrière la souris. Le sprite plat garde
+    // la piste telle quelle, son rendu est celui d'avant.
+    let at = |t: f32| if model3d { input.track.pinned_at(t) } else { input.track.at(t) };
+    let placement = place(at(input.t), g.s_dst)?;
 
     let lp = input.live;
     // `cursor_bounce_scale` est le clickBounce brut (0..5) : au-delà de 1/0.24 ≈ 4.17, le creux
@@ -2263,7 +2267,7 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
         let prev = if taps <= 1 {
             placement
         } else {
-            place(input.track.at(input.t - 1.0 / FPS), g.s_dst_prev).unwrap_or(placement)
+            place(at(input.t - 1.0 / FPS), g.s_dst_prev).unwrap_or(placement)
         };
         (taps, prev)
     } else if blur01 <= 0.001 {
@@ -2271,7 +2275,7 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
     } else {
         // Intervalle d'obturateur court, borné à 1 frame (100% blur = 1 frame d'exposition)
         let trail_dt = blur01 / FPS;
-        let prev = place(input.track.at(input.t - trail_dt), g.s_dst_prev).unwrap_or(placement);
+        let prev = place(at(input.t - trail_dt), g.s_dst_prev).unwrap_or(placement);
         let c_now = placement.upright_center();
         let c_prev = prev.upright_center();
         let dist_px = ((c_now[0] - c_prev[0]) * rw).hypot((c_now[1] - c_prev[1]) * rh);
@@ -2488,8 +2492,7 @@ pub fn cursor_pose(
         _ => 0.0,
     };
     if let Some(here) = track.follow_at(t) {
-        for &tc in track.clicks_between(t - CLICK_IMPACT_WINDOW_S, t + MODEL_AIM_S) {
-            let Some(target) = track.at(tc) else { continue };
+        for (tc, target) in track.clicks_with_points(t - CLICK_IMPACT_WINDOW_S, t + MODEL_AIM_S) {
             let w = if tc > t {
                 smooth(1.0 - (tc - t) / MODEL_AIM_S)
             } else {
@@ -4753,6 +4756,149 @@ mod tests {
             assert_eq!([cb.mb[2], cb.mb[3]], view.offset, "{name}: translation du plan");
             assert!(shape.size[0].max(shape.size[1]) == 1.0, "{name}: {:?}", shape.size);
         }
+    }
+
+    /// Le pointeur file de `from` vers `to` à `speed` (écrans par seconde), s'y arrête `dwell` s
+    /// avant et après le clic `tc`, puis repart vers `away`. Échantillonné à 30 Hz comme la
+    /// télémétrie, plus l'échantillon du clic. Sans arrêt, la piste brute dérive déjà pendant le
+    /// contact.
+    fn approach_track(from: [f32; 2], to: [f32; 2], away: [f32; 2], speed: f32, dwell: f32, tc: f32) -> crate::cursor::CursorTrack {
+        let mix = |a: [f32; 2], b: [f32; 2], f: f32| (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f);
+        let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let arrive = tc - dwell;
+        let start = arrive - dist(from, to) / speed;
+        let (leave, end) = (tc + dwell, tc + dwell + dist(to, away) / speed);
+        let pos = |t: f32| {
+            if t < start {
+                (from[0], from[1])
+            } else if t < arrive {
+                mix(from, to, (t - start) / (arrive - start))
+            } else if t < leave {
+                (to[0], to[1])
+            } else {
+                mix(to, away, ((t - leave) / (end - leave)).min(1.0))
+            }
+        };
+        let mut samples: Vec<(f32, f32, f32)> = (0..=120)
+            .map(|k| k as f32 / 30.0)
+            .filter(|&t| (t - tc).abs() > 1e-4)
+            .map(|t| (t, pos(t).0, pos(t).1))
+            .collect();
+        samples.push((tc, to[0], to[1]));
+        samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+        crate::cursor::CursorTrack::new(samples, vec![tc], vec![])
+    }
+
+    /// Le curseur modélisé et son écran à `t`, par le chemin du rendu : `plan_frame` puis
+    /// `plan_cursor`, scène dorée (recadrée, zoomée) sous `rotation`.
+    fn model_frame(
+        rotation: &str,
+        blur: f32,
+        track: &'static crate::cursor::CursorTrack,
+        t: f32,
+    ) -> (FrameGeometry, Option<CursorPlan>) {
+        let cfg = crate::config::all().pop().expect("cfg");
+        let json = zoomed_golden_scene_json().replace(r#""rotation":"none""#, rotation);
+        let mut scene = Scene::from_json(&json).expect("scène");
+        scene.cursor.theme = "default".into();
+        scene.cursor.cursor_sprites = model_scene().cursor.cursor_sprites;
+        let live = LiveParams {
+            cursor_model3d: true,
+            cursor_bounce_scale: 2.5,
+            cursor_motion_blur: blur,
+            ..live_params_from_scene(&scene)
+        };
+        let g = plan_frame(&FrameGeometryInput {
+            cursor: Some(track),
+            timeline_t_override: Some(t),
+            frame: t * FPS,
+            live,
+            ..golden_input(&scene, &cfg)
+        });
+        let plan = plan_cursor(
+            &g,
+            &CursorPlanInput {
+                render_px: [1170.0, 658.0],
+                u_max: 1.0,
+                v_max: 1080.0 / 1088.0,
+                cfg: &cfg,
+                live,
+                scene: Some(&scene),
+                track,
+                t,
+            },
+        );
+        (g, plan)
+    }
+
+    /// Le pixel où l'écran dessine la position `p` du contenu, sans passer par le curseur : la
+    /// coupe, puis le rect de l'écran droit ou le quad incliné (bilinéaire ou projectif).
+    fn content_px(g: &FrameGeometry, p: (f32, f32)) -> [f32; 2] {
+        let render = [1170.0, 658.0];
+        let [fx, fy] = cursor_plane_point(g.cut, [1.0, 1080.0 / 1088.0], p).expect("clic dans la coupe");
+        let s_px = [g.s_dst[2] * render[0], g.s_dst[3] * render[1]];
+        match g.screen_tilt(s_px) {
+            None => [(g.s_dst[0] + fx * g.s_dst[2]) * render[0], (g.s_dst[1] + fy * g.s_dst[3]) * render[1]],
+            Some(quad) => {
+                let (x, y) = quad.point_px(fx, fy);
+                [(g.s_dst[0] + g.s_dst[2] * 0.5) * render[0] + x, (g.s_dst[1] + g.s_dst[3] * 0.5) * render[1] + y]
+            }
+        }
+    }
+
+    /// Au contact, la pointe du curseur modélisé tombe sur le pixel du clic BRUT, à 0,5 px près :
+    /// quel que soit le lissage (le ressort traîne derrière la souris), la vitesse d'arrivée, un
+    /// départ immédiat, l'angle fixe (impact du plan compris), la caméra réelle, et la traînée de
+    /// flou (repliée sur la tête pendant le contact).
+    #[test]
+    fn the_modelled_tip_touches_the_raw_click_pixel() {
+        const TC: f32 = 1.5;
+        let presets = [
+            ("flat", r#""rotation":"none""#),
+            ("iso", r#""rotation":"iso","clickImpact":true"#),
+            ("left", r#""rotation":"left","clickImpact":true"#),
+            ("right", r#""rotation":"right","clickImpact":true"#),
+            ("follow", r#""rotation":"follow-cursor""#),
+        ];
+        let (to, from, away) = ([0.3, 0.18], [0.08, 0.05], [0.45, 0.32]);
+        let mut worst = 0.0f32;
+        for (name, rotation) in presets {
+            for smoothing in [0.0, 0.25, 0.5, 1.0] {
+                for speed in [0.5, 2.0] {
+                    for dwell in [0.0, 0.15] {
+                        let raw = approach_track(from, to, away, speed, dwell, TC);
+                        let track: &'static crate::cursor::CursorTrack = Box::leak(Box::new(raw.smoothed(smoothing)));
+                        let mut contacts = 0;
+                        let mut case_worst = 0.0f32;
+                        for key in ["arrow", "pointer"] {
+                            let (_, shape) = sprite_model(key);
+                            let shape = SpriteShape { hotspot: hotspot_of(key), ..shape };
+                            for k in 0..=15 {
+                                let t = TC + 0.02 + k as f32 * 0.004;
+                                let (g, plan) = model_frame(rotation, 1.0, track, t);
+                                let plan = plan.expect("curseur visible au contact");
+                                let pose = plan.model.expect("modèle");
+                                if pose.clearance > 0.0 {
+                                    continue;
+                                }
+                                contacts += 1;
+                                let view = ModelView::new(plan.placement, plan.size_px, pose, shape).expect("vue");
+                                let tip = view.project(view.model_to_plane([0.0; 3])).expect("pointe");
+                                let want = content_px(&g, (to[0], to[1]));
+                                let off = (tip[0] - want[0]).hypot(tip[1] - want[1]);
+                                case_worst = case_worst.max(off);
+                                assert_eq!(plan.taps, 1, "{name} lissage {smoothing} : traînée au contact");
+                            }
+                        }
+                        println!("{name} lissage {smoothing} vitesse {speed} arrêt {dwell} : {case_worst:.3} px");
+                        assert!(contacts >= 16, "{name}: {contacts} images au contact");
+                        assert!(case_worst < 0.5, "{name} lissage {smoothing} vitesse {speed} arrêt {dwell} : {case_worst} px");
+                        worst = worst.max(case_worst);
+                    }
+                }
+            }
+        }
+        println!("pire écart au contact : {worst:.4} px");
     }
 
     #[test]
