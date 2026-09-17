@@ -386,7 +386,8 @@ pub struct SceneZoomRegion {
     #[serde(default)]
     pub focus_mode: Option<String>,
     /// La caméra 3D du zoom : un angle fixe ("iso" | "left" | "right"), la caméra réelle qui
-    /// vise le pointeur ("follow-cursor", cf. `camera.rs`), ou null (écran droit). Une valeur
+    /// tourne autour de l'écran avec le pointeur ("follow-cursor", cf. `camera.rs`), ou null
+    /// (écran droit). Une valeur
     /// inconnue rend l'écran droit.
     pub rotation: Option<String>,
     /// La région entière tombe sur une portion qu'un trim retire. Ses temps sont donc HORS de

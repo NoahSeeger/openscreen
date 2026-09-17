@@ -6,6 +6,7 @@
 //! vit dans `camera.rs` ; le rendu est dans les backends — ce module ne fait que le calcul
 //! temporel et la géométrie, pas le rendu GPU).
 
+use crate::camera::Follow;
 use crate::cursor::CursorTrack;
 use crate::scene::{SceneCameraFullscreenRegion, SceneSpeedRegion, SceneZoomRegion};
 
@@ -245,8 +246,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 /// span et rien en dehors. Sans ça son ease-in (1,5 s AVANT `start_sec`) et son ease-out
 /// déborderaient sur les frames GARDÉES de part et d'autre du trim — un zoom que l'export ne
 /// rendra jamais, visible dans la preview juste à côté de la coupe. Cf. `SceneZoomRegion`.
-/// L'instant où la région commence à entrer (sa force quitte 0) : le départ du cadreur de
-/// `follow-cursor`.
+/// L'instant où la région commence à entrer (sa force quitte 0).
 fn lead_in_start(region: &SceneZoomRegion) -> f32 {
     let start = region.start_sec as f32;
     if region.under_trim {
@@ -355,15 +355,18 @@ pub struct ZoomState {
     /// un, 0 sinon ; interpolé entre deux régions chaînées, et refermé en milieu de course
     /// quand leurs présets diffèrent. C'est la porte de `dynamic_tilt`.
     pub tilt: f32,
-    /// Poids de l'impact du clic (0..1) : 1 sur une région à angle fixe qui l'active
-    /// (`click_impact`), interpolé entre deux régions chaînées. Ne suffit pas seul : l'impact passe
-    /// aussi par la porte de `tilt` (`dynamic_tilt`), donc rien sans angle fixe.
+    /// Poids de l'impact du clic (0..1) : 1 sur une région qui l'active (`click_impact`),
+    /// interpolé entre deux régions chaînées. Ne suffit pas seul : sous un angle fixe, l'impact
+    /// passe aussi par la porte de `tilt` (`dynamic_tilt`) ; sous la caméra réelle, par son poids
+    /// (l'œil recule, `camera::PRESS`).
     pub click_impact: f32,
     /// Poids de la caméra réelle (`camera.rs`, 0..1) : la force de la région `follow-cursor`, 0
     /// sinon. Jamais non nul en même temps que `rotation` (cf. la transition chaînée).
     pub camera: f32,
     /// Où la caméra vise, 0..1 dans le recadrage, déjà pondéré par `camera` (le centre à 0).
     pub aim: [f32; 2],
+    /// Le pointeur lissé qui place l'œil sur son orbite, 0..1 dans le recadrage, pondéré de même.
+    pub orbit: [f32; 2],
 }
 
 const IDENTITY_ZOOM: ZoomState = ZoomState {
@@ -374,6 +377,7 @@ const IDENTITY_ZOOM: ZoomState = ZoomState {
     click_impact: 0.0,
     camera: 0.0,
     aim: [0.5, 0.5],
+    orbit: [0.5, 0.5],
 };
 
 /// Ce que le champ `rotation` d'une région demande.
@@ -383,7 +387,8 @@ enum Camera {
     Flat,
     /// Un angle fixe : `iso`, `left`, `right`. L'écran est incliné devant la caméra.
     Fixed([f32; 3]),
-    /// `follow-cursor` : l'écran est immobile, une caméra réelle vise le pointeur (`camera.rs`).
+    /// `follow-cursor` : l'écran est immobile, une caméra réelle tourne autour de lui avec le
+    /// pointeur (`camera.rs`).
     Follow,
 }
 
@@ -434,25 +439,23 @@ fn follow_flag(region: &SceneZoomRegion) -> f32 {
     if camera_for(&region.rotation) == Camera::Follow { 1.0 } else { 0.0 }
 }
 
-/// Où la caméra d'une région vise à `t` (le centre hors `follow-cursor`), non pondéré.
-fn aim_at(region: &SceneZoomRegion, t: f32, frame: &CameraFrame) -> [f32; 2] {
+/// Ce que la caméra d'une région lit à `t` (le centre hors `follow-cursor`), non pondéré.
+fn follow_at(region: &SceneZoomRegion, t: f32, frame: &CameraFrame) -> Follow {
     match camera_for(&region.rotation) {
-        Camera::Follow => {
-            crate::camera::follow_aim(frame, lead_in_start(region), t, region.scale)
-        }
-        Camera::Flat | Camera::Fixed(_) => [0.5; 2],
+        Camera::Follow => crate::camera::follow(frame, t, region.scale),
+        Camera::Flat | Camera::Fixed(_) => Follow::CENTRE,
     }
 }
 
-/// `aim` pondéré par le poids de la caméra : le centre à 0.
-fn weighted_aim(aim: [f32; 2], camera: f32) -> [f32; 2] {
-    aim.map(|a| 0.5 + (a - 0.5) * camera)
+/// Un point 0..1 pondéré par le poids de la caméra : le centre à 0.
+fn weighted(p: [f32; 2], camera: f32) -> [f32; 2] {
+    p.map(|a| 0.5 + (a - 0.5) * camera)
 }
 
-/// 1 si la région active l'impact du clic, 0 sinon. Pas sous la caméra réelle : l'écran y est
-/// immobile, le presser contredirait le modèle.
+/// 1 si la région active l'impact du clic, 0 sinon. Sous un angle fixe, le clic presse l'écran ;
+/// sous la caméra réelle, l'écran reste immobile et c'est l'œil qui recule.
 fn impact_flag(region: &SceneZoomRegion) -> f32 {
-    if region.click_impact && camera_for(&region.rotation) != Camera::Follow { 1.0 } else { 0.0 }
+    if region.click_impact { 1.0 } else { 0.0 }
 }
 
 /// Port de `easeConnectedPan` (TS) : cubic-bezier(0.1, 0, 0.2, 1).
@@ -645,8 +648,8 @@ pub fn zoom_state_in(
                 lerp(follow_flag(cur), follow_flag(next), progress),
             )
         };
-        let (cur_aim, next_aim) = (aim_at(cur, t, frame), aim_at(next, t, frame));
-        let aim = [lerp(cur_aim[0], next_aim[0], progress), lerp(cur_aim[1], next_aim[1], progress)];
+        let (a, b) = (follow_at(cur, t, frame), follow_at(next, t, frame));
+        let mix = |p: [f32; 2], q: [f32; 2]| [lerp(p[0], q[0], progress), lerp(p[1], q[1], progress)];
         return ZoomState {
             scale: lerp(cur.scale, next.scale, progress),
             focus: [lerp(cur_focus[0], next_focus[0], progress), lerp(cur_focus[1], next_focus[1], progress)],
@@ -654,7 +657,8 @@ pub fn zoom_state_in(
             tilt: lerp(fixed_flag(cur), fixed_flag(next), progress) * crossing,
             click_impact: lerp(impact_flag(cur), impact_flag(next), progress),
             camera,
-            aim: weighted_aim(aim, camera),
+            aim: weighted(mix(a.aim, b.aim), camera),
+            orbit: weighted(mix(a.orbit, b.orbit), camera),
         };
     }
 
@@ -664,6 +668,7 @@ pub fn zoom_state_in(
         let next = &regions[ni];
         if t > t_end && t < next.start_sec as f32 {
             let camera = follow_flag(next);
+            let seen = follow_at(next, t, frame);
             return ZoomState {
                 scale: next.scale,
                 focus: resolve_focus(next, t, cursor),
@@ -671,7 +676,8 @@ pub fn zoom_state_in(
                 tilt: fixed_flag(next),
                 click_impact: impact_flag(next),
                 camera,
-                aim: weighted_aim(aim_at(next, t, frame), camera),
+                aim: weighted(seen.aim, camera),
+                orbit: weighted(seen.orbit, camera),
             };
         }
     }
@@ -713,6 +719,7 @@ pub fn zoom_state_in(
             // trouver le centre qui produit la trajectoire de référence.
             let ease = |f: f32| f - (f - 0.5) * (1.0 - strength) / scale.max(1e-3);
             let camera = follow_flag(r) * strength;
+            let seen = follow_at(r, t, frame);
             ZoomState {
                 scale,
                 focus: [ease(focus[0]), ease(focus[1])],
@@ -720,7 +727,8 @@ pub fn zoom_state_in(
                 tilt: fixed_flag(r) * strength,
                 click_impact: impact_flag(r),
                 camera,
-                aim: weighted_aim(aim_at(r, t, frame), camera),
+                aim: weighted(seen.aim, camera),
+                orbit: weighted(seen.orbit, camera),
             }
         }
         None => IDENTITY_ZOOM,
@@ -1183,6 +1191,24 @@ pub fn click_impact(
         CLICK_IMPACT_DEG * sum[1].clamp(-1.0, 1.0),
         0.0,
     ]
+}
+
+/// Le recul de la caméra réelle au temps `t` : la somme des `tap` des mêmes clics que
+/// `click_impact` (dans la fenêtre du clip, visibles), bornée à [−1, 1], −1 au contact. Sans leur
+/// position : l'écran ne bascule pas, l'œil recule tout droit.
+pub fn click_press(
+    t: f32,
+    track: &CursorTrack,
+    window: [f32; 2],
+    aim: impl Fn((f32, f32)) -> Option<[f32; 2]>,
+) -> f32 {
+    track
+        .clicks_between(t - CLICK_IMPACT_WINDOW_S, t)
+        .iter()
+        .filter(|&&tc| tc >= window[0] && tc < window[1] && track.at(tc).and_then(&aim).is_some())
+        .map(|&tc| tap((t - tc) / CLICK_IMPACT_WINDOW_S))
+        .sum::<f32>()
+        .clamp(-1.0, 1.0)
 }
 
 /// Le point `(u, v)` du carré unité par l'homographie qui l'envoie sur `c` (TL, TR, BR, BL) :
@@ -2557,27 +2583,30 @@ mod follow_camera_tests {
         CameraFrame { track: Some(track), crop: [0.0, 0.0, 1.0, 1.0], window: [0.0, 100.0] }
     }
 
-    /// Sous `follow-cursor`, l'écran n'est pas incliné, ne glisse pas (focus au centre, quel que
-    /// soit le réglage de la région) et n'est pas pressé par les clics : seule la caméra, de poids
-    /// la force de la région, vise le pointeur. Hors région, l'état plat exact.
+    /// Sous `follow-cursor`, l'écran n'est pas incliné et ne glisse pas (focus au centre, quel que
+    /// soit le réglage de la région) : seule la caméra, de poids la force de la région, vise et
+    /// tourne avec le pointeur. L'impact du clic passe (l'œil recule). Hors région, l'état plat
+    /// exact.
     #[test]
     fn follow_cursor_rides_the_zoom_envelope() {
         let tr = track(|_| (0.85, 0.5));
         let f = whole(&tr);
         let r = [region("follow-cursor", 2.0, 8.0)];
         let full = zoom_state_in(&r, 5.0, Some(&tr), &f);
-        assert_eq!((full.rotation, full.tilt, full.click_impact, full.camera), ([0.0; 3], 0.0, 0.0, 1.0));
+        assert_eq!((full.rotation, full.tilt, full.click_impact, full.camera), ([0.0; 3], 0.0, 1.0, 1.0));
         assert_eq!((full.scale, full.focus), (2.0, [0.5, 0.5]));
         assert!(full.aim[0] > 0.7 && (full.aim[1] - 0.5).abs() < 1e-3, "{:?}", full.aim);
+        assert!((full.orbit[0] - 0.85).abs() < 1e-3 && (full.orbit[1] - 0.5).abs() < 1e-3, "{:?}", full.orbit);
         let easing = zoom_state_in(&r, 1.5, Some(&tr), &f);
         assert!(easing.camera > 0.0 && easing.camera < 1.0, "{}", easing.camera);
-        let raw = aim_at(&r[0], 1.5, &f);
-        assert_eq!(easing.aim, weighted_aim(raw, easing.camera));
+        let raw = follow_at(&r[0], 1.5, &f);
+        assert_eq!((easing.aim, easing.orbit), (weighted(raw.aim, easing.camera), weighted(raw.orbit, easing.camera)));
         assert_eq!(easing.focus, [0.5, 0.5]);
         let out = zoom_state_in(&r, 0.0, Some(&tr), &f);
-        assert_eq!((out.scale, out.rotation, out.camera, out.aim), (1.0, [0.0; 3], 0.0, [0.5, 0.5]));
-        // Sans piste, la caméra vise le centre.
-        assert_eq!(zoom_state_at(&r, 5.0, None).aim, [0.5, 0.5]);
+        assert_eq!((out.scale, out.rotation, out.camera, out.aim, out.orbit), (1.0, [0.0; 3], 0.0, [0.5; 2], [0.5; 2]));
+        // Sans piste, la caméra vise le centre, au repos.
+        let blind = zoom_state_at(&r, 5.0, None);
+        assert_eq!((blind.aim, blind.orbit), ([0.5, 0.5], [0.5, 0.5]));
         // Un angle fixe garde exactement son état.
         let iso = zoom_state_in(&[region("iso", 2.0, 8.0)], 5.0, Some(&tr), &f);
         assert_eq!((iso.rotation, iso.camera, iso.click_impact), ([-12.0, -18.0, -2.0], 0.0, 1.0));
@@ -2622,8 +2651,7 @@ mod follow_camera_tests {
                 if let Some(p) = &last {
                     let jump = (s.camera - p.camera).abs()
                         + (0..3).map(|i| (s.rotation[i] - p.rotation[i]).abs() / 20.0).sum::<f32>()
-                        + (s.aim[0] - p.aim[0]).abs()
-                        + (s.aim[1] - p.aim[1]).abs();
+                        + (0..2).map(|i| (s.aim[i] - p.aim[i]).abs() + (s.orbit[i] - p.orbit[i]).abs()).sum::<f32>();
                     assert!(jump < 0.05, "saut à t {t} : {jump}");
                 }
                 last = Some(s);
@@ -2639,7 +2667,7 @@ mod follow_camera_tests {
         let r = [region("follow-cursor", 2.0, 8.0)];
         let at = |i: usize| {
             let s = zoom_state_in(&r, 1.0 + i as f32 / 30.0, Some(&tr), &f);
-            (s.camera, s.aim, s.scale)
+            (s.camera, s.aim, s.orbit, s.scale)
         };
         let forward: Vec<_> = (0..240).map(at).collect();
         for i in (0..240).rev() {
