@@ -4,8 +4,8 @@ Suite de `spec-3d.md` (PR 1 → 5b, toutes ouvertes). Deux demandes :
 
 1. **plusieurs caméras 3D**, dont une où l'orientation suit la **position** du curseur ;
 2. un **curseur modélisé** en vraie 3D — hauteur au-dessus du plan, ombre portée, contact au
-   clic, orientation vers le point cliqué — en commençant par le curseur classique (la flèche
-   du thème par défaut).
+   clic, orientation vers le point cliqué — d'abord la flèche du thème par défaut, puis tous
+   ses états (main, I, redimensionnements…).
 
 Ce document tranche les décisions que la v1 laissait ouvertes et découpe les PR.
 
@@ -161,33 +161,55 @@ inconnues sont ignorées).
 
 ### B.2 Le réglage
 
-**Un seul interrupteur**, `cursor.model3d` (« 3D cursor », **éteint par défaut**) : il remplace la
-flèche du thème par défaut par un modèle 3D. Tout autre état (`text`, `pointer`…) et tout autre
-thème gardent leur sprite plat ; l'indice du panneau le dit (« Classic arrow only »). Curseur
-masqué, l'interrupteur est grisé et son info-bulle dit pourquoi. Éteint, la frame est celle
-d'avant **à l'octet** (vérifié à plat et incliné contre le commit de base).
+**Un seul interrupteur**, `cursor.model3d` (« 3D cursor », **éteint par défaut**) : il remplace
+**chaque état** du thème par défaut (les seize de `DEFAULT_CURSOR_SPRITES` : flèche, I, main,
+croix, mains ouverte et fermée, redimensionnements, déplacement, interdit, attente…) par son
+sprite extrudé. Les autres thèmes gardent leur sprite plat ; l'indice du panneau le dit
+(« Default style: every cursor shape turns 3D »). Curseur masqué, l'interrupteur est grisé et
+son info-bulle dit pourquoi. Éteint, la frame est celle d'avant **à l'octet** (vérifié à plat et
+incliné contre le commit de base).
 
 Tuyauterie : `CursorVisualSettings.model3d`, clé legacy `cursorModel3d`, préréglages (absent →
 éteint), `SceneCursor.model3d` (`serde(default)`), `LiveParams.cursor_model3d`, paramètre live
-`cursorModel3d`.
+`cursorModel3d`. Rien de neuf dans le contrat de scène : le modèle se tire du sprite que la
+scène transporte déjà.
 
 ### B.3 Le modèle (mode 15)
 
 Un seul mode de shader, identique en HLSL, MSL et WGSL (`cursor_model`), lancé de rayons par
-pixel dans la boîte de dessin :
+pixel dans la boîte de dessin. **Aucune forme n'est modélisée à la main** : le modèle est la
+silhouette du sprite de l'état courant.
 
-- **Forme** : le contour de `cursors/default/arrow.png` en polygone de 10 sommets gonflé d'un
-  arrondi (`ARROW_CORE`, `ARROW_ROUND`), ajusté sur l'alpha du PNG (1,1 % d'écart moyen de
-  couverture). Unité = hauteur de la flèche (= `size_px`), origine au hotspot de la face du
-  dessus. Extrudé de 0,19 unité, chanfrein arrondi de 0,045. Normales par gradient du champ.
-- **Matières** : celles du PNG. Incrustation noire sur la face du dessus, filet blanc de
-  0,058 unité autour, chanfrein et flancs blancs. Lumière fixée à la **caméra** (haut-gauche,
-  devant), ambiante 0,36, diffuse 0,75, reflet sur les arrondis seulement : une face plane
-  s'allumerait d'un bloc et le noir virerait au gris à chaque clic.
-- **Ombre** : un rayon qui rate la flèche tombe sur le plan de l'écran. De là, marche vers la
+- **Forme** : un champ de distance signé tiré de l'alpha du PNG, une fois au chargement
+  (`cursor_sdf.rs`) : alpha suréchantillonné ×4 (bilinéaire), seuil 0,5, transformée de
+  distance euclidienne exacte (Felzenszwalb), signée, puis floutée sur deux texels fins (le seuil
+  laisse un escalier dont les normales striaient les flancs). Texture **R16F** de la taille du
+  sprite ×4, distances en unités du modèle : un demi-flottant est exact au millième près autour
+  de zéro et filtrable sur les trois backends, là où le R32F ne l'est pas partout. Hors du rect du
+  sprite, le shader prend la borne exacte `√(|p − c|² + max(d(c), 0)²)`, `c` = `p` ramené dans le
+  rect. Unité = plus grand côté du sprite (= `size_px`), origine au hotspot de la face du dessus.
+  Extrudé de 0,19 unité, chanfrein arrondi de 0,045. Normales par gradient du champ.
+- **Liaison** : sprite en t2 / `texture(2)` / binding 1 (`texY`), champ en t4 / `texture(4)` /
+  binding 2 (`texU`) sur Windows / macOS / Linux. Le cbuffer porte le coin du sprite
+  (`color.rg`), sa taille (`mb.zw`) et un texel (`color.b`).
+- **Matières** : celles du sprite. Le dessus porte son art (alpha droit, comme aux modes 7 et 13) ;
+  le chanfrein, les flancs et le dessous lisent l'art à 1,5 texel à l'intérieur de la silhouette,
+  le long du gradient du champ : la couleur du bord de CE sprite (filet blanc de la flèche, trait
+  noir des mains), jamais la frange mêlée au transparent. Lumière fixée à la **caméra**
+  (haut-gauche, devant), ambiante 0,36, diffuse 0,75, reflet sur les arrondis seulement.
+- **Ombre** : un rayon qui rate le modèle tombe sur le plan de l'écran. De là, marche vers la
   lumière (pénombre `k·d/t`, k = 6, bornée à 0,45 unité) et ombre de contact (0,12 unité autour
   du modèle). Opacité 0,5 chacune, et seulement à l'intérieur de l'écran.
 - **Silhouette antialiasée** sur un pixel ; sortie prémultipliée, ombre noire.
+
+**Pourquoi pas des SDF hors ligne** (tirés des SVG par le générateur de sprites) : l'option
+n'était à prendre que si le champ tiré du PNG arrondissait visiblement la flèche par rapport au
+polygone analytique d'avant. Comparés côte à côte (flèche taille 8, à plat et iso, en l'air et
+posée), les deux ont le même contour à l'œil ; le champ suit même mieux l'art (la queue du
+polygone à 10 sommets était trop courte et trop droite). Sur les seize sprites, le signe du champ
+coïncide avec l'alpha seuillé (IoU ≥ 0,9997 hors frange) ; sur un disque et un rectangle
+synthétiques, l'écart au champ exact reste sous 0,5 texel source dans la bande de 3 texels autour
+du bord (0,48 au pire), sous 1 texel au-delà (le flou arrondit les crêtes).
 
 ### B.4 La caméra et l'ancrage
 
@@ -198,43 +220,67 @@ caméra, même mode.
 
 Deux décisions :
 
-1. **Le hotspot est sur le rayon de vue** du point de contenu visé, à sa hauteur. La pointe ne
-   glisse donc jamais à l'écran quand la flèche monte ou descend : seule l'ombre dit la hauteur.
+1. **Le hotspot est sur le rayon de vue** du point de contenu visé, à sa hauteur. Il ne glisse
+   donc jamais à l'écran quand le modèle monte ou descend : seule l'ombre dit la hauteur.
 2. **Ancrage** : la vidéo est dessinée par un warp **bilinéaire** des coins projetés, qui
    s'écarte de la perspective exacte de quelques pixels. Tout le rendu est décalé de
-   `point_px(plane_pt) − projection exacte`, pour que la pointe tombe sur le pixel que
+   `point_px(plane_pt) − projection exacte`, pour que le hotspot tombe sur le pixel que
    l'écran montre.
 
 ### B.5 La pose (fonction pure de `t`)
 
-`cursor_pose` :
+`cursor_pose`, puis la part « pointeur » du sprite :
 
-- **Hauteur** : 0,35 unité de garde au repos. Chaque clic la pose **au contact** avec la courbe
+- **Hauteur** : 0,35 unité de garde au repos. Chaque clic le pose **au contact** avec la courbe
   `tap()`, celle de l'impact du clic, dont le creux (49,5 ms) est celui de la pression de
-  `bounce()`. Gain 1,25 : posée de 27 à 74 ms, donc au moins une image au contact jusqu'à
-  21 i/s. Le point le plus bas du modèle affleure le plan (moins de 2 % d'unité, testé).
+  `bounce()`. Gain 1,25 : posé de 27 à 74 ms, donc au moins une image au contact jusqu'à
+  21 i/s. Tous les états.
 - **Tangage** : queue relevée, pointe vers le bas, 18° au repos, jusqu'à +10° au creux de la
   pression, fois `clickBounce / 2,5`.
 - **Lacet** : vers la vitesse horizontale lissée (`follow_at`, différence centrée sur ±100 ms),
   et vers la cible d'un clic dans les 300 ms qui le précèdent. Borné en douceur à ±25°
   (`tanh`), nul au repos, continu en `t`.
+- **Part « pointeur »** (`pointing_factor`), tirée du seul hotspot, sans table par état :
+  distance du hotspot au centre du sprite rapportée au demi-côté (norme max), `smoothstep` de
+  0,3 à 0,75. Tangage et lacet en sont multipliés. Flèche (0,83), main qui pointe, aide,
+  démarrage, flèche haute : 1, la pose de la flèche. I, croix, redimensionnements, déplacement,
+  interdit, attente, poing fermé : 0, ni tangage ni lacet (tourner une flèche de
+  redimensionnement en change le sens ; basculer une forme autour de son centre en enfoncerait
+  la moitié dans le plan). Main ouverte (hotspot au haut de la paume) : 0,86.
+- **Point le plus bas** : le hotspot est posé à `garde + lift`, où
+  `lift = épaisseur·cos(tangage) − y_haut·sin(tangage)` et `y_haut` = haut de la silhouette (tiré
+  du champ) relatif au hotspot. Le point le plus bas du modèle posé est donc à la garde au
+  repos, au plan au contact, jamais dessous. Mesuré sur huit états, à plat et iso : 0 pour les
+  états centrés (face du dessous au sol), +1,6 à +1,8 % d'unité pour les pointeurs (le chanfrein
+  arrondit le coin qui touche), sous le seuil testé de 2 %.
 - **Pas de rebond d'échelle** en 3D : le contact le remplace.
 
 ### B.6 Boîte, traînée, coût
 
-- **Boîte de dessin** : les huit coins de la boîte du modèle, et leur projection au sol le long
-  de la lumière, élargie de la pénombre (`min(t/k, 0,45) / lz`) et du contact. Un miroir CPU du
-  shader vérifie qu'aucun pixel d'ombre n'en sort.
-- **Traînée** : des copies du modèle sur GPU. Mesuré en 1080p sur RTX 4070 Ti : flèche nette
-  dans le bruit (moins de 0,2 ms), taille 10 avec 16 copies +0,6 à +0,9 ms/frame. Sur WARP la
-  même traînée coûte +68 à +98 ms : le backend logiciel ne dessine que la tête
-  (`CursorPlan::for_backend`).
+- **Boîte de dessin** : les huit coins de la boîte du modèle (le rect du sprite sur toute
+  l'épaisseur), et leur projection au sol le long de la lumière, élargie de la pénombre
+  (`min(t/k, 0,45) / lz`) et du contact. Un miroir CPU du shader, champ compris, vérifie
+  qu'aucun pixel du modèle ni d'ombre n'en sort, pour huit états et quatre plans.
+- **Traînée** : des copies du modèle sur GPU. Le backend logiciel ne dessine que la tête
+  (`CursorPlan::for_backend`) : sur WARP la traînée de la flèche analytique coûtait déjà +68 à
+  +98 ms.
+- **Coût** (1080p, RTX 4070 Ti, meilleur de cinq passes de 100 frames, readback compris) :
+  curseur net (taille 3 ou 10, flèche ou I) dans le bruit, à ±0,15 ms du sprite ; taille 10 avec
+  16 copies, +0,22 à +0,38 ms/frame, contre +0,66 à +1,1 ms pour la flèche analytique mesurée
+  dans les mêmes conditions. Une lecture de texture coûte moins que les dix arêtes du polygone.
+- **Mémoire** : un champ par sprite chargé, sans éviction ; les seize sprites du thème pèsent
+  ~2,6 Mo de R16F.
 - **`LayerCB`** reste à 128 octets ; l'emploi des emplacements au mode 15 est documenté en tête
   de la section « Curseur modélisé » de `frame_geometry.rs` et dans les trois structs de shader.
 
 ### B.7 Limites
 
-- Seule la flèche du thème par défaut a un modèle.
+- Seul le thème par défaut est modélisé ; les thèmes sweezy (art de 128 px, bords non
+  détourés) restent plats.
+- Un pointeur basculé montre le flanc de sa queue, de la couleur de son bord : la main qui
+  pointe gagne un liseré noir au bas de la paume. C'est la 3D, pas un défaut.
+- Un dessus plat (curseur centré) reçoit 0,88 de la lumière : son blanc sort gris clair (226),
+  là où le dessus penché de la flèche sort blanc. Mêmes constantes d'éclairage qu'avant.
 - Le repli math de Windows (mode 4, sans sprite) reste plat.
 - L'ombre s'arrête au bord du rect de l'écran, pas à ses coins arrondis.
 - Le MSL n'est compilé et exécuté que par la CI macOS.
@@ -247,6 +293,7 @@ Deux décisions :
 |---|---|---|---|
 | **6** | `feat(zoom): add moving 3D camera presets` | `rotationPreset` étendu (`follow-cursor`/`swing-clicks`/`orbit`), `camera_pose` dans `regions.rs`, un seul sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
 | **7** | `feat(cursor): model the default arrow in 3D` | `cursor.model3d`, mode 15, pose, ombre, retrait de `volume`/`hover` | PR 6 |
+| **7b** | `feat(cursor): model every default cursor state in 3D` | champ de distance tiré de chaque sprite (`cursor_sdf.rs`), mode 15 générique, pose selon le hotspot, i18n ×14 | 7 |
 | **8** | `feat(zoom): dolly the camera` | distance de fuite par région, dolly-zoom | PR 6 |
 | **9** | `feat(cursor): the cursor picks things up` *(plus tard)* | long press : le plan reste pressé pendant un glisser (v1 §PR 2b « Later ») | 7 |
 
