@@ -3453,7 +3453,7 @@ export function CursorPane() {
 					onChange={(v) => void set({ cursor: { clipToBounds: v } })}
 				/>
 			</div>
-			{/* One switch for the modelled arrow. A hidden cursor has nothing to model, so the
+			{/* One switch for the modelled cursor. A hidden cursor has nothing to model, so the
 			    row is disabled then and both its hint and its tooltip say why. */}
 			<div
 				className={styles.paneRow}

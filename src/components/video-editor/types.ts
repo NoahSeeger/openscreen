@@ -268,9 +268,9 @@ export interface CursorVisualSettings {
 	motionBlur: number;
 	clickBounce: number;
 	/**
-	 * Draws the classic arrow as a modelled 3D object (compositor mode 15): it hovers over the
-	 * screen, casts a real shadow on it, leans towards its motion and touches down on each click.
-	 * Only the default theme's arrow has a model; every other cursor shape stays a flat sprite.
+	 * Draws every default-theme cursor shape as a modelled 3D object (compositor mode 15, its
+	 * sprite extruded): it hovers over the screen, casts a real shadow on it and touches down on
+	 * each click; pointing shapes also lean towards their motion. Other themes stay flat sprites.
 	 */
 	model3d: boolean;
 	clipToBounds: boolean;
