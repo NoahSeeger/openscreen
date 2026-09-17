@@ -619,21 +619,27 @@ fn without_the_model_the_cursor_renders_the_flat_sprite() {
     let comp = Compositor::new_sized(&gpu, 1280, 720).expect("compositor");
     let screen = FakeFrame::new(&gpu, Tint::Blue);
     let still = resting("flat-sprite", false);
+    let clicked = resting("flat-sprite-clicked", true);
     let text = resting_as("flat-sprite-text", Some("text"), false);
     for rotation in ["null", r#""iso""#] {
         let absent = render(&comp, &screen, &scene_json(rotation, None, "default", 0.0, 3.0), &still).0;
-        if let Ok(dir) = std::env::var("OPENSCREEN_CURSOR3D_FLAT_REF") {
-            // Comparaison à une frame rendue AVANT le mode 15 : le même test, lancé sur le commit
-            // de base, écrit la référence ; lancé ici, il la relit.
-            let name = format!("{dir}/flat-{}.rgba", if rotation == "null" { "flat" } else { "iso" });
-            match std::fs::read(&name) {
-                Ok(before) => assert!(before == absent, "{rotation}: la frame plate diffère d'avant le mode 15"),
-                Err(_) => std::fs::write(&name, &absent).expect("écriture de la référence"),
-            }
-        }
         let off = render(&comp, &screen, &scene_json(rotation, Some(false), "default", 0.0, 3.0), &still).0;
         let other = render(&comp, &screen, &scene_json(rotation, Some(true), "other", 0.0, 3.0), &still).0;
         let on = render(&comp, &screen, &scene_json(rotation, Some(true), "default", 0.0, 3.0), &still).0;
+        let off_click = render(&comp, &screen, &scene_json(rotation, Some(false), "default", 0.0, 3.0), &clicked).0;
+        if let Ok(dir) = std::env::var("OPENSCREEN_CURSOR3D_FLAT_REF") {
+            // Comparaison à des frames rendues par un commit de base : le même test, lancé
+            // là-bas, écrit les références ; lancé ici, il les relit. La frame plate, et celle du
+            // modèle au repos (sans clic), et le sprite plat au creux d'un clic.
+            let preset = if rotation == "null" { "flat" } else { "iso" };
+            for (kind, frame) in [("flat", &absent), ("model", &on), ("flat-click", &off_click)] {
+                let name = format!("{dir}/{kind}-{preset}.rgba");
+                match std::fs::read(&name) {
+                    Ok(before) => assert!(&before == frame, "{rotation}: la frame {kind} diffère de la référence"),
+                    Err(_) => std::fs::write(&name, frame).expect("écriture de la référence"),
+                }
+            }
+        }
         assert!(absent == off, "{rotation}: model3d=false a changé la frame");
         assert!(absent == other, "{rotation}: un thème sans modèle a changé la frame");
         assert!(absent != on, "{rotation}: le réglage allumé ne change rien");
