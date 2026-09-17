@@ -11,7 +11,8 @@ pub use crate::frame_geometry::{live_params_from_scene, webcam_shape_code, Layer
 use crate::frame_geometry::{
     cover_crop_uv, cover_uv_rect, decode_data_uri, ease_in_out_cubic, lerp,
     lerp4, parse_hex, preset_placements, remap_box, screen_source_rect, timeline, CursorPlacement,
-    FrameParams, Placement, ShadowCaster, CURSOR_BASE_SIZE_FRAC, FPS, SCREEN_SHADOW_OFFSET_FRAC,
+    FrameParams, Placement, ShadowCaster, SpriteShape, CURSOR_BASE_SIZE_FRAC, FPS,
+    SCREEN_SHADOW_OFFSET_FRAC,
     SCREEN_SHADOW_SPREAD_FRAC, SHADOW_TUNING_REF_PX, WEBCAM_SHADOW_OFFSET_FRAC,
     WEBCAM_SHADOW_OPACITY, WEBCAM_SHADOW_SPREAD_FRAC,
 };
@@ -175,6 +176,9 @@ pub struct Compositor {
     /// Valeur de `img_tick` au début de la frame en cours. Tout ce qui a été touché depuis
     /// appartient au jeu actif et ne peut pas être évincé — voir `cached_image`.
     img_frame_start: std::cell::Cell<u64>,
+    /// Champs de distance des sprites de curseur (mode 15), R16F, par chemin, avec leur forme.
+    /// Pas d'éviction : seuls les seize sprites du thème par défaut y passent (~2,6 Mo en tout).
+    sdf_cache: RefCell<HashMap<String, (ID3D11ShaderResourceView, SpriteShape)>>,
     /// Masque de segmentation du sujet webcam, R8 à la résolution du modèle. Écrit par
     /// `set_webcam_mask` depuis le thread d'inférence, lu au moment de dessiner la webcam.
     /// `None` tant qu'aucune frame n'a été segmentée — l'effet reste alors éteint plutôt que
@@ -639,6 +643,7 @@ impl Compositor {
             img_cache: RefCell::new(HashMap::new()),
             img_tick: std::cell::Cell::new(0),
             img_frame_start: std::cell::Cell::new(0),
+            sdf_cache: RefCell::new(HashMap::new()),
             webcam_mask: RefCell::new(None),
             render_size: Cell::new((out_w, out_h)),
             resize_target: RefCell::new(None),
@@ -1139,6 +1144,39 @@ impl Compositor {
         Ok((srv.unwrap(), w, h))
     }
 
+    /// Champ de distance du sprite `path` (t4 du mode 15) et sa forme, calculés au premier appel.
+    unsafe fn cursor_sdf(&self, path: &str) -> Result<(ID3D11ShaderResourceView, SpriteShape)> {
+        if let Some(hit) = self.sdf_cache.borrow().get(path) {
+            return Ok(hit.clone());
+        }
+        let sdf = crate::cursor_sdf::CursorSdf::load(path)?;
+        let texels = sdf.f16_bytes();
+        let td = D3D11_TEXTURE2D_DESC {
+            Width: sdf.width,
+            Height: sdf.height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R16_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let init = D3D11_SUBRESOURCE_DATA {
+            pSysMem: texels.as_ptr() as *const c_void,
+            SysMemPitch: sdf.width * 2,
+            SysMemSlicePitch: 0,
+        };
+        let mut tex: Option<ID3D11Texture2D> = None;
+        self.dev.CreateTexture2D(&td, Some(&init), Some(&mut tex))?;
+        let mut srv: Option<ID3D11ShaderResourceView> = None;
+        self.dev.CreateShaderResourceView(&tex.unwrap(), None, Some(&mut srv))?;
+        let entry = (srv.unwrap(), sdf.shape);
+        self.sdf_cache.borrow_mut().insert(path.to_string(), entry.clone());
+        Ok(entry)
+    }
+
     /// Extrait la frame webcam en RGB8 à la résolution du modèle, dans `out`.
     ///
     /// `src` est le rect source de la webcam en UV (le même que celui passé à `draw_video`),
@@ -1531,6 +1569,9 @@ impl Compositor {
     /// l'image) tombe sur `center`, à la taille de référence `size_px`. `Err` → l'appelant
     /// retombe sur `draw_cursor` (math dot+ring). La géométrie vient de
     /// `frame_geometry::cursor_sprite_cb`, partagée avec macOS et Linux.
+    ///
+    /// Avec `model`, le même sprite extrudé (mode 15, `cursor_model_cb`) : le sprite en t2, son
+    /// champ de distance en t4.
     unsafe fn draw_cursor_sprite(
         &self,
         placement: CursorPlacement,
@@ -1538,9 +1579,24 @@ impl Compositor {
         a: f32,
         sprite: &SceneCursorSprite,
         clip: [f32; 4],
+        model: Option<crate::frame_geometry::CursorPose>,
     ) -> Result<()> {
         let path = sprite.path.as_str();
         let (srv, iw, ih) = self.cached_image(path)?;
+        if let Some(pose) = model {
+            let (sdf, shape) = self.cursor_sdf(path)?;
+            let shape = SpriteShape { hotspot: [sprite.hotspot_x, sprite.hotspot_y], ..shape };
+            if let Some(cb) =
+                crate::frame_geometry::cursor_model_cb(placement, size_px, pose, shape, a, clip)
+            {
+                self.upload_cb(&cb);
+                self.ctx.PSSetShaderResources(2, Some(&[Some(srv)]));
+                self.ctx.PSSetShaderResources(4, Some(&[Some(sdf)]));
+                self.ctx.Draw(4, 0);
+                self.ctx.PSSetShaderResources(4, Some(&[None]));
+            }
+            return Ok(());
+        }
         let ar = iw as f32 / ih as f32;
         let (pw, ph) = if ar >= 1.0 { (size_px, size_px / ar) } else { (size_px * ar, size_px) };
         let cb = crate::frame_geometry::cursor_sprite_cb(
@@ -1558,8 +1614,8 @@ impl Compositor {
     }
 
     /// Sprite de l'état courant (`cursor_type`, ex. `"text"`), à défaut celui de la flèche,
-    /// à défaut le curseur math (dot+ring). Avec `model`, la flèche modélisée (mode 15) à la
-    /// place : elle ne lit aucune texture, `plan_cursor` a déjà vérifié que la flèche est l'état.
+    /// à défaut le curseur math (dot+ring). Avec `model`, ce sprite extrudé (mode 15) : même
+    /// résolution que `plan_cursor`, qui en a tiré la pose.
     ///
     /// Le repli sur la flèche compte : un thème n'apporte que sa flèche et son pointeur, les
     /// autres états venant de l'art intégrée — mais si un état inconnu apparaît, mieux vaut
@@ -1575,17 +1631,9 @@ impl Compositor {
         clip: [f32; 4],
         model: Option<crate::frame_geometry::CursorPose>,
     ) {
-        if let Some(pose) = model {
-            if let Some(cb) =
-                crate::frame_geometry::cursor_model_cb(placement, size_px, pose, a, clip)
-            {
-                self.draw_solid(&cb);
-            }
-            return;
-        }
         let sprite = cursor_type.and_then(|t| sprites.get(t)).or_else(|| sprites.get("arrow"));
         if let Some(sprite) = sprite {
-            if self.draw_cursor_sprite(placement, size_px, a, sprite, clip).is_ok() {
+            if self.draw_cursor_sprite(placement, size_px, a, sprite, clip, model).is_ok() {
                 return;
             }
         }

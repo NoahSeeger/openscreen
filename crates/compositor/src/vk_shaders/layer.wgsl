@@ -19,20 +19,20 @@
 
 struct Layer {
     dst: vec4<f32>,       // x,y,w,h sortie 0..1 (origine haut-gauche)
-    src: vec4<f32>,       // u0,v0,u1,v1 source 0..1 ; mode 15 : (decalage px du rayon, P, hauteur de la fleche px)
+    src: vec4<f32>,       // u0,v0,u1,v1 source 0..1 ; mode 15 : (decalage px du rayon, P, unite du modele px)
     quad_px: vec2<f32>,   // taille du quad en px de sortie (pour la SDF isotrope)
     radius_px: f32,
-    mode: f32,            // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre, 8 = écran tilté, 9 = flèche, 10 = flou/mosaïque, 12 = ombre du quad tilté, 13 = curseur tilté, 14 = cadre de fenetre, 15 = fleche modelisee
-    color: vec4<f32>,     // mode 14 : fond de la barre de titre ; mode 15 : .a = opacite
+    mode: f32,            // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre, 8 = écran tilté, 9 = flèche, 10 = flou/mosaïque, 12 = ombre du quad tilté, 13 = curseur tilté, 14 = cadre de fenetre, 15 = curseur modelise
+    color: vec4<f32>,     // mode 14 : fond de la barre de titre ; mode 15 : .rg = coin du sprite (unites du modele), .b = un texel du sprite, .a = opacite
     fx: vec4<f32>,        // mode 2 : spread ombre en px ; mode 5 : (direction xy, temps programme replie, mouvement 0..3) ; modes 8/12/13/14 : coins TL,TR du quad projeté ; mode 9 : hampe de la flèche ; mode 10 : (flou?, rayon/bloc px, ovale?, teinté?) ; mode 15 : (rotation du plan X, Y, Z en rad, tangage)
     src_prev: vec4<f32>,  // modes 8/12/13/14 : coins BR,BL du quad projeté ; mode 9 : barbe 1 ; mode 10 incliné : coins BR,BL du masque ; mode 15 : (hotspot du dessus, repere du plan en px ; lacet)
     dst_prev: vec4<f32>,  // mode 8 : .xy = taille du plan en px AVANT projection (le rayon y vit), .z = 1 si coins hauts carres (sous un cadre) ; mode 14 : .xy = taille du plan du cadre, .z = hauteur de la barre, .w = epaisseur du filet (px du plan) ; modes 13 et 15 : rect de clip ; mode 9 : barbe 2 ; mode 10 incliné : coins TL,TR du masque
-    mb: vec4<f32>,        // mode 8 : [gx, gy, z_focus, k], profondeur du plan et flou (texels source) par px d'ecart, k = 0 coupe ; mode 0 : .x taps, .y force du flou, .w = 1 si coins hauts carres (sous un cadre) ; mode 5 : mb.x = aspect w/h de la sortie (fond anime) ; mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné ; mode 14 : couleur du filet (alpha droit) ; mode 15 : .xy = demi-taille du plan dans son repere (px)
+    mb: vec4<f32>,        // mode 8 : [gx, gy, z_focus, k], profondeur du plan et flou (texels source) par px d'ecart, k = 0 coupe ; mode 0 : .x taps, .y force du flou, .w = 1 si coins hauts carres (sous un cadre) ; mode 5 : mb.x = aspect w/h de la sortie (fond anime) ; mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné ; mode 14 : couleur du filet (alpha droit) ; mode 15 : .xy = demi-taille du plan dans son repere (px), .zw = taille du sprite (unites du modele)
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;
-@group(0) @binding(1) var texY:  texture_2d<f32>;   // R8Unorm, sample .r
-@group(0) @binding(2) var texU:  texture_2d<f32>;   // R8Unorm, sample .r
+@group(0) @binding(1) var texY:  texture_2d<f32>;   // R8Unorm, sample .r ; modes 7, 13 et 15 : le sprite RGBA
+@group(0) @binding(2) var texU:  texture_2d<f32>;   // R8Unorm, sample .r ; mode 15 : le champ R16F du sprite
 @group(0) @binding(3) var samp:  sampler;
 // Masque de segmentation du sujet webcam, R8. Une vue 1x1 est liee quand aucun masque
 // n'existe : la branche n'est de toute facon prise que si layer.fx.z > 0.5.
@@ -329,76 +329,52 @@ fn blur_webcam_bg(uv: vec2<f32>, intensity: f32, qpx: vec2<f32>, local_px: vec2<
 }
 
 // ---- Curseur MODELISE (mode 15) ----
-// Port ligne pour ligne de `cursor_model` (HLSL), dont les commentaires font foi : la fleche par
-// defaut en objet 3D, lancee de rayons par pixel dans son champ de distance signe, eclairee, et
-// qui porte une ombre douce et une ombre de contact sur le plan de l'ecran. Constantes : miroir
-// exact de `frame_geometry.rs` (ARROW_*, MODEL_*), emplacements du cbuffer : `cursor_model_cb`.
-const ARROW_CORE = array<vec2<f32>, 10>(
-    vec2<f32>(-0.0338, -0.0631),
-    vec2<f32>( 0.4736,  0.4415),
-    vec2<f32>( 0.4764,  0.5280),
-    vec2<f32>( 0.3085,  0.5491),
-    vec2<f32>( 0.4090,  0.8058),
-    vec2<f32>( 0.2893,  0.9066),
-    vec2<f32>( 0.1453,  0.6027),
-    vec2<f32>( 0.0369,  0.6954),
-    vec2<f32>(-0.0207,  0.6752),
-    vec2<f32>(-0.0381,  0.6363),
-);
-const ARROW_ROUND: f32 = 0.0357;
-const ARROW_BAND: f32 = 0.0577;
-const ARROW_THICK: f32 = 0.19;
-const ARROW_BEVEL: f32 = 0.045;
-const ARROW_BOX_LO = vec3<f32>(-0.0738, -0.0988, -0.19);
-const ARROW_BOX_HI = vec3<f32>(0.5121, 0.9423, 0.0);
+// Port ligne pour ligne de `cursor_model` (HLSL), dont les commentaires font foi : le sprite de
+// l'etat courant en objet 3D, sa silhouette (champ de distance signe tire de son alpha) extrudee,
+// lancee de rayons par pixel, eclairee, et qui porte une ombre douce et une ombre de contact sur
+// le plan de l'ecran. Constantes : miroir exact de `frame_geometry.rs` (MODEL_*), emplacements du
+// cbuffer : `cursor_model_cb`.
+// Textures : le sprite RGBA (alpha droit) au binding 1 (`texY`, comme aux modes 7 et 13), son
+// champ R16F au binding 2 (`texU`), sur le meme rect ; `color.rg` = coin du sprite dans le repere
+// du modele, `mb.zw` = sa taille, `color.b` = un texel du sprite (unites du modele).
+const MODEL_THICK: f32 = 0.19;
+const MODEL_BEVEL: f32 = 0.045;
 const MODEL_LIGHT = vec3<f32>(-0.4194, -0.5792, 0.6990);
-const MODEL_BODY = vec3<f32>(0.035, 0.035, 0.04);
-const MODEL_RIM = vec3<f32>(0.97, 0.97, 0.97);
 const MODEL_AMBIENT: f32 = 0.36;
 const MODEL_DIFFUSE: f32 = 0.75;
 const MODEL_SPECULAR: f32 = 0.45;
+const MODEL_RIM_INSET: f32 = 1.5;
 const MODEL_SOFTNESS: f32 = 6.0;
 const MODEL_SHADOW_PAD: f32 = 0.45;
 const MODEL_SHADOW_ALPHA: f32 = 0.5;
 const MODEL_CONTACT_RADIUS: f32 = 0.12;
 const MODEL_CONTACT_ALPHA: f32 = 0.5;
 
-fn sd_arrow2(p: vec2<f32>) -> f32 {
-    var d = dot(p - ARROW_CORE[0], p - ARROW_CORE[0]);
-    var s = 1.0;
-    var j = 9;
-    for (var i = 0; i < 10; i = i + 1) {
-        let vi = ARROW_CORE[i];
-        let vj = ARROW_CORE[j];
-        let e = vj - vi;
-        let w = p - vi;
-        let b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
-        d = min(d, dot(b, b));
-        let c1 = p.y >= vi.y;
-        let c2 = p.y < vj.y;
-        let c3 = e.x * w.y > e.y * w.x;
-        if (c1 && c2 && c3) || (!c1 && !c2 && !c3) {
-            s = -s;
-        }
-        j = i;
-    }
-    return s * sqrt(d) - ARROW_ROUND;
+fn sd_sprite2(p: vec2<f32>) -> f32 {
+    let lo = layer.color.rg;
+    let c = clamp(p, lo, lo + layer.mb.zw);
+    // Niveau 0 explicite : la marche est une boucle a sortie anticipee (pas de derivees).
+    let d = textureSampleLevel(texU, samp, (c - lo) / layer.mb.zw, 0.0).r;
+    let o = p - c;
+    let out2 = dot(o, o);
+    let e = max(d, 0.0);
+    return select(d, sqrt(out2 + e * e), out2 > 0.0);
 }
 
-fn sd_arrow(p: vec3<f32>) -> f32 {
-    let half_t = ARROW_THICK * 0.5;
-    let w = vec2<f32>(sd_arrow2(p.xy) + ARROW_BEVEL, abs(p.z + half_t) - (half_t - ARROW_BEVEL));
-    return min(max(w.x, w.y), 0.0) + length(max(w, vec2<f32>(0.0))) - ARROW_BEVEL;
+fn sd_model(p: vec3<f32>) -> f32 {
+    let half_t = MODEL_THICK * 0.5;
+    let w = vec2<f32>(sd_sprite2(p.xy) + MODEL_BEVEL, abs(p.z + half_t) - (half_t - MODEL_BEVEL));
+    return min(max(w.x, w.y), 0.0) + length(max(w, vec2<f32>(0.0))) - MODEL_BEVEL;
 }
 
-fn arrow_normal(p: vec3<f32>) -> vec3<f32> {
+fn model_normal(p: vec3<f32>) -> vec3<f32> {
     let e = 0.002;
     let ka = vec3<f32>(1.0, -1.0, -1.0);
     let kb = vec3<f32>(-1.0, -1.0, 1.0);
     let kc = vec3<f32>(-1.0, 1.0, -1.0);
     let kd = vec3<f32>(1.0, 1.0, 1.0);
-    return normalize(ka * sd_arrow(p + ka * e) + kb * sd_arrow(p + kb * e) +
-                     kc * sd_arrow(p + kc * e) + kd * sd_arrow(p + kd * e));
+    return normalize(ka * sd_model(p + ka * e) + kb * sd_model(p + kb * e) +
+                     kc * sd_model(p + kc * e) + kd * sd_model(p + kd * e));
 }
 
 fn ray_box(o: vec3<f32>, d: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec2<f32> {
@@ -439,16 +415,15 @@ fn plane_to_model(v: vec3<f32>, f: ModelFrame) -> vec3<f32> {
     return vec3<f32>(x, y * f.cp + v.z * f.sp, -y * f.sp + v.z * f.cp);
 }
 
-fn arrow_soft_shadow(o: vec3<f32>, l: vec3<f32>) -> f32 {
-    let tb = ray_box(o, l, ARROW_BOX_LO - vec3<f32>(MODEL_SHADOW_PAD),
-                     ARROW_BOX_HI + vec3<f32>(MODEL_SHADOW_PAD));
+fn model_soft_shadow(o: vec3<f32>, l: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> f32 {
+    let tb = ray_box(o, l, lo - vec3<f32>(MODEL_SHADOW_PAD), hi + vec3<f32>(MODEL_SHADOW_PAD));
     if tb.x >= tb.y || tb.y <= 0.0 {
         return 1.0;
     }
     var res = 1.0;
     var t = max(tb.x, 0.004);
     for (var k = 0; k < 32; k = k + 1) {
-        let d = sd_arrow(o + l * t);
+        let d = sd_model(o + l * t);
         res = min(res, MODEL_SOFTNESS * d / t);
         if res < 0.002 || t > tb.y {
             break;
@@ -459,11 +434,17 @@ fn arrow_soft_shadow(o: vec3<f32>, l: vec3<f32>) -> f32 {
     return res * res * (3.0 - 2.0 * res);
 }
 
-fn arrow_shade(q: vec3<f32>, rd: vec3<f32>, l: vec3<f32>, fp: f32) -> vec3<f32> {
-    let n = arrow_normal(q);
-    let top = smoothstep(0.5, 0.8, n.z);
-    let inlay = top * (1.0 - smoothstep(-ARROW_BAND - fp, -ARROW_BAND + fp, sd_arrow2(q.xy)));
-    let albedo = mix(MODEL_RIM, MODEL_BODY, inlay);
+fn model_albedo(p: vec2<f32>) -> vec3<f32> {
+    let e = 0.25 * layer.color.b;
+    let g = vec2<f32>(sd_sprite2(p + vec2<f32>(e, 0.0)) - sd_sprite2(p - vec2<f32>(e, 0.0)),
+                      sd_sprite2(p + vec2<f32>(0.0, e)) - sd_sprite2(p - vec2<f32>(0.0, e)));
+    let q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * layer.color.b, 0.0);
+    return textureSampleLevel(texY, samp, (q - layer.color.rg) / layer.mb.zw, 0.0).rgb;
+}
+
+fn model_shade(q: vec3<f32>, rd: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
+    let n = model_normal(q);
+    let albedo = model_albedo(q.xy);
     let diffuse = clamp(dot(n, l), 0.0, 1.0);
     let gloss = 1.0 - smoothstep(0.97, 0.995, abs(n.z));
     let spec = gloss * pow(clamp(dot(n, normalize(l - rd)), 0.0, 1.0), 110.0);
@@ -481,6 +462,8 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
     let persp = layer.src.z;
     let unit = layer.src.w;
     let tip = layer.src_prev.xyz;
+    let lo = vec3<f32>(layer.color.rg, -MODEL_THICK);
+    let hi = vec3<f32>(layer.color.rg + layer.mb.zw, 0.0);
 
     let dw = vec3<f32>(local + layer.src.xy, -persp);
     let dlen = length(dw);
@@ -492,14 +475,14 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
 
     var cov = 0.0;
     var rgb = vec3<f32>(0.0);
-    let tb = ray_box(ro, rd, ARROW_BOX_LO - vec3<f32>(0.02), ARROW_BOX_HI + vec3<f32>(0.02));
+    let tb = ray_box(ro, rd, lo - vec3<f32>(0.02), hi + vec3<f32>(0.02));
     if tb.x < tb.y && tb.y > 0.0 {
         var t = max(tb.x, 0.0);
         var best = 1e9;
         var t_best = t;
         var hit = false;
         for (var k = 0; k < 64; k = k + 1) {
-            let d = sd_arrow(ro + rd * t);
+            let d = sd_model(ro + rd * t);
             let fp = t / dlen;
             if d < 0.1 * fp {
                 hit = true;
@@ -517,7 +500,7 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
         }
         cov = select(clamp(1.0 - best, 0.0, 1.0), 1.0, hit);
         if cov > 0.0 {
-            rgb = arrow_shade(ro + rd * t_best, rd, l, t_best / dlen);
+            rgb = model_shade(ro + rd * t_best, rd, l);
         }
     }
 
@@ -528,8 +511,8 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
         let gp = tip + unit * model_to_plane(g, f);
         let inside = clamp(min(layer.mb.x - abs(gp.x), layer.mb.y - abs(gp.y)) + 0.5, 0.0, 1.0);
         if inside > 0.0 {
-            let dropped = 1.0 - arrow_soft_shadow(g, l);
-            let contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_arrow(g));
+            let dropped = 1.0 - model_soft_shadow(g, l, lo, hi);
+            let contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_model(g));
             shadow = inside * max(dropped * MODEL_SHADOW_ALPHA, contact * MODEL_CONTACT_ALPHA);
         }
     }
@@ -867,7 +850,7 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
         let fa = cov * layer.color.a;
         return vec4<f32>(frame_rgb * fa, fa); // premultiplie
     } else if layer.mode > 14.5 && layer.mode < 15.5 {
-        // Mode 15 -- fleche modelisee (`cursor_model`). Clip « Clip to canvas » dans
+        // Mode 15 -- curseur modelise (`cursor_model`). Clip « Clip to canvas » dans
         // `dst_prev`, comme au mode 13.
         if i.pout.x < layer.dst_prev.x || i.pout.x > layer.dst_prev.x + layer.dst_prev.z
             || i.pout.y < layer.dst_prev.y || i.pout.y > layer.dst_prev.y + layer.dst_prev.w {

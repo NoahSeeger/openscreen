@@ -51,14 +51,14 @@ struct Layer
     float4 src;       // u0,v0,u1,v1 dans l'espace source 0..1 ; mode 15 : décalage px du rayon, P, U
     float2 quad_px;   // taille du quad en pixels (pour les SDF)
     float  radius_px; // rayon des coins arrondis en px (0 = aucun)
-    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, ..., 15 = flèche 3D
-    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : a = opacité
+    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, ..., 15 = curseur 3D
+    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : coin du sprite, texel, opacité
     float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres ; mode 15 : rotation du plan (rad), tangage
     float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité) ; mode 15 : hotspot, lacet
     float4 dst_prev;  // dst à la frame précédente ; modes 13 et 15 : rect de clip
-    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan
+    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan, taille du sprite
 };
-// Mode 15 (flèche modélisée) : le détail des emplacements est dans `frame_geometry.rs`, en tête
+// Mode 15 (curseur modélisé) : le détail des emplacements est dans `frame_geometry.rs`, en tête
 // de la section « Curseur modélisé » (`cursor_model_cb`).
 
 // `layer` est passé en `constant Layer& [[buffer(0)]]` à chaque entry point qui le lit
@@ -109,7 +109,8 @@ constexpr sampler sampNV(filter::linear, address::clamp_to_edge);
 constant float DOF_MAX_LOD = 1.5;
 
 // Slots de texture, tenus par les paramètres des entry points :
-//   ps_main      : 0 = texY (Y, R8), 1 = texUV (CbCr, RG8), 2 = texImg (RGBA)
+//   ps_main      : 0 = texY (Y, R8), 1 = texUV (CbCr, RG8), 2 = texImg (RGBA), 3 = texMask (R8),
+//                  4 = texSdf (champ du sprite de curseur, R16F, mode 15)
 //   ps_fs_*      : 0 = rgbTex (RGBA)
 
 // =================================================================================
@@ -356,79 +357,51 @@ inline float3 gradient_motion(float2 gp, float2 dir, float denom, float3 c0, flo
 
 // ============ Curseur MODÉLISÉ (mode 15) ============
 // Port ligne pour ligne de `cursor_model` (HLSL), dont les commentaires font foi ; seules
-// différences : `layer` arrive en paramètre, `saturate` s'écrit `clamp`, `lerp` s'écrit `mix`.
-// Constantes : miroir exact de `frame_geometry.rs` (ARROW_*, MODEL_*).
-constant float2 ARROW_CORE[10] = {
-    float2(-0.0338, -0.0631),
-    float2( 0.4736,  0.4415),
-    float2( 0.4764,  0.5280),
-    float2( 0.3085,  0.5491),
-    float2( 0.4090,  0.8058),
-    float2( 0.2893,  0.9066),
-    float2( 0.1453,  0.6027),
-    float2( 0.0369,  0.6954),
-    float2(-0.0207,  0.6752),
-    float2(-0.0381,  0.6363)
-};
-constant float ARROW_ROUND = 0.0357;
-constant float ARROW_BAND = 0.0577;
-constant float ARROW_THICK = 0.19;
-constant float ARROW_BEVEL = 0.045;
-constant float3 ARROW_BOX_LO = float3(-0.0738, -0.0988, -0.19);
-constant float3 ARROW_BOX_HI = float3(0.5121, 0.9423, 0.0);
+// différences : `layer` et les textures arrivent en paramètres (le sprite en texture(2), son
+// champ R16F en texture(4)), `saturate` s'écrit `clamp`, `lerp` s'écrit `mix`, `SampleLevel`
+// s'écrit `sample(…, level(0.0))`.
+// Constantes : miroir exact de `frame_geometry.rs` (MODEL_*).
+constant float MODEL_THICK = 0.19;
+constant float MODEL_BEVEL = 0.045;
 constant float3 MODEL_LIGHT = float3(-0.4194, -0.5792, 0.6990);
-constant float3 MODEL_BODY = float3(0.035, 0.035, 0.04);
-constant float3 MODEL_RIM = float3(0.97, 0.97, 0.97);
 constant float MODEL_AMBIENT = 0.36;
 constant float MODEL_DIFFUSE = 0.75;
 constant float MODEL_SPECULAR = 0.45;
+constant float MODEL_RIM_INSET = 1.5;
 constant float MODEL_SOFTNESS = 6.0;
 constant float MODEL_SHADOW_PAD = 0.45;
 constant float MODEL_SHADOW_ALPHA = 0.5;
 constant float MODEL_CONTACT_RADIUS = 0.12;
 constant float MODEL_CONTACT_ALPHA = 0.5;
 
-static float sd_arrow2(float2 p)
+static float sd_sprite2(float2 p, constant Layer &layer, texture2d<float, access::sample> texSdf)
 {
-    float d = dot(p - ARROW_CORE[0], p - ARROW_CORE[0]);
-    float s = 1.0;
-    int j = 9;
-    for (int i = 0; i < 10; i++)
-    {
-        float2 vi = ARROW_CORE[i];
-        float2 vj = ARROW_CORE[j];
-        float2 e = vj - vi;
-        float2 w = p - vi;
-        float2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
-        d = min(d, dot(b, b));
-        bool c1 = p.y >= vi.y;
-        bool c2 = p.y < vj.y;
-        bool c3 = e.x * w.y > e.y * w.x;
-        if ((c1 && c2 && c3) || (!c1 && !c2 && !c3))
-        {
-            s = -s;
-        }
-        j = i;
-    }
-    return s * sqrt(d) - ARROW_ROUND;
+    float2 lo = layer.color.rg;
+    float2 c = clamp(p, lo, lo + layer.mb.zw);
+    float d = texSdf.sample(samp, (c - lo) / layer.mb.zw, level(0.0)).r;
+    float2 o = p - c;
+    float out2 = dot(o, o);
+    float e = max(d, 0.0);
+    return out2 > 0.0 ? sqrt(out2 + e * e) : d;
 }
 
-static float sd_arrow(float3 p)
+static float sd_model(float3 p, constant Layer &layer, texture2d<float, access::sample> texSdf)
 {
-    float half_t = ARROW_THICK * 0.5;
-    float2 w = float2(sd_arrow2(p.xy) + ARROW_BEVEL, abs(p.z + half_t) - (half_t - ARROW_BEVEL));
-    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - ARROW_BEVEL;
+    float half_t = MODEL_THICK * 0.5;
+    float2 w = float2(sd_sprite2(p.xy, layer, texSdf) + MODEL_BEVEL,
+                      abs(p.z + half_t) - (half_t - MODEL_BEVEL));
+    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - MODEL_BEVEL;
 }
 
-static float3 arrow_normal(float3 p)
+static float3 model_normal(float3 p, constant Layer &layer, texture2d<float, access::sample> texSdf)
 {
     const float e = 0.002;
     const float3 ka = float3(1.0, -1.0, -1.0);
     const float3 kb = float3(-1.0, -1.0, 1.0);
     const float3 kc = float3(-1.0, 1.0, -1.0);
     const float3 kd = float3(1.0, 1.0, 1.0);
-    return normalize(ka * sd_arrow(p + ka * e) + kb * sd_arrow(p + kb * e) +
-                     kc * sd_arrow(p + kc * e) + kd * sd_arrow(p + kd * e));
+    return normalize(ka * sd_model(p + ka * e, layer, texSdf) + kb * sd_model(p + kb * e, layer, texSdf) +
+                     kc * sd_model(p + kc * e, layer, texSdf) + kd * sd_model(p + kd * e, layer, texSdf));
 }
 
 static float2 ray_box(float3 o, float3 d, float3 lo, float3 hi)
@@ -474,9 +447,10 @@ static float3 plane_to_model(float3 v, ModelFrame f)
     return float3(x, y * f.cp + v.z * f.sp, -y * f.sp + v.z * f.cp);
 }
 
-static float arrow_soft_shadow(float3 o, float3 l)
+static float model_soft_shadow(float3 o, float3 l, float3 lo, float3 hi, constant Layer &layer,
+                               texture2d<float, access::sample> texSdf)
 {
-    float2 tb = ray_box(o, l, ARROW_BOX_LO - MODEL_SHADOW_PAD, ARROW_BOX_HI + MODEL_SHADOW_PAD);
+    float2 tb = ray_box(o, l, lo - MODEL_SHADOW_PAD, hi + MODEL_SHADOW_PAD);
     if (tb.x >= tb.y || tb.y <= 0.0)
     {
         return 1.0;
@@ -485,7 +459,7 @@ static float arrow_soft_shadow(float3 o, float3 l)
     float t = max(tb.x, 0.004);
     for (int k = 0; k < 32; k++)
     {
-        float d = sd_arrow(o + l * t);
+        float d = sd_model(o + l * t, layer, texSdf);
         res = min(res, MODEL_SOFTNESS * d / t);
         if (res < 0.002 || t > tb.y)
         {
@@ -497,19 +471,32 @@ static float arrow_soft_shadow(float3 o, float3 l)
     return res * res * (3.0 - 2.0 * res);
 }
 
-static float3 arrow_shade(float3 q, float3 rd, float3 l, float fp)
+static float3 model_albedo(float2 p, constant Layer &layer, texture2d<float, access::sample> texSdf,
+                           texture2d<float, access::sample> texImg)
 {
-    float3 n = arrow_normal(q);
-    float top = smoothstep(0.5, 0.8, n.z);
-    float inlay = top * (1.0 - smoothstep(-ARROW_BAND - fp, -ARROW_BAND + fp, sd_arrow2(q.xy)));
-    float3 albedo = mix(MODEL_RIM, MODEL_BODY, inlay);
+    float e = 0.25 * layer.color.b;
+    float2 g = float2(sd_sprite2(p + float2(e, 0.0), layer, texSdf) - sd_sprite2(p - float2(e, 0.0), layer, texSdf),
+                      sd_sprite2(p + float2(0.0, e), layer, texSdf) - sd_sprite2(p - float2(0.0, e), layer, texSdf));
+    float2 q = p - g / max(length(g), 1e-6) *
+                       max(sd_sprite2(p, layer, texSdf) + MODEL_RIM_INSET * layer.color.b, 0.0);
+    return texImg.sample(samp, (q - layer.color.rg) / layer.mb.zw, level(0.0)).rgb;
+}
+
+static float3 model_shade(float3 q, float3 rd, float3 l, constant Layer &layer,
+                          texture2d<float, access::sample> texSdf,
+                          texture2d<float, access::sample> texImg)
+{
+    float3 n = model_normal(q, layer, texSdf);
+    float3 albedo = model_albedo(q.xy, layer, texSdf, texImg);
     float diffuse = clamp(dot(n, l), 0.0, 1.0);
     float gloss = 1.0 - smoothstep(0.97, 0.995, abs(n.z));
     float spec = gloss * pow(clamp(dot(n, normalize(l - rd)), 0.0, 1.0), 110.0);
     return albedo * (MODEL_AMBIENT + MODEL_DIFFUSE * diffuse) + MODEL_SPECULAR * spec;
 }
 
-static float4 cursor_model(float2 local, constant Layer &layer)
+static float4 cursor_model(float2 local, constant Layer &layer,
+                           texture2d<float, access::sample> texSdf,
+                           texture2d<float, access::sample> texImg)
 {
     ModelFrame f;
     f.c = cos(layer.fx.xyz);
@@ -521,6 +508,8 @@ static float4 cursor_model(float2 local, constant Layer &layer)
     float persp = layer.src.z;
     float unit = layer.src.w;
     float3 tip = layer.src_prev.xyz;
+    float3 lo = float3(layer.color.rg, -MODEL_THICK);
+    float3 hi = float3(layer.color.rg + layer.mb.zw, 0.0);
 
     float3 dw = float3(local + layer.src.xy, -persp);
     float dlen = length(dw);
@@ -532,7 +521,7 @@ static float4 cursor_model(float2 local, constant Layer &layer)
 
     float cov = 0.0;
     float3 rgb = float3(0.0);
-    float2 tb = ray_box(ro, rd, ARROW_BOX_LO - 0.02, ARROW_BOX_HI + 0.02);
+    float2 tb = ray_box(ro, rd, lo - 0.02, hi + 0.02);
     if (tb.x < tb.y && tb.y > 0.0)
     {
         float t = max(tb.x, 0.0);
@@ -541,7 +530,7 @@ static float4 cursor_model(float2 local, constant Layer &layer)
         bool hit = false;
         for (int k = 0; k < 64; k++)
         {
-            float d = sd_arrow(ro + rd * t);
+            float d = sd_model(ro + rd * t, layer, texSdf);
             float fp = t / dlen;
             if (d < 0.1 * fp)
             {
@@ -563,7 +552,7 @@ static float4 cursor_model(float2 local, constant Layer &layer)
         cov = hit ? 1.0 : clamp(1.0 - best, 0.0, 1.0);
         if (cov > 0.0)
         {
-            rgb = arrow_shade(ro + rd * t_best, rd, l, t_best / dlen);
+            rgb = model_shade(ro + rd * t_best, rd, l, layer, texSdf, texImg);
         }
     }
 
@@ -576,8 +565,8 @@ static float4 cursor_model(float2 local, constant Layer &layer)
         float inside = clamp(min(layer.mb.x - abs(gp.x), layer.mb.y - abs(gp.y)) + 0.5, 0.0, 1.0);
         if (inside > 0.0)
         {
-            float dropped = 1.0 - arrow_soft_shadow(g, l);
-            float contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_arrow(g));
+            float dropped = 1.0 - model_soft_shadow(g, l, lo, hi, layer, texSdf);
+            float contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_model(g, layer, texSdf));
             shadow = inside * max(dropped * MODEL_SHADOW_ALPHA, contact * MODEL_CONTACT_ALPHA);
         }
     }
@@ -594,9 +583,13 @@ fragment float4 ps_main(VSOut i [[stage_in]],
                         // Masque de segmentation du sujet webcam. Non lie tant qu'aucun
                         // masque n'existe : Metal rend alors 0, ce qui est sans effet
                         // puisque la branche n'est prise que si layer.fx.z > 0.5.
-                        texture2d<float, access::sample> texMask [[texture(3)]])
+                        texture2d<float, access::sample> texMask [[texture(3)]],
+                        // Champ de distance du sprite de curseur (mode 15 seulement), R16F, cf.
+                        // `cursor_sdf.rs`. Le sprite lui-même est en texture(2), comme aux
+                        // modes 7 et 13.
+                        texture2d<float, access::sample> texSdf [[texture(4)]])
 {
-    // mode 15 : FLÈCHE MODÉLISÉE (`cursor_model`). Testé en premier : les branches suivantes
+    // mode 15 : CURSEUR MODÉLISÉ (`cursor_model`). Testé en premier : les branches suivantes
     // n'ont pas de borne haute. dst_prev = rect de clip « Clip to canvas », comme au mode 13.
     if (layer.mode > 14.5)
     {
@@ -605,7 +598,7 @@ fragment float4 ps_main(VSOut i [[stage_in]],
         {
             return float4(0.0, 0.0, 0.0, 0.0);
         }
-        return cursor_model(i.local, layer);
+        return cursor_model(i.local, layer, texSdf, texImg);
     }
 
     // mode 14 : CADRE DE FENÊTRE autour de l'écran, dessiné SOUS lui. Cf. commentaires HLSL.

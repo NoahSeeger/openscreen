@@ -7,14 +7,14 @@ cbuffer Layer : register(b0)
     float4 src;       // u0,v0,u1,v1 dans l'espace source 0..1 ; mode 15 : décalage px du rayon, P, U
     float2 quad_px;   // taille du quad en pixels (pour les SDF)
     float  radius_px; // rayon des coins arrondis en px (0 = aucun)
-    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, 4 = curseur, 15 = flèche 3D
-    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : a = opacité
+    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, 4 = curseur, 15 = curseur 3D
+    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : coin du sprite, texel, opacité
     float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres ; mode 15 : rotation du plan (rad), tangage
     float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité) ; mode 15 : hotspot, lacet
     float4 dst_prev;  // dst à la frame précédente ; modes 13 et 15 : rect de clip
-    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan
+    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan, taille du sprite
 };
-// Mode 15 (flèche modélisée) : le détail des emplacements est dans `frame_geometry.rs`, en tête
+// Mode 15 (curseur modélisé) : le détail des emplacements est dans `frame_geometry.rs`, en tête
 // de la section « Curseur modélisé » (`cursor_model_cb`).
 
 struct VSOut
@@ -45,6 +45,9 @@ Texture2D<float4> texImg : register(t2); // wallpaper image RGBA (fond, mode 6) 
 // resolution du modele (256x144) ; l'upscale vers la resolution webcam est fait par le sampler
 // lineaire, ce qui est exactement le filtrage qu'on veut sur un masque.
 Texture2D<float> texMask : register(t3);
+// Champ de distance signé du sprite de curseur (mode 15 seulement), R16F, cf. `cursor_sdf.rs`.
+// Le sprite lui-même est en t2 (texImg), comme aux modes 7 et 13.
+Texture2D<float> texSdf : register(t4);
 SamplerState samp : register(s0);
 
 // Plafond de la profondeur de champ du mode 8, en niveau de la pyramide demi-résolution (1.5 =
@@ -298,47 +301,34 @@ float3 blur_webcam_bg(float2 uv, float intensity, float2 qpx, float2 local_px)
 }
 
 // ============ Curseur MODÉLISÉ (mode 15) ============
-// La flèche par défaut en objet 3D : son contour (champ de distance signé d'un polygone arrondi),
-// extrudé avec un chanfrein, lancé de rayons par pixel. Ce qui touche le modèle est éclairé ; ce
-// qui le rate tombe sur le plan de l'écran, où l'on mesure l'ombre portée (marche vers la
-// lumière, pénombre douce) et l'ombre de contact. La caméra est reconstruite à l'identique de
-// `regions::rotate_point` + perspective P / (P - z) ; la pose, la caméra et la boîte de dessin
-// viennent de `frame_geometry::cursor_model_cb`, qui documente les emplacements du cbuffer.
+// Le sprite de l'état courant en objet 3D : sa silhouette (champ de distance signé tiré de son
+// alpha par `cursor_sdf.rs`), extrudée avec un chanfrein, lancé de rayons par pixel. Le dessus
+// porte l'art du sprite ; le chanfrein et les flancs, la couleur de son bord. Ce qui touche le
+// modèle est éclairé ; ce qui le rate tombe sur le plan de l'écran, où l'on mesure l'ombre portée
+// (marche vers la lumière, pénombre douce) et l'ombre de contact. La caméra est reconstruite à
+// l'identique de `regions::rotate_point` + perspective P / (P - z) ; la pose, la caméra et la
+// boîte de dessin viennent de `frame_geometry::cursor_model_cb`, qui documente les emplacements
+// du cbuffer.
 //
-// Repère du MODÈLE : unité = hauteur de la flèche, origine au hotspot de la face du dessus, x à
-// droite, y vers le bas, z vers la caméra ; la flèche occupe z de -ARROW_THICK à 0.
-// Constantes : miroir exact de `frame_geometry.rs` (ARROW_*, MODEL_LIGHT).
-static const float2 ARROW_CORE[10] = {
-    float2(-0.0338, -0.0631),
-    float2( 0.4736,  0.4415),
-    float2( 0.4764,  0.5280),
-    float2( 0.3085,  0.5491),
-    float2( 0.4090,  0.8058),
-    float2( 0.2893,  0.9066),
-    float2( 0.1453,  0.6027),
-    float2( 0.0369,  0.6954),
-    float2(-0.0207,  0.6752),
-    float2(-0.0381,  0.6363)
-};
-static const float ARROW_ROUND = 0.0357;
-static const float ARROW_BAND = 0.0577;
-static const float ARROW_THICK = 0.19;
-static const float ARROW_BEVEL = 0.045;
-// Boîte du modèle : ARROW_CORE gonflé de ARROW_ROUND (cf. `arrow_box`).
-static const float3 ARROW_BOX_LO = float3(-0.0738, -0.0988, -0.19);
-static const float3 ARROW_BOX_HI = float3(0.5121, 0.9423, 0.0);
+// Repère du MODÈLE : unité = plus grand côté du sprite, origine au hotspot de la face du dessus,
+// x à droite, y vers le bas, z vers la caméra ; le modèle occupe z de -MODEL_THICK à 0. Le rect
+// du sprite y commence en `color.rg` et mesure `mb.zw`.
+// Textures : t2 (texImg) = le sprite, RGBA en alpha droit ; t4 (texSdf) = son champ, R16F, en
+// unités du modèle, négatif dedans, sur le même rect.
+// Constantes : miroir exact de `frame_geometry.rs` (MODEL_*).
+static const float MODEL_THICK = 0.19;
+static const float MODEL_BEVEL = 0.045;
 // Direction VERS la lumière, repère caméra : haut-gauche, devant.
 static const float3 MODEL_LIGHT = float3(-0.4194, -0.5792, 0.6990);
-// Matières : l'incrustation noire du dessus et le blanc du filet, des flancs et du chanfrein
-// (les couleurs de `cursors/default/arrow.png`).
-static const float3 MODEL_BODY = float3(0.035, 0.035, 0.04);
-static const float3 MODEL_RIM = float3(0.97, 0.97, 0.97);
 static const float MODEL_AMBIENT = 0.36;
 static const float MODEL_DIFFUSE = 0.75;
 static const float MODEL_SPECULAR = 0.45;
+// Profondeur (texels du sprite) à laquelle on lit la couleur du bord : assez loin de la frange
+// antialiasée, assez près pour rester dans le filet de l'art (~4 texels).
+static const float MODEL_RIM_INSET = 1.5;
 // Ombre portée : dureté de la pénombre (plus grand = plus net), portée maximale (la marche vers
 // la lumière s'arrête à la boîte du modèle élargie d'autant) et opacité ; ombre de contact :
-// portée (hauteurs de flèche) et opacité. La boîte de dessin en dépend : miroir des constantes
+// portée (unités) et opacité. La boîte de dessin en dépend : miroir des constantes
 // `MODEL_SOFTNESS`, `MODEL_SHADOW_PAD` et `MODEL_CONTACT_RADIUS` de `frame_geometry.rs`.
 static const float MODEL_SOFTNESS = 6.0;
 static const float MODEL_SHADOW_PAD = 0.45;
@@ -346,50 +336,37 @@ static const float MODEL_SHADOW_ALPHA = 0.5;
 static const float MODEL_CONTACT_RADIUS = 0.12;
 static const float MODEL_CONTACT_ALPHA = 0.5;
 
-// Distance signée au contour de la flèche (plan xy du modèle) : le polygone ARROW_CORE (distance
-// aux arêtes, signe par parité des croisements), gonflé de ARROW_ROUND.
-float sd_arrow2(float2 p)
+// Distance signée à la silhouette (plan xy du modèle). Dans le rect du sprite, le champ ; hors de
+// lui, une borne inférieure exacte le long de la normale au rect : le sprite tient dans son rect,
+// qui est convexe, donc |p - s|² >= |p - c|² + |c - s|² pour tout point s du sprite (c = p ramené
+// dans le rect). Échantillonné au niveau 0 : la marche est une boucle à sortie anticipée.
+float sd_sprite2(float2 p)
 {
-    float d = dot(p - ARROW_CORE[0], p - ARROW_CORE[0]);
-    float s = 1.0;
-    int j = 9;
-    [unroll] for (int i = 0; i < 10; i++)
-    {
-        float2 vi = ARROW_CORE[i];
-        float2 vj = ARROW_CORE[j];
-        float2 e = vj - vi;
-        float2 w = p - vi;
-        float2 b = w - e * saturate(dot(w, e) / dot(e, e));
-        d = min(d, dot(b, b));
-        bool c1 = p.y >= vi.y;
-        bool c2 = p.y < vj.y;
-        bool c3 = e.x * w.y > e.y * w.x;
-        if ((c1 && c2 && c3) || (!c1 && !c2 && !c3))
-        {
-            s = -s;
-        }
-        j = i;
-    }
-    return s * sqrt(d) - ARROW_ROUND;
+    float2 c = clamp(p, color.rg, color.rg + mb.zw);
+    float d = texSdf.SampleLevel(samp, (c - color.rg) / mb.zw, 0.0);
+    float2 o = p - c;
+    float out2 = dot(o, o);
+    float e = max(d, 0.0);
+    return out2 > 0.0 ? sqrt(out2 + e * e) : d;
 }
 
-// Distance signée à la flèche extrudée : le contour rentré du chanfrein, épaisseur rentrée du
-// chanfrein, puis regonflée : les arêtes du dessus et du dessous sont arrondies de ARROW_BEVEL.
-float sd_arrow(float3 p)
+// Distance signée au modèle : le contour rentré du chanfrein, épaisseur rentrée du chanfrein, puis
+// regonflé : les arêtes du dessus et du dessous sont arrondies de MODEL_BEVEL.
+float sd_model(float3 p)
 {
-    float half_t = ARROW_THICK * 0.5;
-    float2 w = float2(sd_arrow2(p.xy) + ARROW_BEVEL, abs(p.z + half_t) - (half_t - ARROW_BEVEL));
-    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - ARROW_BEVEL;
+    float half_t = MODEL_THICK * 0.5;
+    float2 w = float2(sd_sprite2(p.xy) + MODEL_BEVEL, abs(p.z + half_t) - (half_t - MODEL_BEVEL));
+    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - MODEL_BEVEL;
 }
 
 // Normale par le gradient du champ (tétraèdre, quatre évaluations).
-float3 arrow_normal(float3 p)
+float3 model_normal(float3 p)
 {
     const float e = 0.002;
-    return normalize(float3(1, -1, -1) * sd_arrow(p + float3(1, -1, -1) * e) +
-                     float3(-1, -1, 1) * sd_arrow(p + float3(-1, -1, 1) * e) +
-                     float3(-1, 1, -1) * sd_arrow(p + float3(-1, 1, -1) * e) +
-                     float3(1, 1, 1) * sd_arrow(p + float3(1, 1, 1) * e));
+    return normalize(float3(1, -1, -1) * sd_model(p + float3(1, -1, -1) * e) +
+                     float3(-1, -1, 1) * sd_model(p + float3(-1, -1, 1) * e) +
+                     float3(-1, 1, -1) * sd_model(p + float3(-1, 1, -1) * e) +
+                     float3(1, 1, 1) * sd_model(p + float3(1, 1, 1) * e));
 }
 
 // Entrée/sortie d'un rayon dans une boîte alignée (x = entrée, y = sortie ; x >= y : raté).
@@ -403,7 +380,7 @@ float2 ray_box(float3 o, float3 d, float3 lo, float3 hi)
     return float2(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
 }
 
-// Cosinus/sinus de la pose : rotation du plan (X, Y, Z), tangage et lacet de la flèche.
+// Cosinus/sinus de la pose : rotation du plan (X, Y, Z), tangage et lacet du modèle.
 struct ModelFrame
 {
     float3 c;
@@ -442,10 +419,10 @@ float3 plane_to_model(float3 v, ModelFrame f)
 }
 
 // Pénombre vers la lumière depuis `o` (1 = éclairé, 0 = dans l'ombre). Marche bornée à la boîte
-// élargie de la portée de la pénombre, pas bornés, sortie dès que l'ombre est pleine.
-float arrow_soft_shadow(float3 o, float3 l)
+// du modèle élargie de la portée de la pénombre, pas bornés, sortie dès que l'ombre est pleine.
+float model_soft_shadow(float3 o, float3 l, float3 lo, float3 hi)
 {
-    float2 tb = ray_box(o, l, ARROW_BOX_LO - MODEL_SHADOW_PAD, ARROW_BOX_HI + MODEL_SHADOW_PAD);
+    float2 tb = ray_box(o, l, lo - MODEL_SHADOW_PAD, hi + MODEL_SHADOW_PAD);
     if (tb.x >= tb.y || tb.y <= 0.0)
     {
         return 1.0;
@@ -454,7 +431,7 @@ float arrow_soft_shadow(float3 o, float3 l)
     float t = max(tb.x, 0.004);
     [loop] for (int k = 0; k < 32; k++)
     {
-        float d = sd_arrow(o + l * t);
+        float d = sd_model(o + l * t);
         res = min(res, MODEL_SOFTNESS * d / t);
         if (res < 0.002 || t > tb.y)
         {
@@ -466,18 +443,27 @@ float arrow_soft_shadow(float3 o, float3 l)
     return res * res * (3.0 - 2.0 * res);
 }
 
-// Couleur (alpha droit) d'un point de la surface vu le long de `rd`. `fp` = taille d'un pixel
-// en unités du modèle : l'incrustation noire est antialiasée sur un pixel.
-float3 arrow_shade(float3 q, float3 rd, float3 l, float fp)
+// Couleur de la matière au point `p` du plan xy (alpha droit) : l'art du sprite, lu au plus à
+// MODEL_RIM_INSET texels du bord vers l'intérieur. Le dessus garde donc son art, et le chanfrein,
+// les flancs et le dessous prennent la couleur du bord de CE sprite (le filet blanc de la flèche,
+// le trait noir des mains), jamais la frange mêlée au transparent. `color.b` = un texel.
+float3 model_albedo(float2 p)
 {
-    float3 n = arrow_normal(q);
-    // Incrustation noire : sur la face du dessus seulement, à plus d'un filet du bord.
-    float top = smoothstep(0.5, 0.8, n.z);
-    float inlay = top * (1.0 - smoothstep(-ARROW_BAND - fp, -ARROW_BAND + fp, sd_arrow2(q.xy)));
-    float3 albedo = lerp(MODEL_RIM, MODEL_BODY, inlay);
+    float e = 0.25 * color.b;
+    float2 g = float2(sd_sprite2(p + float2(e, 0.0)) - sd_sprite2(p - float2(e, 0.0)),
+                      sd_sprite2(p + float2(0.0, e)) - sd_sprite2(p - float2(0.0, e)));
+    float2 q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * color.b, 0.0);
+    return texImg.SampleLevel(samp, (q - color.rg) / mb.zw, 0.0).rgb;
+}
+
+// Couleur (alpha droit) d'un point de la surface vu le long de `rd`.
+float3 model_shade(float3 q, float3 rd, float3 l)
+{
+    float3 n = model_normal(q);
+    float3 albedo = model_albedo(q.xy);
     float diffuse = saturate(dot(n, l));
     // Reflet sur les arrondis seulement : une face plane l'allumerait d'un bloc (la lumière est
-    // directionnelle), et l'incrustation noire virerait au gris à chaque clic.
+    // directionnelle), et le dessus sombre d'un sprite virerait au gris à chaque clic.
     float gloss = 1.0 - smoothstep(0.97, 0.995, abs(n.z));
     float spec = gloss * pow(saturate(dot(n, normalize(l - rd))), 110.0);
     return albedo * (MODEL_AMBIENT + MODEL_DIFFUSE * diffuse) + MODEL_SPECULAR * spec;
@@ -495,6 +481,9 @@ float4 cursor_model(float2 local)
     float persp = src.z;
     float unit = src.w;
     float3 tip = src_prev.xyz;
+    // La boîte du modèle : le rect du sprite, sur toute l'épaisseur.
+    float3 lo = float3(color.rg, -MODEL_THICK);
+    float3 hi = float3(color.rg + mb.zw, 0.0);
 
     // Le rayon de ce pixel : de la caméra (0, 0, P) à travers le pixel sur le plan image z = 0.
     float3 dw = float3(local + src.xy, -persp);
@@ -506,11 +495,11 @@ float4 cursor_model(float2 local)
     float3 nz = plane_to_model(float3(0.0, 0.0, 1.0), f);
     float hz = -tip.z / unit;
 
-    // La flèche. Silhouette antialiasée : un rayon qui la frôle à moins d'un pixel la couvre en
+    // Le modèle. Silhouette antialiasée : un rayon qui la frôle à moins d'un pixel la couvre en
     // partie (`best`, la plus petite distance rencontrée, en pixels).
     float cov = 0.0;
     float3 rgb = 0.0;
-    float2 tb = ray_box(ro, rd, ARROW_BOX_LO - 0.02, ARROW_BOX_HI + 0.02);
+    float2 tb = ray_box(ro, rd, lo - 0.02, hi + 0.02);
     if (tb.x < tb.y && tb.y > 0.0)
     {
         float t = max(tb.x, 0.0);
@@ -519,7 +508,7 @@ float4 cursor_model(float2 local)
         bool hit = false;
         [loop] for (int k = 0; k < 64; k++)
         {
-            float d = sd_arrow(ro + rd * t);
+            float d = sd_model(ro + rd * t);
             float fp = t / dlen;
             if (d < 0.1 * fp)
             {
@@ -541,11 +530,11 @@ float4 cursor_model(float2 local)
         cov = hit ? 1.0 : saturate(1.0 - best);
         if (cov > 0.0)
         {
-            rgb = arrow_shade(ro + rd * t_best, rd, l, t_best / dlen);
+            rgb = model_shade(ro + rd * t_best, rd, l);
         }
     }
 
-    // Le plan, là où la flèche ne couvre pas tout le pixel : ombre portée et ombre de contact,
+    // Le plan, là où le modèle ne couvre pas tout le pixel : ombre portée et ombre de contact,
     // seulement à l'intérieur de l'écran (`mb.xy` = sa demi-taille, px du plan).
     float shadow = 0.0;
     float denom = dot(rd, nz);
@@ -556,8 +545,8 @@ float4 cursor_model(float2 local)
         float inside = saturate(min(mb.x - abs(gp.x), mb.y - abs(gp.y)) + 0.5);
         if (inside > 0.0)
         {
-            float dropped = 1.0 - arrow_soft_shadow(g, l);
-            float contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_arrow(g));
+            float dropped = 1.0 - model_soft_shadow(g, l, lo, hi);
+            float contact = 1.0 - smoothstep(0.0, MODEL_CONTACT_RADIUS, sd_model(g));
             shadow = inside * max(dropped * MODEL_SHADOW_ALPHA, contact * MODEL_CONTACT_ALPHA);
         }
     }
@@ -568,7 +557,7 @@ float4 cursor_model(float2 local)
 
 float4 ps_main(VSOut i) : SV_Target
 {
-    // mode 15 : FLÈCHE MODÉLISÉE (cf. `cursor_model`). Testé en premier : les branches suivantes
+    // mode 15 : CURSEUR MODÉLISÉ (cf. `cursor_model`). Testé en premier : les branches suivantes
     // n'ont pas de borne haute. dst_prev = rect de clip « Clip to canvas », comme au mode 13.
     if (mode > 14.5)
     {

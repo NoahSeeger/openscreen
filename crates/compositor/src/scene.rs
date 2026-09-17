@@ -449,8 +449,8 @@ pub struct SceneCursor {
     pub smoothing: f32,
     pub motion_blur: f32,
     pub click_bounce: f32,
-    /// Flèche MODÉLISÉE en 3D (mode 15) à la place du sprite, pour la flèche du thème par
-    /// défaut seulement : tout autre état garde son sprite plat. `#[serde(default)]` : absent
+    /// Curseur MODÉLISÉ en 3D (mode 15) : le sprite de chaque état du thème par défaut, extrudé,
+    /// à la place du sprite plat. Les autres thèmes restent plats. `#[serde(default)]` : absent
     /// des projets et des JSON écrits avant le réglage, qui gardent donc le curseur plat.
     #[serde(default)]
     pub model3d: bool,
