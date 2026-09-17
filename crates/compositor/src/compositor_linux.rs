@@ -4864,6 +4864,85 @@ mod tests {
             assert!(a.near_apex > 12.0, "{name}: en l'air, l'ombre touche l'apex ({:.1} px)", a.near_apex);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Camera reelle (`follow-cursor`) : pendant de `tests/follow_camera_render.rs` (Windows).
+    // -----------------------------------------------------------------------
+
+    /// Le warp projectif du WGSL pose chaque ligne verticale d'une grille la ou la camera la
+    /// projette (`TiltedQuad::point_px`), a un quart de pixel pres, camera tournee a fond.
+    #[test]
+    fn the_follow_camera_warp_lands_every_grid_line_where_projected() {
+        let Some(gpu) = gpu() else { return };
+        let comp = Compositor::new_sized(&gpu, 1280, 720).expect("Compositor::new_sized");
+        let (w, h, grid) = (640u32, 360u32, 32u32);
+        let y: Vec<u8> = (0..w * h)
+            .map(|i| if (i % w) % grid < 2 || (i / w) % grid < 2 { 30 } else { 220 })
+            .collect();
+        let uv = vec![128u8; (w * (h / 2)) as usize];
+        let screen = FakeFrame::from_planes(&gpu, w, h, &y, &uv);
+        let json = model_scene_json(r#""follow-cursor""#, None, "none", true)
+            .replace(r#""scale":1,"#, r#""scale":2.2,"#)
+            .replace(r#""size":3,"#, r#""size":0.05,"#)
+            .replace(r#""roundnessFrac":0.03"#, r#""roundnessFrac":0"#);
+        let scene = crate::scene::Scene::from_json(&json).expect("scene json");
+        let track = crate::cursor::CursorTrack::new(vec![(0.0, 0.93, 0.08), (9.0, 0.93, 0.08)], vec![], vec![]);
+        let rgba = compose_model(&comp, &screen, &json, &track);
+        let cfg = {
+            let mut c = crate::config::Cfg::c8();
+            c.cursor = true;
+            c
+        };
+        let g = plan_frame(&FrameGeometryInput {
+            render_px: [1280.0, 720.0],
+            screen_tex_px: [w as f32, h as f32],
+            screen_visible_px: [w as f32, h as f32],
+            webcam_visible_px: [w as f32, h as f32],
+            u_max: 1.0,
+            v_max: 1.0,
+            frame: 0.0,
+            cfg: &cfg,
+            live: live_params_from_scene(&scene),
+            scene: Some(&scene),
+            cursor: Some(&track),
+            timeline_t_override: Some(2.0),
+            programme_time: None,
+        });
+        assert!(g.camera.is_some(), "la camera reelle doit etre posee");
+        let s_px = [g.s_dst[2] * 1280.0, g.s_dst[3] * 720.0];
+        let center = [(g.s_dst[0] + g.s_dst[2] * 0.5) * 1280.0, (g.s_dst[1] + g.s_dst[3] * 0.5) * 720.0];
+        let quad = g.screen_tilt(s_px).expect("quad de la camera");
+        let luma = |x: i32, y: i32| {
+            let i = ((y * 1280 + x) * 4) as usize;
+            0.2126 * rgba[i] as f32 + 0.7152 * rgba[i + 1] as f32 + 0.0722 * rgba[i + 2] as f32
+        };
+        let (mut worst, mut n) = (0.0f32, 0);
+        for k in 0..w / grid {
+            let u = (k * grid + 1) as f32 / w as f32;
+            for j in 0..h / grid {
+                let v = ((j * grid) as f32 + grid as f32 * 0.5 + 1.0) / h as f32;
+                let p = quad.point_px(u, v);
+                let (x, yy) = (center[0] + p.0, center[1] + p.1);
+                if !(40.0..1240.0).contains(&x) || !(40.0..680.0).contains(&yy) {
+                    continue;
+                }
+                // Barycentre de l'assombrissement sur la rangee, a +-8 px de la prevision.
+                let (mut sum, mut wsum) = (0.0f32, 0.0f32);
+                for dx in -8..=8 {
+                    let xi = x.round() as i32 + dx;
+                    let wgt = (200.0 - luma(xi, yy.floor() as i32)).max(0.0);
+                    (sum, wsum) = (sum + wgt * (xi as f32 + 0.5), wsum + wgt);
+                }
+                if wsum > 200.0 {
+                    worst = worst.max((sum / wsum - x).abs());
+                    n += 1;
+                }
+            }
+        }
+        println!("camera reelle : {n} points de grille, ecart au rendu {worst:.2} px");
+        assert!(n > 50, "trop peu de points visibles : {n}");
+        assert!(worst <= 0.25, "le rendu s'ecarte de la projection de {worst:.2} px");
+    }
 }
 
 // ---------------------------------------------------------------------------
