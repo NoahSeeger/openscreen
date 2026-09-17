@@ -112,7 +112,6 @@ impl CursorSdf {
                 size: [w as f32 / long, h as f32 / long],
                 hotspot: [0.0; 2],
                 top: top_row as f32 / fh as f32,
-                texel: 1.0 / long,
             },
         }
     }
@@ -362,7 +361,8 @@ mod tests {
         assert!((-3.0..-0.5).contains(&corner), "coin : {corner} texels fins");
         assert_eq!(sdf.shape.top, 0.0);
         assert_eq!(sdf.shape.size, [1.0, 5.0 / 6.0]);
-        assert_eq!(sdf.shape.texel, 1.0 / 6.0);
+        // Le texel du sprite que les shaders tirent de la taille du champ.
+        assert_eq!(SDF_UPSAMPLE as f32 / sdf.width.max(sdf.height) as f32, 1.0 / 6.0);
     }
 
     /// Pour chaque sprite livré, le signe du champ EST la silhouette de l'alpha (seuil 0,5), à la

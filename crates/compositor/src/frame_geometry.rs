@@ -2079,6 +2079,9 @@ pub struct CursorPlan {
     /// de la part « pointeur » de ce sprite. Le placement est alors toujours `Tilted` (quad
     /// identité sur un écran droit), et le sprite est extrudé au lieu d'être posé à plat.
     pub model: Option<CursorPose>,
+    /// L'impact des clics récents sur l'écran (mode 16), à dessiner SOUS le curseur. Vide sans
+    /// curseur modélisé, sans clic récent ou à `clickBounce` nul.
+    pub impacts: Vec<LayerCB>,
 }
 
 impl CursorPlan {
@@ -2309,6 +2312,22 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
         _ => [-1.0, -1.0, 3.0, 3.0],
     };
 
+    // L'impact : un anneau par clic récent, centré sur son point BRUT, là où la pointe se pose.
+    let strength = (lp.cursor_bounce_scale / MODEL_CLICK_BOUNCE_REF).clamp(0.0, 2.0);
+    let impacts = if model3d && strength > 0.0 {
+        let half_px = IMPACT_EXTENT * size_px * (0.75 + 0.25 * strength);
+        input
+            .track
+            .clicks_with_points(input.t - IMPACT_DELAY_S - IMPACT_S, input.t - IMPACT_DELAY_S)
+            .filter_map(|(tc, p)| {
+                let impact = impact_at(input.t - tc, strength)?;
+                cursor_impact_cb(place(Some(p), g.s_dst)?, half_px, impact, alpha)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     Some(CursorPlan {
         placement,
         prev_placement,
@@ -2321,6 +2340,7 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
             let pointing = pointing_factor([s.hotspot_x, s.hotspot_y]);
             cursor_pose(input.track, input.t, lp.cursor_bounce_scale, pointing)
         }),
+        impacts,
     })
 }
 
@@ -2343,7 +2363,8 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
 //   src.xy        décalage px : `local + src.xy` = pixel relatif à l'axe de la caméra, ancrage ôté
 //   src.z         P, distance caméra–plan (px) ; src.w = U, l'unité du modèle (px du plan)
 //   color.rg      coin haut-gauche du sprite, repère du modèle (unités)
-//   color.b       un texel du sprite, en unités
+//   color.b       écrasement : l'épaisseur vaut MODEL_THICK × color.b (`CursorPose::squash`).
+//                 Un texel du sprite se tire de la taille du champ (`SDF_UPSAMPLE` / plus grand côté)
 //   color.a       opacité (auto-hide, zoom)
 //   fx.xyz        rotation dessinée du plan (rad, X/Y/Z, ordre de `regions::rotate_point`)
 //   fx.w          tangage du modèle (rad)
@@ -2383,6 +2404,10 @@ const MODEL_YAW_SPEED: f32 = 0.8;
 const MODEL_YAW_HALF_WINDOW_S: f32 = 0.1;
 /// Combien de temps avant un clic le modèle se tourne vers sa cible.
 const MODEL_AIM_S: f32 = 0.3;
+/// Écrasement au creux du clic (part de l'épaisseur perdue), à `clickBounce` par défaut.
+/// L'épaisseur ne descend jamais sous `MODEL_SQUASH_MIN` (deux chanfreins, plus un peu de flanc).
+const MODEL_SQUASH: f32 = 0.3;
+const MODEL_SQUASH_MIN: f32 = 0.55;
 /// Hotspot → part « pointeur » (cf. `pointing_factor`) : sous `LO` (distance au centre rapportée
 /// au demi-côté), un curseur centré ; au-delà de `HI`, un pointeur. La flèche est à 0,83.
 const MODEL_POINTING_LO: f32 = 0.3;
@@ -2405,8 +2430,6 @@ pub struct SpriteShape {
     pub hotspot: [f32; 2],
     /// Haut de la silhouette (alpha 0,5), fraction de la hauteur du sprite.
     pub top: f32,
-    /// Un texel du sprite, en unités du modèle.
-    pub texel: f32,
 }
 
 impl SpriteShape {
@@ -2415,19 +2438,19 @@ impl SpriteShape {
         [-self.hotspot[0] * self.size[0], -self.hotspot[1] * self.size[1]]
     }
 
-    /// La boîte englobante du modèle : le rect du sprite, sur toute l'épaisseur.
-    fn model_box(&self) -> ([f32; 3], [f32; 3]) {
+    /// La boîte englobante du modèle écrasé à `squash` : le rect du sprite, sur toute l'épaisseur.
+    fn model_box(&self, squash: f32) -> ([f32; 3], [f32; 3]) {
         let [x, y] = self.origin();
-        ([x, y, -MODEL_THICK], [x + self.size[0], y + self.size[1], 0.0])
+        ([x, y, -MODEL_THICK * squash], [x + self.size[0], y + self.size[1], 0.0])
     }
 
     /// Hauteur du hotspot du dessus quand le point le plus bas du modèle basculé de `pitch` (≥ 0)
-    /// affleure le plan : le bas du haut de la silhouette (y minimal, face du dessous) ; à plat,
-    /// toute la face du dessous. Le chanfrein arrondit ce coin et laisse, basculé, un jour d'au
-    /// plus ~1 % de l'unité, invisible sous l'ombre de contact.
-    fn contact_lift(&self, pitch: f32) -> f32 {
+    /// et écrasé à `squash` affleure le plan : le bas du haut de la silhouette (y minimal, face du
+    /// dessous) ; à plat, toute la face du dessous. Le chanfrein arrondit ce coin et laisse,
+    /// basculé, un jour d'au plus ~1 % de l'unité, invisible sous l'ombre de contact.
+    fn contact_lift(&self, pitch: f32, squash: f32) -> f32 {
         let y_top = (self.top - self.hotspot[1]) * self.size[1];
-        MODEL_THICK * pitch.cos() - y_top * pitch.sin()
+        MODEL_THICK * squash * pitch.cos() - y_top * pitch.sin()
     }
 }
 
@@ -2454,6 +2477,8 @@ pub struct CursorPose {
     /// Lacet (rad) autour de la normale du plan, appliqué après le tangage : positif = sens
     /// horaire à l'écran (y vers le bas), la pointe part vers la droite.
     pub yaw: f32,
+    /// Épaisseur du modèle rapportée à `MODEL_THICK` : moins de 1 quand le clic l'écrase.
+    pub squash: f32,
 }
 
 /// La pose à `t`. `click_bounce` est le réglage brut (0..5, 2,5 par défaut), `pointing` la part
@@ -2470,6 +2495,9 @@ pub struct CursorPose {
 ///   donc la pose reste continue en `t`.
 /// - Tangage et lacet sont multipliés par `pointing` : entiers pour la flèche, nuls pour un
 ///   curseur centré.
+/// - Écrasement : sur la même courbe `tap`, l'épaisseur descend à 1 − `MODEL_SQUASH` au creux,
+///   puis le rebond l'épaissit un instant. Fois `clickBounce`, comme le tangage ; tous les états.
+///   L'empreinte ne change pas : pas de rebond d'échelle en 3D.
 pub fn cursor_pose(
     track: &crate::cursor::CursorTrack,
     t: f32,
@@ -2479,8 +2507,10 @@ pub fn cursor_pose(
     use crate::regions::{tap, CLICK_IMPACT_WINDOW_S};
     let k = track.last_click_at(t).map(|tc| tap((t - tc) / CLICK_IMPACT_WINDOW_S)).unwrap_or(0.0);
     let clearance = MODEL_HOVER * (1.0 + MODEL_CONTACT_GAIN * k).max(0.0);
-    let press = (-k).max(0.0) * (click_bounce / MODEL_CLICK_BOUNCE_REF).clamp(0.0, 2.0);
+    let strength = (click_bounce / MODEL_CLICK_BOUNCE_REF).clamp(0.0, 2.0);
+    let press = (-k).max(0.0) * strength;
     let pitch = pointing * (MODEL_PITCH_IDLE_DEG + MODEL_PITCH_PRESS_DEG * press).to_radians();
+    let squash = (1.0 + MODEL_SQUASH * k * strength).max(MODEL_SQUASH_MIN);
 
     let smooth = |x: f32| {
         let u = x.clamp(0.0, 1.0);
@@ -2502,7 +2532,7 @@ pub fn cursor_pose(
         }
     }
     let yaw = pointing * MODEL_YAW_MAX_DEG.to_radians() * (v / MODEL_YAW_SPEED).tanh();
-    CursorPose { clearance, pitch, yaw }
+    CursorPose { clearance, pitch, yaw, squash }
 }
 
 /// Le sprite du thème par défaut que les backends résoudraient pour `cursor_type`, s'il y en a
@@ -2573,7 +2603,7 @@ impl ModelView {
         }
         let ground =
             [(plane_pt[0] - 0.5) * 2.0 * half[0], (plane_pt[1] - 0.5) * 2.0 * half[1], 0.0];
-        let height = unit * (pose.clearance + shape.contact_lift(pose.pitch));
+        let height = unit * (pose.clearance + shape.contact_lift(pose.pitch, pose.squash));
         let k = height / eye[2];
         let tip =
             [ground[0] + (eye[0] - ground[0]) * k, ground[1] + (eye[1] - ground[1]) * k, height];
@@ -2629,7 +2659,7 @@ impl ModelView {
     /// plus `d / lz` de son ombre géométrique (`lz` = élévation de la lumière au-dessus du plan),
     /// et la pénombre s'arrête à `d = min(t / MODEL_SOFTNESS, MODEL_SHADOW_PAD)`.
     pub(crate) fn footprint(&self) -> Option<[f32; 4]> {
-        let (lo, hi) = self.shape.model_box();
+        let (lo, hi) = self.shape.model_box(self.pose.squash);
         let light = self.light();
         let lz = light[2].max(0.2);
         let corners: [[f32; 3]; 8] = std::array::from_fn(|i| {
@@ -2687,13 +2717,121 @@ pub fn cursor_model_cb(
         ],
         quad_px: [bw, bh],
         mode: 15.0,
-        color: [shape.origin()[0], shape.origin()[1], shape.texel, alpha],
+        color: [shape.origin()[0], shape.origin()[1], pose.squash, alpha],
         fx: [r[0], r[1], r[2], pose.pitch],
         src_prev: [view.tip[0], view.tip[1], view.tip[2], pose.yaw],
         dst_prev: clip,
         mb: [view.half[0], view.half[1], view.offset[0], view.offset[1]],
         radius_px: shape.size[0] / shape.size[1],
         ..Default::default()
+    })
+}
+
+// ============ Impact du clic (mode 16) ============
+//
+// Sous le curseur modélisé, chaque clic laisse sur l'écran une tache de pression sous la pointe et
+// un anneau qui s'étend depuis le point cliqué. Les deux sont posés SUR le plan, comme le sprite du
+// mode 13 : un carré du plan centré sur le point, dont les coins passent par la projection du
+// contenu, puis le warp inverse du shader. Ils suivent donc l'inclinaison et la caméra, et leur
+// centre est le pixel cliqué. Rust calcule la courbe dans le temps ; les shaders ne dessinent
+// que la forme de l'instant.
+//
+// Emplacements du `LayerCB` au mode 16 (longueurs en fractions du demi-côté du carré) :
+//   dst, quad_px  bbox du carré projeté (sortie 0..1, px)
+//   fx, src_prev  coins TL, TR puis BR, BL, en px locaux à la bbox (comme au mode 13)
+//   mb.x          1 = warp projectif (caméra réelle)
+//   mb.y, mb.z    rayon et opacité de la tache de pression
+//   src           rayon de l'anneau, sa demi-épaisseur, son opacité, celle de son halo sombre
+//   dst_prev      le carré en fractions du plan (x, y, l, h) : rien n'est dessiné hors de l'écran
+//   radius_px     largeur de l'antialiasing
+//   color         teinte de l'anneau (rgb), opacité du curseur (a)
+
+/// L'impact part du creux de `tap`, l'instant du contact : la pression y est au plus fort.
+const IMPACT_DELAY_S: f32 = 0.0495;
+/// Durée de l'anneau.
+const IMPACT_S: f32 = 0.4;
+/// Demi-côté du carré de l'impact, en tailles de curseur, à `clickBounce` par défaut.
+const IMPACT_EXTENT: f32 = 0.7;
+
+/// L'impact d'un clic, `age` secondes après lui, à la force `strength` (`clickBounce` rapporté à
+/// sa valeur par défaut). `None` hors de sa fenêtre.
+///
+/// L'anneau part de 12 % du carré et s'arrête à 80 % en décélérant (cubique), s'amincit de moitié
+/// et s'éteint en `(1 − u)²`. La tache de pression, elle, ne dure que le contact et son rebond.
+fn impact_at(age: f32, strength: f32) -> Option<Impact> {
+    let u = (age - IMPACT_DELAY_S) / IMPACT_S;
+    if !(0.0..1.0).contains(&u) {
+        return None;
+    }
+    let smooth = |a: f32, b: f32, x: f32| {
+        let v = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        v * v * (3.0 - 2.0 * v)
+    };
+    let grow = 1.0 - (1.0 - u).powi(3);
+    let fade = (1.0 - u).powi(2) * smooth(0.0, 0.05, u) * strength.min(1.0);
+    Some(Impact {
+        ring_r: 0.12 + 0.68 * grow,
+        ring_w: 0.05 * (1.0 - 0.5 * grow),
+        ring_a: 0.9 * fade,
+        halo_a: 0.3 * fade,
+        spot_r: 0.3,
+        spot_a: 0.3 * (1.0 - smooth(0.0, 0.45, u)) * smooth(0.0, 0.05, u) * strength.min(1.0),
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Impact {
+    ring_r: f32,
+    ring_w: f32,
+    ring_a: f32,
+    halo_a: f32,
+    spot_r: f32,
+    spot_a: f32,
+}
+
+/// `LayerCB` de l'impact (mode 16) centré sur le point du plan de `placement`, carré de demi-côté
+/// `half_px` (px du rect d'écran non incliné, l'unité de la taille du curseur). `None` pour un
+/// placement droit : le curseur modélisé a toujours un plan.
+fn cursor_impact_cb(
+    placement: CursorPlacement,
+    half_px: f32,
+    impact: Impact,
+    alpha: f32,
+) -> Option<LayerCB> {
+    let CursorPlacement::Tilted { plane_pt, quad, center_px, screen_px, render_px: [rw, rh] } =
+        placement
+    else {
+        return None;
+    };
+    let (hx, hy) = (half_px / screen_px[0], half_px / screen_px[1]);
+    let (x0, y0) = (plane_pt[0] - hx, plane_pt[1] - hy);
+    let corners = [(x0, y0), (x0 + 2.0 * hx, y0), (x0 + 2.0 * hx, y0 + 2.0 * hy), (x0, y0 + 2.0 * hy)]
+        .map(|(fx, fy)| {
+            let (px, py) = quad.point_px(fx, fy);
+            (center_px[0] + px, center_px[1] + py)
+        });
+    let (min_x, max_x) =
+        corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
+    let (min_y, max_y) =
+        corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| (mn.min(y), mx.max(y)));
+    let (bw, bh) = ((max_x - min_x).max(1.0), (max_y - min_y).max(1.0));
+    let local = |(x, y): (f32, f32)| [x - min_x, y - min_y];
+    let [tl0, tl1] = local(corners[0]);
+    let [tr0, tr1] = local(corners[1]);
+    let [br0, br1] = local(corners[2]);
+    let [bl0, bl1] = local(corners[3]);
+    Some(LayerCB {
+        dst: [min_x / rw, min_y / rh, bw / rw, bh / rh],
+        src: [impact.ring_r, impact.ring_w, impact.ring_a, impact.halo_a],
+        quad_px: [bw, bh],
+        // Un px à l'écran, en fractions du demi-côté, pris sur le petit axe de la bbox.
+        radius_px: 2.0 / bw.min(bh),
+        mode: 16.0,
+        color: [1.0, 1.0, 1.0, alpha],
+        fx: [tl0, tl1, tr0, tr1],
+        src_prev: [br0, br1, bl0, bl1],
+        dst_prev: [x0, y0, 2.0 * hx, 2.0 * hy],
+        mb: [quad.warp_flag(), impact.spot_r, impact.spot_a, 0.0],
     })
 }
 
@@ -4396,9 +4534,9 @@ mod tests {
         if o > 0.0 { o.hypot(d.max(0.0)) } else { d }
     }
 
-    /// Miroir CPU de `sd_model`.
-    fn sd_model(sdf: &crate::cursor_sdf::CursorSdf, shape: SpriteShape, p: [f32; 3]) -> f32 {
-        let half_t = MODEL_THICK * 0.5;
+    /// Miroir CPU de `sd_model`, écrasé à `squash`.
+    fn sd_model(sdf: &crate::cursor_sdf::CursorSdf, shape: SpriteShape, squash: f32, p: [f32; 3]) -> f32 {
+        let half_t = MODEL_THICK * squash * 0.5;
         let w = [sd2(sdf, shape, [p[0], p[1]]) + MODEL_BEVEL, (p[2] + half_t).abs() - (half_t - MODEL_BEVEL)];
         w[0].max(w[1]).min(0.0) + w[0].max(0.0).hypot(w[1].max(0.0)) - MODEL_BEVEL
     }
@@ -4419,7 +4557,7 @@ mod tests {
             pose,
         );
         let l = plane_to_model(view.light(), pose);
-        let (lo, hi) = shape.model_box();
+        let (lo, hi) = shape.model_box(pose.squash);
         let (mut t0, mut t1) = (f32::MIN, f32::MAX);
         for k in 0..3 {
             let inv = 1.0 / if l[k].abs() > 1e-6 { l[k] } else { 1e-6 };
@@ -4431,7 +4569,7 @@ mod tests {
         if t0 < t1 && t1 > 0.0 {
             let mut t = t0.max(0.004);
             for _ in 0..32 {
-                let d = sd_model(sdf, shape, [q[0] + l[0] * t, q[1] + l[1] * t, q[2] + l[2] * t]);
+                let d = sd_model(sdf, shape, pose.squash, [q[0] + l[0] * t, q[1] + l[1] * t, q[2] + l[2] * t]);
                 lit = lit.min(MODEL_SOFTNESS * d / t);
                 if lit < 0.002 || t > t1 {
                     break;
@@ -4441,13 +4579,13 @@ mod tests {
             let r = lit.clamp(0.0, 1.0);
             lit = r * r * (3.0 - 2.0 * r);
         }
-        let u = (sd_model(sdf, shape, q) / MODEL_CONTACT_RADIUS).clamp(0.0, 1.0);
+        let u = (sd_model(sdf, shape, pose.squash, q) / MODEL_CONTACT_RADIUS).clamp(0.0, 1.0);
         let contact = 1.0 - u * u * (3.0 - 2.0 * u);
         ((1.0 - lit) * 0.5).max(contact * 0.5)
     }
 
     /// Le point le plus bas du modèle posé, en unités au-dessus du plan. Pour un tangage ≥ 0, le
-    /// plus bas d'une colonne (x, y) pleine est le bas de sa colonne : `-MODEL_THICK` sous le plat
+    /// plus bas d'une colonne (x, y) pleine est le bas de sa colonne : l'épaisseur sous le plat
     /// du dessous, relevé sur le chanfrein (`sd_model`, résolu en z).
     fn lowest_point(view: &ModelView, sdf: &crate::cursor_sdf::CursorSdf) -> f32 {
         let shape = view.shape;
@@ -4462,7 +4600,7 @@ mod tests {
                     continue;
                 }
                 let wx = (s + MODEL_BEVEL).max(0.0);
-                let z = -MODEL_THICK + MODEL_BEVEL - (MODEL_BEVEL * MODEL_BEVEL - wx * wx).sqrt();
+                let z = -MODEL_THICK * view.pose.squash + MODEL_BEVEL - (MODEL_BEVEL * MODEL_BEVEL - wx * wx).sqrt();
                 lowest = lowest.min(view.model_to_plane([x, y, z])[2]);
             }
         }
@@ -4646,7 +4784,7 @@ mod tests {
         assert!((half.pitch - full.pitch * 0.5).abs() < 1e-6 && (half.yaw - full.yaw * 0.5).abs() < 1e-6);
         // À plat, le lift est l'épaisseur : toute la face du dessous est au sol.
         let (_, text) = sprite_model("text");
-        assert_eq!(text.contact_lift(0.0), MODEL_THICK);
+        assert_eq!(text.contact_lift(0.0, 1.0), MODEL_THICK);
     }
 
     #[test]
@@ -4752,7 +4890,7 @@ mod tests {
             let hotspot = [-x0 / size[0], -y0 / size[1]];
             assert!((hotspot[0] - shape.hotspot[0]).abs() < 1e-6 && (hotspot[1] - shape.hotspot[1]).abs() < 1e-6);
             assert!((size[0] - shape.size[0]).abs() < 1e-6 && (size[1] - shape.size[1]).abs() < 1e-6);
-            assert_eq!(cb.color[2], shape.texel);
+            assert_eq!(cb.color[2], pose.squash, "{name}: écrasement");
             assert_eq!([cb.mb[2], cb.mb[3]], view.offset, "{name}: translation du plan");
             assert!(shape.size[0].max(shape.size[1]) == 1.0, "{name}: {:?}", shape.size);
         }
@@ -4901,6 +5039,90 @@ mod tests {
         println!("pire écart au contact : {worst:.4} px");
     }
 
+    /// L'impact : seulement sous le curseur modélisé, après un clic et à `clickBounce` non nul ;
+    /// il démarre au contact, dure 0,4 s, et son carré est centré sur le pixel du clic brut, posé
+    /// sur le plan (il penche avec lui).
+    #[test]
+    fn the_click_impact_rings_around_the_raw_click_pixel() {
+        const TC: f32 = 1.5;
+        let raw = approach_track([0.08, 0.05], [0.3, 0.18], [0.45, 0.32], 2.0, 0.0, TC);
+        let track: &'static crate::cursor::CursorTrack = Box::leak(Box::new(raw.smoothed(0.5)));
+        let quiet: &'static crate::cursor::CursorTrack =
+            Box::leak(Box::new(crate::cursor::CursorTrack::new(vec![(0.0, 0.3, 0.18), (4.0, 0.3, 0.18)], vec![], vec![])));
+        for rotation in [r#""rotation":"none""#, r#""rotation":"iso""#, r#""rotation":"follow-cursor""#] {
+            let impacts = |track, t| model_frame(rotation, 0.0, track, t).1.expect("curseur").impacts;
+            assert!(impacts(quiet, TC + 0.1).is_empty(), "{rotation}: pas de clic, pas d'impact");
+            assert!(impacts(track, TC + 0.04).is_empty(), "{rotation}: avant le contact");
+            assert!(impacts(track, TC + IMPACT_DELAY_S + IMPACT_S + 0.001).is_empty(), "{rotation}: après");
+            for age in [0.06, 0.1, 0.2, 0.4] {
+                let (g, plan) = model_frame(rotation, 0.0, track, TC + age);
+                let cb = &plan.expect("curseur").impacts;
+                assert_eq!(cb.len(), 1, "{rotation} +{age}");
+                let cb = cb[0];
+                assert_eq!(cb.mode, 16.0);
+                // Le centre du carré (s = t = 0,5) : l'inverse du quad dans le shader.
+                let c = |i: usize| -> [f32; 2] {
+                    let v = [cb.fx[0], cb.fx[1], cb.fx[2], cb.fx[3], cb.src_prev[0], cb.src_prev[1], cb.src_prev[2], cb.src_prev[3]];
+                    [v[2 * i] + cb.dst[0] * 1170.0, v[2 * i + 1] + cb.dst[1] * 658.0]
+                };
+                let (tl, tr, br, bl) = (c(0), c(1), c(2), c(3));
+                let center = if cb.mb[0] > 0.5 {
+                    let q = crate::regions::square_to_quad(&[(tl[0], tl[1]), (tr[0], tr[1]), (br[0], br[1]), (bl[0], bl[1])], 0.5, 0.5);
+                    [q.0, q.1]
+                } else {
+                    [(tl[0] + tr[0] + br[0] + bl[0]) / 4.0, (tl[1] + tr[1] + br[1] + bl[1]) / 4.0]
+                };
+                let want = content_px(&g, (0.3, 0.18));
+                assert!(
+                    (center[0] - want[0]).abs() < 0.05 && (center[1] - want[1]).abs() < 0.05,
+                    "{rotation} +{age}: impact en {center:?}, clic en {want:?}"
+                );
+                assert!(cb.src[0] > 0.0 && cb.src[0] <= 0.8 && cb.src[2] > 0.0, "{rotation} +{age}: {:?}", cb.src);
+            }
+            // L'anneau grandit et s'éteint.
+            let ring = |age: f32| impact_at(age, 1.0).expect("dans la fenêtre");
+            assert!(ring(0.1).ring_r < ring(0.3).ring_r && ring(0.1).ring_a > ring(0.3).ring_a);
+            assert!(ring(0.08).spot_a > 0.2 && ring(0.3).spot_a == 0.0);
+        }
+        // Réglage éteint, ou `clickBounce` nul : rien.
+        let cfg = crate::config::all().pop().expect("cfg");
+        let scene = model_scene();
+        let fg = full_frame_geometry();
+        let plan = |model3d: bool, bounce: f32| {
+            plan_cursor(
+                &fg,
+                &CursorPlanInput {
+                    render_px: [1920.0, 1080.0],
+                    u_max: 1.0,
+                    v_max: 1.0,
+                    cfg: &cfg,
+                    live: LiveParams { cursor_model3d: model3d, cursor_bounce_scale: bounce, ..LiveParams::default() },
+                    scene: Some(&scene),
+                    track,
+                    t: TC + 0.1,
+                },
+            )
+            .expect("plan")
+            .impacts
+            .len()
+        };
+        assert_eq!((plan(true, 2.5), plan(false, 2.5), plan(true, 0.0)), (1, 0, 0));
+    }
+
+    /// L'écrasement suit le contact : neutre au repos, l'épaisseur au plus bas au creux, un léger
+    /// rebond ensuite, et rien à `clickBounce` nul.
+    #[test]
+    fn the_model_squashes_on_the_click() {
+        let track = still_track(vec![0.5]);
+        assert_eq!(cursor_pose(&track, 0.45, 2.5, 1.0).squash, 1.0);
+        let down = cursor_pose(&track, 0.5 + CONTACT_S, 2.5, 1.0);
+        assert!((down.squash - (1.0 - MODEL_SQUASH)).abs() < 1e-3, "{down:?}");
+        let rebound = cursor_pose(&track, 0.5 + 0.165, 2.5, 1.0);
+        assert!(rebound.squash > 1.0 && rebound.squash < 1.06, "{rebound:?}");
+        assert_eq!(cursor_pose(&track, 0.5 + CONTACT_S, 0.0, 1.0).squash, 1.0);
+        assert!(cursor_pose(&track, 0.5 + CONTACT_S, 5.0, 1.0).squash >= MODEL_SQUASH_MIN);
+    }
+
     #[test]
     fn the_model_box_holds_the_model_and_its_shadow() {
         for (name, plan, shape, sdf) in model_cases() {
@@ -4910,7 +5132,7 @@ mod tests {
             let (x0, y0) = (cb.dst[0] * 1920.0, cb.dst[1] * 1080.0);
             let (x1, y1) = (x0 + cb.quad_px[0], y0 + cb.quad_px[1]);
             let inside = |p: [f32; 2]| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
-            let (lo, hi) = shape.model_box();
+            let (lo, hi) = shape.model_box(pose.squash);
             let mut solid = 0;
             for i in 0..=20 {
                 for j in 0..=30 {
@@ -4920,7 +5142,7 @@ mod tests {
                             lo[1] + (hi[1] - lo[1]) * j as f32 / 30.0,
                             lo[2] + (hi[2] - lo[2]) * k as f32 / 6.0,
                         ];
-                        if sd_model(&sdf, shape, q) > 0.0 {
+                        if sd_model(&sdf, shape, pose.squash, q) > 0.0 {
                             continue;
                         }
                         solid += 1;

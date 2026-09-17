@@ -22,8 +22,8 @@ struct Layer {
     src: vec4<f32>,       // u0,v0,u1,v1 source 0..1 ; mode 14 : .x = 1 si warp projectif ; mode 15 : (decalage px du rayon, P, unite du modele px)
     quad_px: vec2<f32>,   // taille du quad en px de sortie (pour la SDF isotrope)
     radius_px: f32,       // mode 15 : rapport w/h du sprite (son plus grand cote vaut 1 unite)
-    mode: f32,            // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre, 8 = écran tilté, 9 = flèche, 10 = flou/mosaïque, 12 = ombre du quad tilté, 13 = curseur tilté, 14 = cadre de fenetre, 15 = curseur modelise
-    color: vec4<f32>,     // mode 8 (camera reelle) : .xy = gradient d'eclairage ; mode 14 : fond de la barre de titre ; mode 15 : .rg = coin du sprite (unites du modele), .b = un texel du sprite, .a = opacite
+    mode: f32,            // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre, 8 = écran tilté, 9 = flèche, 10 = flou/mosaïque, 12 = ombre du quad tilté, 13 = curseur tilté, 14 = cadre de fenetre, 15 = curseur modelise, 16 = impact du clic (emplacements : `cursor_impact_cb`)
+    color: vec4<f32>,     // mode 8 (camera reelle) : .xy = gradient d'eclairage ; mode 14 : fond de la barre de titre ; mode 15 : .rg = coin du sprite (unites du modele), .b = ecrasement de l'epaisseur, .a = opacite
     fx: vec4<f32>,        // mode 2 : spread ombre en px ; mode 5 : (direction xy, temps programme replie, mouvement 0..3) ; modes 8/12/13/14 : coins TL,TR du quad projeté ; mode 9 : hampe de la flèche ; mode 10 : (flou?, rayon/bloc px, ovale?, teinté?) ; mode 15 : (rotation du plan X, Y, Z en rad, tangage)
     src_prev: vec4<f32>,  // modes 8/12/13/14 : coins BR,BL du quad projeté ; mode 9 : barbe 1 ; mode 10 incliné : coins BR,BL du masque ; mode 15 : (hotspot du dessus, repere du plan en px ; lacet)
     dst_prev: vec4<f32>,  // mode 8 : .xy = taille du plan en px AVANT projection (le rayon y vit), .z = 1 si coins hauts carres (sous un cadre), .w = 1 si warp projectif ; mode 14 : .xy = taille du plan du cadre, .z = hauteur de la barre, .w = epaisseur du filet (px du plan) ; modes 13 et 15 : rect de clip ; mode 9 : barbe 2 ; mode 10 incliné : coins TL,TR du masque
@@ -393,6 +393,18 @@ fn sprite_size() -> vec2<f32> {
     return vec2<f32>(min(layer.radius_px, 1.0), min(1.0 / layer.radius_px, 1.0));
 }
 
+// Un texel du sprite, en unites du modele : le champ est le sprite surechantillonne x4.
+const CURSOR_SDF_UPSAMPLE: f32 = 4.0;
+fn sprite_texel() -> f32 {
+    let d = vec2<f32>(textureDimensions(texU));
+    return CURSOR_SDF_UPSAMPLE / max(d.x, d.y);
+}
+
+// Epaisseur du modele, ecrase au clic de `color.b`.
+fn model_thick() -> f32 {
+    return MODEL_THICK * layer.color.b;
+}
+
 fn sd_sprite2(p: vec2<f32>) -> f32 {
     let lo = layer.color.rg;
     let c = clamp(p, lo, lo + sprite_size());
@@ -405,7 +417,7 @@ fn sd_sprite2(p: vec2<f32>) -> f32 {
 }
 
 fn sd_model(p: vec3<f32>) -> f32 {
-    let half_t = MODEL_THICK * 0.5;
+    let half_t = model_thick() * 0.5;
     let w = vec2<f32>(sd_sprite2(p.xy) + MODEL_BEVEL, abs(p.z + half_t) - (half_t - MODEL_BEVEL));
     return min(max(w.x, w.y), 0.0) + length(max(w, vec2<f32>(0.0))) - MODEL_BEVEL;
 }
@@ -478,10 +490,11 @@ fn model_soft_shadow(o: vec3<f32>, l: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -
 }
 
 fn model_albedo(p: vec2<f32>) -> vec3<f32> {
-    let e = 0.25 * layer.color.b;
+    let texel = sprite_texel();
+    let e = 0.25 * texel;
     let g = vec2<f32>(sd_sprite2(p + vec2<f32>(e, 0.0)) - sd_sprite2(p - vec2<f32>(e, 0.0)),
                       sd_sprite2(p + vec2<f32>(0.0, e)) - sd_sprite2(p - vec2<f32>(0.0, e)));
-    let q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * layer.color.b, 0.0);
+    let q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * texel, 0.0);
     return textureSampleLevel(texY, samp, (q - layer.color.rg) / sprite_size(), 0.0).rgb;
 }
 
@@ -505,7 +518,7 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
     let persp = layer.src.z;
     let unit = layer.src.w;
     let tip = layer.src_prev.xyz;
-    let lo = vec3<f32>(layer.color.rg, -MODEL_THICK);
+    let lo = vec3<f32>(layer.color.rg, -model_thick());
     let hi = vec3<f32>(layer.color.rg + sprite_size(), 0.0);
 
     let dw = vec3<f32>(local + layer.src.xy, -persp);
@@ -563,6 +576,25 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
 
     let a = cov * layer.color.a;
     return vec4<f32>(rgb * a, a + (1.0 - a) * shadow * layer.color.a); // premultiplie, ombre noire
+}
+
+// ---- Impact du clic (mode 16) ----
+// Port ligne pour ligne de `cursor_impact` (HLSL), dont les commentaires font foi.
+fn cursor_impact(local: vec2<f32>) -> vec4<f32> {
+    let r = quad_inverse(local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw, layer.mb.x);
+    let pf = layer.dst_prev.xy + r.xy * layer.dst_prev.zw;
+    if r.z < 0.5 || any(pf < vec2<f32>(0.0)) || any(pf > vec2<f32>(1.0)) {
+        return vec4<f32>(0.0);
+    }
+    let d = length(r.xy * 2.0 - vec2<f32>(1.0));
+    let x = abs(d - layer.src.x);
+    let aa = layer.radius_px;
+    let ring = layer.src.z * (1.0 - smoothstep(layer.src.y - aa, layer.src.y + aa, x));
+    let halo = layer.src.w * exp(-x * x / (6.0 * layer.src.y * layer.src.y + aa * aa));
+    let spot = layer.mb.z * exp(-d * d / max(layer.mb.y * layer.mb.y, 1e-6));
+    let shade = clamp(halo + spot, 0.0, 1.0);
+    let a = ring + (1.0 - ring) * shade;
+    return vec4<f32>(layer.color.rgb * ring, a) * layer.color.a; // premultiplie, ombre noire
 }
 
 @fragment
@@ -909,6 +941,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
         }
         return cursor_model(i.local);
+    } else if layer.mode > 15.5 && layer.mode < 16.5 {
+        // Mode 16 -- impact du clic sous le curseur modelise (`cursor_impact`).
+        return cursor_impact(i.local);
     } else {
         // Mode 2 — ombre portée (SDF d'un quad arrondi élargi de `fx.x`).
         let spread = layer.fx.x;

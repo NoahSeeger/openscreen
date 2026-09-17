@@ -2006,6 +2006,10 @@ impl Compositor {
                     .map(|s| s.cursor.cursor_sprites.clone())
                     .unwrap_or_default();
                 let cursor_type = plan.cursor_type.as_deref();
+                // L'impact des clics (mode 16, sans texture), posé sur l'écran SOUS le curseur.
+                for cb in &plan.impacts {
+                    self.draw_solid(cb);
+                }
                 if plan.taps <= 1 {
                     self.draw_cur_themed(
                         &cursor_sprites,

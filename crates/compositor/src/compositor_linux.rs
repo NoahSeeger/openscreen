@@ -2682,6 +2682,8 @@ impl Compositor {
             /// Le sprite, et pour le curseur modelise son champ de distance.
             _tex: Vec<(wgpu::Texture, wgpu::TextureView)>,
             binds: Vec<wgpu::BindGroup>,
+            /// L'impact des clics (mode 16), dessine SOUS le curseur, sur le RT.
+            impacts: Vec<wgpu::BindGroup>,
         }
         let cursor_draw: Option<CursorDraw> = (|| {
             let track = cursor_ref.as_ref()?;
@@ -2725,6 +2727,12 @@ impl Compositor {
                     .collect()
             };
             let (mut bufs, mut binds) = (Vec::new(), Vec::new());
+            let mut impacts = Vec::new();
+            for cb in &plan.impacts {
+                let (buf, bind) = self.make_bind(cb, None, &dummy);
+                bufs.push(buf);
+                impacts.push(bind);
+            }
 
             let sprites = scene_ref
                 .as_ref()
@@ -2780,6 +2788,7 @@ impl Compositor {
                             _bufs: bufs,
                             _tex: vec![(tex, view), (sdf, sdf_view)],
                             binds,
+                            impacts,
                         });
                     }
                     Err(e) => eprintln!("[curseur] champ de \"{}\" : {e:#}", sprite.path),
@@ -2803,7 +2812,7 @@ impl Compositor {
                 bufs.push(buf);
                 binds.push(bind);
             }
-            Some(CursorDraw { _bufs: bufs, _tex: vec![(tex, view)], binds })
+            Some(CursorDraw { _bufs: bufs, _tex: vec![(tex, view)], binds, impacts })
         })();
         // Bind group de la passe de composition d'`accum` (layout du blur :
         // uniform + texture + sampler). Construit hors de la pass, comme les
@@ -2979,6 +2988,11 @@ impl Compositor {
             rpass.set_pipeline(&self.pipeline);
             for a in &ann_draws {
                 rpass.set_bind_group(0, &a.bind, &[]);
+                rpass.draw(0..4, 0..1);
+            }
+            // L'impact des clics, sous le curseur et sa trainee (dessinee plus bas).
+            for bind in cursor_draw.iter().flat_map(|c| &c.impacts) {
+                rpass.set_bind_group(0, bind, &[]);
                 rpass.draw(0..4, 0..1);
             }
             // Curseur en dernier : au-dessus de l'ecran et des annotations.
@@ -5070,6 +5084,99 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Pendant de `tests/cursor_tap_render.rs` (Windows) : sous un lissage qui traine loin
+    /// derriere la souris, la pointe du modele se pose sur la pastille rouge du clic, et l'anneau
+    /// de l'impact (mode 16) l'entoure, a plat et incline.
+    #[test]
+    fn the_modelled_tip_taps_the_marked_click_target() {
+        let Some(gpu) = gpu() else { return };
+        let comp = Compositor::new_sized(&gpu, 1280, 720).expect("Compositor::new_sized");
+        let (w, h) = (640u32, 360u32);
+        // Pastille de 5 texels au centre d'un bloc de chroma : symetrique, chroma comprise.
+        let (tx, ty) = (193.0f32, 129.0f32);
+        let red = |x: f32, y: f32| (x - tx).hypot(y - ty) <= 5.0;
+        let (mut yp, mut uvp) = model_screen_planes(false);
+        for row in 0..h {
+            for col in 0..w {
+                if red(col as f32 + 0.5, row as f32 + 0.5) {
+                    yp[(row * w + col) as usize] = 63;
+                }
+            }
+        }
+        for row in 0..h / 2 {
+            for col in 0..w / 2 {
+                if red(2.0 * col as f32 + 1.0, 2.0 * row as f32 + 1.0) {
+                    let i = (row * w + 2 * col) as usize;
+                    uvp[i] = 102;
+                    uvp[i + 1] = 240;
+                }
+            }
+        }
+        let screen = FakeFrame::from_planes(&gpu, w, h, &yp, &uvp);
+        // Arrivee sur la cible a 1,9 s, depart a 2,1 s, clic a `tc` ; lisse a 0,5.
+        let target = (tx / w as f32, ty / h as f32);
+        let gesture = |tc: f32| {
+            let samples = (0..=240)
+                .map(|k| {
+                    let t = k as f32 / 60.0;
+                    let (x, y) = if t < 1.9 {
+                        let f = t / 1.9;
+                        (0.1 + (target.0 - 0.1) * f, 0.8 + (target.1 - 0.8) * f)
+                    } else if t < 2.1 {
+                        target
+                    } else {
+                        let f = ((t - 2.1) / 0.5).min(1.0);
+                        (target.0 + 0.3 * f, target.1 + 0.2 * f)
+                    };
+                    (t, x, y)
+                })
+                .collect();
+            crate::cursor::CursorTrack::new(samples, vec![tc], vec![(0.0, "arrow".to_string())]).smoothed(0.5)
+        };
+        let (contact, ring) = (gesture(2.0 - 0.0495), gesture(2.0 - 0.16));
+        let px = |b: &[u8], x: i32, y: i32| {
+            let i = ((y * 1280 + x) * 4) as usize;
+            [b[i] as i32, b[i + 1] as i32, b[i + 2] as i32]
+        };
+        let is_red = |p: [i32; 3]| p[0] > p[1] + 60 && p[0] > p[2] + 60;
+        for rotation in ["null", r#""iso""#] {
+            let json = model_scene_json(rotation, Some(true), "default", true, 3.0);
+            let hidden = json.replace(r#""rotation":"#, r#""hideCursor":true,"rotation":"#);
+            let quiet = json.replace(r#""clickBounce":2.5"#, r#""clickBounce":0"#);
+            let bare = compose_model(&comp, &screen, &hidden, &contact);
+            let (mut sx, mut sy, mut n) = (0.0f32, 0.0f32, 0.0f32);
+            for y in 0..720 {
+                for x in 0..1280 {
+                    if is_red(px(&bare, x, y)) {
+                        (sx, sy, n) = (sx + x as f32 + 0.5, sy + y as f32 + 0.5, n + 1.0);
+                    }
+                }
+            }
+            assert!(n > 10.0, "{rotation}: pastille introuvable");
+            let m = [sx / n, sy / n];
+            let touch = compose_model(&comp, &screen, &json, &contact);
+            model_save(&format!("tap-{}", if rotation == "null" { "flat" } else { "iso" }), &touch);
+            assert!(!is_red(px(&touch, m[0] as i32, (m[1] + 2.0) as i32)), "{rotation}: la pointe manque la pastille");
+            // L'ecart du a l'impact, le long de deux demi-droites (haut, gauche) : meme rayon, a la
+            // perspective pres sous `iso` (l'anneau y est une ellipse).
+            let (on, off) = (compose_model(&comp, &screen, &json, &ring), compose_model(&comp, &screen, &quiet, &ring));
+            let peak = |dx: i32, dy: i32| {
+                (4..45)
+                    .map(|r| {
+                        let (a, b) = (px(&on, m[0] as i32 + dx * r, m[1] as i32 + dy * r), px(&off, m[0] as i32 + dx * r, m[1] as i32 + dy * r));
+                        ((0..3).map(|c| (a[c] - b[c]).abs()).sum::<i32>(), r)
+                    })
+                    .max()
+                    .unwrap()
+            };
+            let (up, left) = (peak(0, -1), peak(-1, 0));
+            println!("{rotation} : pastille en {m:?}, anneau haut {up:?}, gauche {left:?}");
+            assert!(up.0 > 60 && left.0 > 60, "{rotation}: anneau absent ({up:?} {left:?})");
+            let tol = if rotation == "null" { 1 } else { 2 };
+            assert!((up.1 - left.1).abs() <= tol, "{rotation}: anneau decentre ({up:?} {left:?})");
+        }
     }
 
     // -----------------------------------------------------------------------

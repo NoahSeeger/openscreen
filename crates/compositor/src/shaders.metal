@@ -417,6 +417,19 @@ inline float2 sprite_size(constant Layer &layer)
     return float2(min(layer.radius_px, 1.0), min(1.0 / layer.radius_px, 1.0));
 }
 
+// Un texel du sprite, en unités du modèle : le champ est le sprite suréchantillonné ×4.
+constant float CURSOR_SDF_UPSAMPLE = 4.0;
+inline float sprite_texel(texture2d<float, access::sample> texSdf)
+{
+    return CURSOR_SDF_UPSAMPLE / float(max(texSdf.get_width(), texSdf.get_height()));
+}
+
+// Épaisseur du modèle, écrasé au clic de `color.b`.
+inline float model_thick(constant Layer &layer)
+{
+    return MODEL_THICK * layer.color.b;
+}
+
 static float sd_sprite2(float2 p, constant Layer &layer, texture2d<float, access::sample> texSdf)
 {
     float2 lo = layer.color.rg;
@@ -430,7 +443,7 @@ static float sd_sprite2(float2 p, constant Layer &layer, texture2d<float, access
 
 static float sd_model(float3 p, constant Layer &layer, texture2d<float, access::sample> texSdf)
 {
-    float half_t = MODEL_THICK * 0.5;
+    float half_t = model_thick(layer) * 0.5;
     float2 w = float2(sd_sprite2(p.xy, layer, texSdf) + MODEL_BEVEL,
                       abs(p.z + half_t) - (half_t - MODEL_BEVEL));
     return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - MODEL_BEVEL;
@@ -517,11 +530,12 @@ static float model_soft_shadow(float3 o, float3 l, float3 lo, float3 hi, constan
 static float3 model_albedo(float2 p, constant Layer &layer, texture2d<float, access::sample> texSdf,
                            texture2d<float, access::sample> texImg)
 {
-    float e = 0.25 * layer.color.b;
+    float texel = sprite_texel(texSdf);
+    float e = 0.25 * texel;
     float2 g = float2(sd_sprite2(p + float2(e, 0.0), layer, texSdf) - sd_sprite2(p - float2(e, 0.0), layer, texSdf),
                       sd_sprite2(p + float2(0.0, e), layer, texSdf) - sd_sprite2(p - float2(0.0, e), layer, texSdf));
     float2 q = p - g / max(length(g), 1e-6) *
-                       max(sd_sprite2(p, layer, texSdf) + MODEL_RIM_INSET * layer.color.b, 0.0);
+                       max(sd_sprite2(p, layer, texSdf) + MODEL_RIM_INSET * texel, 0.0);
     return texImg.sample(samp, (q - layer.color.rg) / sprite_size(layer), level(0.0)).rgb;
 }
 
@@ -551,7 +565,7 @@ static float4 cursor_model(float2 local, constant Layer &layer,
     float persp = layer.src.z;
     float unit = layer.src.w;
     float3 tip = layer.src_prev.xyz;
-    float3 lo = float3(layer.color.rg, -MODEL_THICK);
+    float3 lo = float3(layer.color.rg, -model_thick(layer));
     float3 hi = float3(layer.color.rg + sprite_size(layer), 0.0);
 
     float3 dw = float3(local + layer.src.xy, -persp);
@@ -619,6 +633,27 @@ static float4 cursor_model(float2 local, constant Layer &layer,
     return float4(rgb * a, a + (1.0 - a) * shadow * layer.color.a); // prémultiplié, ombre noire
 }
 
+// ============ Impact du clic (mode 16) ============
+// Port ligne pour ligne de `cursor_impact` (HLSL), dont les commentaires font foi.
+static float4 cursor_impact(float2 local, constant Layer &layer)
+{
+    float3 r = quad_inverse(local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw, layer.mb.x);
+    float2 pf = layer.dst_prev.xy + r.xy * layer.dst_prev.zw;
+    if (r.z < 0.5 || any(pf < 0.0) || any(pf > 1.0))
+    {
+        return float4(0.0);
+    }
+    float d = length(r.xy * 2.0 - 1.0);
+    float x = abs(d - layer.src.x);
+    float aa = layer.radius_px;
+    float ring = layer.src.z * (1.0 - smoothstep(layer.src.y - aa, layer.src.y + aa, x));
+    float halo = layer.src.w * exp(-x * x / (6.0 * layer.src.y * layer.src.y + aa * aa));
+    float spot = layer.mb.z * exp(-d * d / max(layer.mb.y * layer.mb.y, 1e-6));
+    float shade = clamp(halo + spot, 0.0, 1.0);
+    float a = ring + (1.0 - ring) * shade;
+    return float4(layer.color.rgb * ring, a) * layer.color.a; // prémultiplié, ombre noire
+}
+
 fragment float4 ps_main(VSOut i [[stage_in]],
                         constant Layer &layer [[buffer(0)]],
                         texture2d<float, access::sample> texY [[texture(0)]],
@@ -633,6 +668,12 @@ fragment float4 ps_main(VSOut i [[stage_in]],
                         // modes 7 et 13.
                         texture2d<float, access::sample> texSdf [[texture(4)]])
 {
+    // mode 16 : IMPACT DU CLIC (`cursor_impact`). Testé en premier, comme le mode 15.
+    if (layer.mode > 15.5)
+    {
+        return cursor_impact(i.local, layer);
+    }
+
     // mode 15 : CURSEUR MODÉLISÉ (`cursor_model`). Testé en premier : les branches suivantes
     // n'ont pas de borne haute. dst_prev = rect de clip « Clip to canvas », comme au mode 13.
     if (layer.mode > 14.5)

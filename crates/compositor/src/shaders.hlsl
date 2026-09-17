@@ -7,8 +7,8 @@ cbuffer Layer : register(b0)
     float4 src;       // u0,v0,u1,v1 dans l'espace source 0..1 ; mode 15 : décalage px du rayon, P, U
     float2 quad_px;   // taille du quad en pixels (pour les SDF)
     float  radius_px; // rayon des coins arrondis en px (0 = aucun)
-    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, 4 = curseur, 15 = curseur 3D
-    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : coin du sprite, texel, opacité
+    float  mode;      // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre portée, 4 = curseur, 15 = curseur 3D, 16 = impact du clic
+    float4 color;     // couleur pleine / teinte (ombre : rgb + opacité dans a) ; mode 15 : coin du sprite, écrasement, opacité
     float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres ; mode 15 : rotation du plan (rad), tangage
     float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité) ; mode 15 : hotspot, lacet
     float4 dst_prev;  // dst à la frame précédente ; modes 13 et 15 : rect de clip
@@ -362,6 +362,22 @@ float2 sprite_size()
 {
     return float2(min(radius_px, 1.0), min(1.0 / radius_px, 1.0));
 }
+
+// Un texel du sprite, en unités du modèle : le champ est le sprite suréchantillonné ×4
+// (`cursor_sdf::SDF_UPSAMPLE`) et le plus grand côté du sprite vaut 1.
+static const float CURSOR_SDF_UPSAMPLE = 4.0;
+float sprite_texel()
+{
+    uint w, h;
+    texSdf.GetDimensions(w, h);
+    return CURSOR_SDF_UPSAMPLE / (float)max(w, h);
+}
+
+// Épaisseur du modèle, écrasé au clic de `color.b` (`CursorPose::squash`).
+float model_thick()
+{
+    return MODEL_THICK * color.b;
+}
 static const float MODEL_BEVEL = 0.045;
 // Direction VERS la lumière, repère caméra : haut-gauche, devant.
 static const float3 MODEL_LIGHT = float3(-0.4194, -0.5792, 0.6990);
@@ -399,7 +415,7 @@ float sd_sprite2(float2 p)
 // regonflé : les arêtes du dessus et du dessous sont arrondies de MODEL_BEVEL.
 float sd_model(float3 p)
 {
-    float half_t = MODEL_THICK * 0.5;
+    float half_t = model_thick() * 0.5;
     float2 w = float2(sd_sprite2(p.xy) + MODEL_BEVEL, abs(p.z + half_t) - (half_t - MODEL_BEVEL));
     return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - MODEL_BEVEL;
 }
@@ -491,13 +507,14 @@ float model_soft_shadow(float3 o, float3 l, float3 lo, float3 hi)
 // Couleur de la matière au point `p` du plan xy (alpha droit) : l'art du sprite, lu au plus à
 // MODEL_RIM_INSET texels du bord vers l'intérieur. Le dessus garde donc son art, et le chanfrein,
 // les flancs et le dessous prennent la couleur du bord de CE sprite (le filet blanc de la flèche,
-// le trait noir des mains), jamais la frange mêlée au transparent. `color.b` = un texel.
+// le trait noir des mains), jamais la frange mêlée au transparent.
 float3 model_albedo(float2 p)
 {
-    float e = 0.25 * color.b;
+    float texel = sprite_texel();
+    float e = 0.25 * texel;
     float2 g = float2(sd_sprite2(p + float2(e, 0.0)) - sd_sprite2(p - float2(e, 0.0)),
                       sd_sprite2(p + float2(0.0, e)) - sd_sprite2(p - float2(0.0, e)));
-    float2 q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * color.b, 0.0);
+    float2 q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * texel, 0.0);
     return texImg.SampleLevel(samp, (q - color.rg) / sprite_size(), 0.0).rgb;
 }
 
@@ -527,7 +544,7 @@ float4 cursor_model(float2 local)
     float unit = src.w;
     float3 tip = src_prev.xyz;
     // La boîte du modèle : le rect du sprite, sur toute l'épaisseur.
-    float3 lo = float3(color.rg, -MODEL_THICK);
+    float3 lo = float3(color.rg, -model_thick());
     float3 hi = float3(color.rg + sprite_size(), 0.0);
 
     // Le rayon de ce pixel : de la caméra (0, 0, P) à travers le pixel sur le plan image z = 0.
@@ -601,8 +618,39 @@ float4 cursor_model(float2 local)
     return float4(rgb * a, a + (1.0 - a) * shadow * color.a); // prémultiplié, ombre noire
 }
 
+// ============ Impact du clic (mode 16) ============
+// Sous le curseur modélisé : une tache de pression et un anneau posés SUR l'écran, centrés sur le
+// point cliqué. Même warp que le mode 13 (fx/src_prev = coins, mb.x = 1 : projectif) ; le carré
+// (s, t) porte un disque, d = 0 au point cliqué et 1 sur le cercle inscrit. src = anneau (rayon,
+// demi-épaisseur, opacité, opacité du halo sombre) ; mb.yz = tache (rayon, opacité) ; dst_prev =
+// le carré en fractions du plan, pour ne rien dessiner hors de l'écran ; radius_px = largeur de
+// l'antialiasing ; color = teinte de l'anneau et opacité. Emplacements : `cursor_impact_cb`.
+float4 cursor_impact(float2 local)
+{
+    float3 r = quad_inverse(local, fx.xy, fx.zw, src_prev.xy, src_prev.zw, mb.x);
+    float2 pf = dst_prev.xy + r.xy * dst_prev.zw;
+    if (r.z < 0.5 || any(pf < 0.0) || any(pf > 1.0))
+    {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    float d = length(r.xy * 2.0 - 1.0);
+    float x = abs(d - src.x);
+    float ring = src.z * (1.0 - smoothstep(src.y - radius_px, src.y + radius_px, x));
+    float halo = src.w * exp(-x * x / (6.0 * src.y * src.y + radius_px * radius_px));
+    float spot = mb.z * exp(-d * d / max(mb.y * mb.y, 1e-6));
+    float shade = saturate(halo + spot);
+    float a = ring + (1.0 - ring) * shade;
+    return float4(color.rgb * ring, a) * color.a; // prémultiplié, ombre noire
+}
+
 float4 ps_main(VSOut i) : SV_Target
 {
+    // mode 16 : IMPACT DU CLIC (cf. `cursor_impact`). Testé en premier, comme le mode 15.
+    if (mode > 15.5)
+    {
+        return cursor_impact(i.local);
+    }
+
     // mode 15 : CURSEUR MODÉLISÉ (cf. `cursor_model`). Testé en premier : les branches suivantes
     // n'ont pas de borne haute. dst_prev = rect de clip « Clip to canvas », comme au mode 13.
     if (mode > 14.5)
