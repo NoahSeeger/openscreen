@@ -203,7 +203,9 @@ silhouette du sprite de l'état courant.
   Extrudé de 0,19 unité, chanfrein arrondi de 0,045. Normales par gradient du champ.
 - **Liaison** : sprite en t2 / `texture(2)` / binding 1 (`texY`), champ en t4 / `texture(4)` /
   binding 2 (`texU`) sur Windows / macOS / Linux. Le cbuffer porte le coin du sprite
-  (`color.rg`), sa taille (`mb.zw`) et un texel (`color.b`).
+  (`color.rg`), son rapport w/h (`radius_px`) et l'écrasement du clic (`color.b`, cf. B.5). Le
+  texel du sprite se tire de la taille du champ (`SDF_UPSAMPLE` / plus grand côté) : même valeur
+  au bit près que l'ancien emplacement.
 - **Matières** : celles du sprite. Le dessus porte son art (alpha droit, comme aux modes 7 et 13) ;
   le chanfrein, les flancs et le dessous lisent l'art à 1,5 texel à l'intérieur de la silhouette,
   le long du gradient du champ : la couleur du bord de CE sprite (filet blanc de la flèche, trait
@@ -267,6 +269,76 @@ Deux décisions :
   états centrés (face du dessous au sol), +1,6 à +1,8 % d'unité pour les pointeurs (le chanfrein
   arrondit le coin qui touche), sous le seuil testé de 2 %.
 - **Pas de rebond d'échelle** en 3D : le contact le remplace.
+- **Écrasement** : sur la même courbe `tap()`, l'épaisseur descend à 70 % au creux, puis le
+  rebond l'épaissit un instant (104,8 % à 165 ms). Fois `clickBounce / 2,5`, jamais sous 55 %
+  (deux chanfreins et un peu de flanc). Le dessus descend, le point le plus bas reste posé, le
+  hotspot reste sur son pixel. L'empreinte, elle, ne change pas : un étalement de 5 % défaisait
+  l'égalité « curseur centré posé = son sprite » de B.3.
+
+### B.5.1 Le contact tombe sur le pixel cliqué
+
+**Ce qui clochait.** L'application passe au compositeur la piste **lissée** (`smoothed`, le
+ressort du réglage « smoothing ») ; les clics gardent leurs instants bruts, mais la piste lissée
+traîne derrière la souris. Le modèle se posait donc à côté de la cible. Mesuré par
+`the_modelled_tip_touches_the_raw_click_pixel` (scène dorée 1170×658, recadrée, zoom 2), écart
+entre la pointe au contact et le pixel du clic brut :
+
+| geste | lissage 0 | 0,25 | 0,5 | 1 |
+|---|---|---|---|---|
+| arrêt de 150 ms autour du clic, arrivée à 0,5 écran/s | 0 px | 6 à 8 px | 58 à 71 px | 105 à 127 px |
+| idem, arrivée à 2 écrans/s | 0 px | 22 à 27 px | 137 à 166 px | 208 à 251 px |
+| clic au vol (la souris repart aussitôt), 0,5 écran/s | 75 à 91 px | 59 à 72 px | 153 à 185 px | 209 à 252 px |
+
+S'y ajoutait la traînée de flou, étalée de 2 à 16 copies pendant le contact.
+
+**Correction** (`CursorTrack::pinned_at`, fonction pure de `t`). La piste garde la position
+brute de chaque clic (`click_points`, conservée par `smoothed`). Le curseur modélisé est posé sur
+`at(t)` tiré vers ce point : poids en smoothstep sur les 250 ms qui précèdent le clic, 1 pendant
+les 100 ms qui suivent (le contact, 27 à 74 ms, plus une image à 24 i/s), retour en smoothstep
+sur 250 ms. Continue et de pente continue ; hors de ces fenêtres, `at(t)` à l'identique. La
+traînée lit la même position, donc se replie sur la tête pendant le contact. Le lacet vise aussi
+le point brut.
+
+Après : 0,0001 px au pire, sur les cinq caméras (plat, `iso`, `left`, `right` avec impact du
+plan, `follow-cursor`), quatre lissages, deux vitesses, avec et sans arrêt, flèche et main. Sur
+le rendu D3D11 d'une maquette dont les cibles portent une pastille rouge
+(`tests/cursor_tap_render.rs`, lissage 0,5) : la pointe est à 0,13 à 0,35 px du centre mesuré de
+la pastille, à plat, en `iso` et sous la caméra réelle, et la couvre.
+
+Le sprite plat garde `at(t)` : son rendu reste celui d'avant à l'octet.
+
+### B.5.2 L'impact du clic (mode 16)
+
+Sous le curseur modélisé, chaque clic laisse une trace **sur** l'écran, centrée sur le point
+cliqué brut :
+
+- **tache de pression** : un disque sombre gaussien (rayon 0,3 du carré, opacité 0,3), qui
+  apparaît au creux et s'éteint en ~180 ms ;
+- **anneau** : un trait blanc net (demi-épaisseur 5 % du carré, qui s'amincit de moitié) bordé
+  d'un halo sombre doux (opacité 0,3), qui part de 12 % du carré et s'arrête à 80 % en
+  décélérant (cubique), et s'éteint en `(1 − u)²`. Le blanc se lit sur un contenu coloré ou
+  sombre, le halo sur un fond blanc.
+
+**Temps** : il part du creux de la pression (49,5 ms après le clic, l'instant du contact de
+`tap()`, `bounce()` et de l'impact du plan) et dure 400 ms. À 30 i/s, la première image du
+contact (33 ms) montre le curseur posé, la suivante (67 ms) l'anneau naissant.
+**Taille** : le carré a un demi-côté de 0,7 taille de curseur (l'anneau finit donc à 0,56
+taille, ~40 px pour un curseur de taille 4 en 720p). **Réglage** : `clickBounce / 2,5`
+multiplie les opacités (plafond 1) et règle la taille (`0,75 + 0,25 × force`) ; 0 = rien.
+Seulement quand `model3d` est allumé (un curseur sans modèle n'a pas de contact).
+
+**Rendu** : un carré du plan centré sur le point, dont les coins passent par la projection du
+contenu (`TiltedQuad::point_px`), comme le sprite du mode 13 ; le shader inverse le warp
+(bilinéaire sous un angle fixe, projectif sous la caméra réelle) et dessine un disque dans le
+carré. L'anneau est donc posé sur le plan : ellipse sous `iso`, perspective exacte sous
+`follow-cursor`. Rien n'est dessiné hors de l'écran. Rust porte la courbe dans le temps
+(`impact_at`) ; les trois shaders ne dessinent que la forme de l'instant (`cursor_impact`).
+Dessiné sous le curseur et sa traînée ; le backend logiciel le garde. Emplacements du cbuffer :
+en tête de la section « Impact du clic » de `frame_geometry.rs`.
+
+Vérifié : centre du carré sur le pixel du clic à 0,05 px près (plat, `iso`, `follow-cursor`) ;
+sur le rendu D3D11 et lavapipe, l'écart dû à l'anneau culmine au même rayon au-dessus et à gauche
+de la pastille ; plus rien après sa fenêtre.
 
 ### B.6 Boîte, traînée, coût
 
@@ -283,8 +355,11 @@ Deux décisions :
   dans les mêmes conditions. Une lecture de texture coûte moins que les dix arêtes du polygone.
 - **Mémoire** : un champ par sprite chargé, sans éviction ; les seize sprites du thème pèsent
   ~2,6 Mo de R16F.
-- **`LayerCB`** reste à 128 octets ; l'emploi des emplacements au mode 15 est documenté en tête
-  de la section « Curseur modélisé » de `frame_geometry.rs` et dans les trois structs de shader.
+- **`LayerCB`** reste à 128 octets ; l'emploi des emplacements aux modes 15 et 16 est documenté
+  en tête des sections « Curseur modélisé » et « Impact du clic » de `frame_geometry.rs` et dans
+  les trois structs de shader.
+- **Traînée au contact** : elle lit la position convergée (B.5.1), donc se replie sur une seule
+  copie pendant le contact.
 
 ### B.7 Limites
 
@@ -297,6 +372,11 @@ Deux décisions :
 - Le repli math de Windows (mode 4, sans sprite) reste plat.
 - L'ombre s'arrête au bord du rect de l'écran, pas à ses coins arrondis.
 - Le MSL n'est compilé et exécuté que par la CI macOS.
+- Le sprite plat et l'impact du plan (`regions::click_impact`, qui lit `at(t_c)` sur la piste
+  lissée) ne convergent pas sur le point brut : leur rendu reste celui d'avant à l'octet. Sous un
+  lissage fort, le rebond du sprite plat tombe donc à côté de la cible.
+- L'impact du mode 16 ne passe pas par les portes de celui du plan (vitesse ≥ 2×, flou de
+  confidentialité visible, fenêtre du clip).
 
 ---
 
@@ -307,6 +387,7 @@ Deux décisions :
 | **6** | `feat(zoom): add the follow-cursor 3D camera` | `rotationPreset` étendu (`follow-cursor`), caméra réelle dans `camera.rs`, warp projectif (modes 8, 10, 13, 14), un seul sélecteur, i18n ×14 | chantier 3D (PR 1, 2b) |
 | **7** | `feat(cursor): model the default arrow in 3D` | `cursor.model3d`, mode 15, pose, ombre, retrait de `volume`/`hover` | PR 6 |
 | **7b** | `feat(cursor): model every default cursor state in 3D` | champ de distance tiré de chaque sprite (`cursor_sdf.rs`), mode 15 générique, pose selon le hotspot, i18n ×14 | 7 |
+| **7c** | `feat(cursor): tap the screen where the click happened` | convergence sur le point cliqué brut, écrasement, impact (mode 16), vidéo de revue | 7b |
 | **8** | `feat(zoom): dolly the camera` | distance de fuite par région, dolly-zoom | PR 6 |
 | **9** | `feat(cursor): the cursor picks things up` *(plus tard)* | long press : le plan reste pressé pendant un glisser (v1 §PR 2b « Later ») | 7 |
 
