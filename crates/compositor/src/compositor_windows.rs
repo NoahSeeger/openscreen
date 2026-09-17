@@ -1778,8 +1778,6 @@ impl Compositor {
         let mb_taps = g.mb_taps;
         let mb_amount = g.mb_amount;
         let source_t = g.source_t;
-        let zoom_rotation = g.zoom_rotation;
-        let zoom_rotation_dyn = g.zoom_rotation_dyn;
         let _padding_scale = g.padding_scale;
         let cut = g.cut;
         let s_dst = g.s_dst;
@@ -1922,7 +1920,7 @@ impl Compositor {
         let render_px = [self.rw(), self.rh()];
         if cfg.shadow {
             let spread = SCREEN_SHADOW_SPREAD_FRAC * frame_min_px;
-            let offset = [0.0, SCREEN_SHADOW_OFFSET_FRAC * frame_min_px];
+            let offset = g.screen_shadow_offset();
             let opacity = 0.45 * lp.shadow_scale;
             match g.shadow_caster(render_px) {
                 ShadowCaster::Upright { dst, size_px, radius } => {
@@ -1940,7 +1938,33 @@ impl Compositor {
             self.draw_solid(&cb);
         }
         let square_top = g.screen_square_top();
-        if crate::regions::is_identity_rotation(zoom_rotation) {
+        if let Some(quad) = tilt {
+            // Écran incliné (angle fixe) ou vu par la caméra réelle : warp inverse du mode 8 dans
+            // la bbox du quad projeté (`tilted_screen_cb`, partagé). Les coins arrondis y sont
+            // rendus dans le repère DU PLAN : sans eux le plan a des arêtes de couteau qui
+            // tranchent le contenu en pleine phrase, et l'œil lit une découpe là où il devrait
+            // lire une inclinaison.
+            // t2 EXPLICITE : `draw_video` ne lie que t0/t1, et t2 garde sinon ce que le draw
+            // précédent y a laissé (un wallpaper, un sprite). `None` quand l'effet est coupé :
+            // `k = 0`, le shader n'y lit rien.
+            self.ctx.PSSetShaderResources(2, Some(&[dof_srv.clone()]));
+            self.draw_video(
+                &crate::frame_geometry::tilted_screen_cb(
+                    &quad,
+                    s_px,
+                    quad_center_px,
+                    [su0, sv0, su0 + 2.0 * hu, sv0 + 2.0 * hv],
+                    g.focus_plane,
+                    s_radius,
+                    square_top,
+                    dof,
+                    render_px,
+                ),
+                &sy,
+                &suv,
+            );
+            self.ctx.PSSetShaderResources(2, Some(&[None]));
+        } else {
             self.draw_video(
                 &LayerCB {
                     dst: s_dst,
@@ -1957,72 +1981,6 @@ impl Compositor {
                 &sy,
                 &suv,
             );
-        } else {
-            // Tilt 3D (zoom "rotation" iso/left/right) : warp bilinéaire inverse (mode 8, voir
-            // shaders.hlsl). Pas de motion blur dans ce chemin — le tilt est un effet bref, la
-            // simplification ne se voit pas. Les coins arrondis, eux, se voyaient : sans eux le
-            // plan a des arêtes de couteau qui tranchent le contenu en pleine phrase, et l'œil lit
-            // une découpe (« un overflow hidden qui tronque l'enregistrement ») là où il devrait
-            // lire une inclinaison. Ils sont donc rendus, dans le repère DU PLAN.
-            let quad = tilt.unwrap_or_else(|| {
-                crate::regions::tilted_quad(
-                    s_px[0],
-                    s_px[1],
-                    zoom_rotation,
-                    zoom_rotation_dyn,
-                    g.zoom_moving,
-                )
-            });
-            let corners = quad.corners;
-            // Taille du plan dans son propre repère, avant projection : c'est là que vit le rayon,
-            // pour qu'il reste un rayon constant le long du bord et non un arrondi qui s'étire avec
-            // la perspective.
-            let plane_px = [s_px[0] * quad.scale, s_px[1] * quad.scale];
-            let (cx_px, cy_px) = (quad_center_px[0], quad_center_px[1]);
-            let (min_x, max_x) = corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| {
-                (mn.min(x), mx.max(x))
-            });
-            let (min_y, max_y) = corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| {
-                (mn.min(y), mx.max(y))
-            });
-            let bbox_w = (max_x - min_x).max(1.0);
-            let bbox_h = (max_y - min_y).max(1.0);
-            let bbox_dst = [
-                (cx_px + min_x) / self.rw(),
-                (cy_px + min_y) / self.rh(),
-                bbox_w / self.rw(),
-                bbox_h / self.rh(),
-            ];
-            // coins en px LOCAUX à la bbox (0..bbox_w/h), pour matcher `i.local` du shader.
-            let local = |(x, y): (f32, f32)| -> [f32; 2] { [x - min_x, y - min_y] };
-            let [tl0, tl1] = local(corners[0]);
-            let [tr0, tr1] = local(corners[1]);
-            let [br0, br1] = local(corners[2]);
-            let [bl0, bl1] = local(corners[3]);
-            // t2 EXPLICITE : `draw_video` ne lie que t0/t1, et t2 garde sinon ce que le draw
-            // précédent y a laissé (un wallpaper, un sprite). `None` quand l'effet est coupé :
-            // `k = 0`, le shader n'y lit rien.
-            self.ctx.PSSetShaderResources(2, Some(&[dof_srv.clone()]));
-            self.draw_video(
-                &LayerCB {
-                    dst: bbox_dst,
-                    src: [su0, sv0, su0 + 2.0 * hu, sv0 + 2.0 * hv],
-                    quad_px: [bbox_w, bbox_h],
-                    // Le rayon suit la réduction du plan : l'écran incliné est plus petit, ses
-                    // coins le sont d'autant, exactement comme s'il s'éloignait.
-                    radius_px: s_radius * quad.scale,
-                    mode: 8.0,
-                    fx: [tl0, tl1, tr0, tr1],
-                    src_prev: [br0, br1, bl0, bl1],
-                    dst_prev: [plane_px[0], plane_px[1], square_top, 0.0],
-                    // Gradient de profondeur du plan, profondeur du focus et `k` (`depth_mb`).
-                    mb: quad.depth_mb(s_px, g.focus_plane, dof),
-                    ..Default::default()
-                },
-                &sy,
-                &suv,
-            );
-            self.ctx.PSSetShaderResources(2, Some(&[None]));
         }
 
         // --- curseur custom : suit le mapping src/dst (zoom+layout), click bounce,

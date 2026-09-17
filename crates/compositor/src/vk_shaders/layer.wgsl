@@ -19,15 +19,15 @@
 
 struct Layer {
     dst: vec4<f32>,       // x,y,w,h sortie 0..1 (origine haut-gauche)
-    src: vec4<f32>,       // u0,v0,u1,v1 source 0..1 ; mode 15 : (decalage px du rayon, P, unite du modele px)
+    src: vec4<f32>,       // u0,v0,u1,v1 source 0..1 ; mode 14 : .x = 1 si warp projectif ; mode 15 : (decalage px du rayon, P, unite du modele px)
     quad_px: vec2<f32>,   // taille du quad en px de sortie (pour la SDF isotrope)
-    radius_px: f32,
+    radius_px: f32,       // mode 15 : rapport w/h du sprite (son plus grand cote vaut 1 unite)
     mode: f32,            // 0 = vidéo NV12, 1 = couleur pleine, 2 = ombre, 8 = écran tilté, 9 = flèche, 10 = flou/mosaïque, 12 = ombre du quad tilté, 13 = curseur tilté, 14 = cadre de fenetre, 15 = curseur modelise
-    color: vec4<f32>,     // mode 14 : fond de la barre de titre ; mode 15 : .rg = coin du sprite (unites du modele), .b = un texel du sprite, .a = opacite
+    color: vec4<f32>,     // mode 8 (camera reelle) : .xy = gradient d'eclairage ; mode 14 : fond de la barre de titre ; mode 15 : .rg = coin du sprite (unites du modele), .b = un texel du sprite, .a = opacite
     fx: vec4<f32>,        // mode 2 : spread ombre en px ; mode 5 : (direction xy, temps programme replie, mouvement 0..3) ; modes 8/12/13/14 : coins TL,TR du quad projeté ; mode 9 : hampe de la flèche ; mode 10 : (flou?, rayon/bloc px, ovale?, teinté?) ; mode 15 : (rotation du plan X, Y, Z en rad, tangage)
     src_prev: vec4<f32>,  // modes 8/12/13/14 : coins BR,BL du quad projeté ; mode 9 : barbe 1 ; mode 10 incliné : coins BR,BL du masque ; mode 15 : (hotspot du dessus, repere du plan en px ; lacet)
-    dst_prev: vec4<f32>,  // mode 8 : .xy = taille du plan en px AVANT projection (le rayon y vit), .z = 1 si coins hauts carres (sous un cadre) ; mode 14 : .xy = taille du plan du cadre, .z = hauteur de la barre, .w = epaisseur du filet (px du plan) ; modes 13 et 15 : rect de clip ; mode 9 : barbe 2 ; mode 10 incliné : coins TL,TR du masque
-    mb: vec4<f32>,        // mode 8 : [gx, gy, z_focus, k], profondeur du plan et flou (texels source) par px d'ecart, k = 0 coupe ; mode 0 : .x taps, .y force du flou, .w = 1 si coins hauts carres (sous un cadre) ; mode 5 : mb.x = aspect w/h de la sortie (fond anime) ; mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné ; mode 14 : couleur du filet (alpha droit) ; mode 15 : .xy = demi-taille du plan dans son repere (px), .zw = taille du sprite (unites du modele)
+    dst_prev: vec4<f32>,  // mode 8 : .xy = taille du plan en px AVANT projection (le rayon y vit), .z = 1 si coins hauts carres (sous un cadre), .w = 1 si warp projectif ; mode 14 : .xy = taille du plan du cadre, .z = hauteur de la barre, .w = epaisseur du filet (px du plan) ; modes 13 et 15 : rect de clip ; mode 9 : barbe 2 ; mode 10 incliné : coins TL,TR du masque
+    mb: vec4<f32>,        // mode 8 : [gx, gy, z_focus, k], profondeur du plan et flou (texels source) par px d'ecart, k = 0 coupe ; mode 0 : .x taps, .y force du flou, .w = 1 si coins hauts carres (sous un cadre) ; mode 5 : mb.x = aspect w/h de la sortie (fond anime) ; mode 12 : mb.y = spread de la pénombre en px ; mode 9 : mb.y = demi-épaisseur du trait en px ; mode 10 : mb.z = 1 si masque incliné, mb.w = 1 si son warp est projectif ; mode 13 : mb.x = 1 si warp projectif ; mode 14 : couleur du filet (alpha droit) ; mode 15 : .xy = demi-taille du plan dans son repere (px), .zw = translation du plan (repere camera, px)
 }
 
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -227,6 +227,43 @@ fn quad_inverse_bilinear(P: vec2<f32>, c00: vec2<f32>, c10: vec2<f32>, c11: vec2
     return r1;
 }
 
+// (s, t, ok) du point `P` par l'homographie EXACTE du carre unite sur le quad (forme de Heckbert,
+// relative a c00), resolue a l'envers par Cramer : la projection d'un plan par la camera reelle.
+// Miroir du HLSL et de `regions::square_to_quad`.
+fn quad_inverse_projective(P: vec2<f32>, c00: vec2<f32>, c10: vec2<f32>, c11: vec2<f32>, c01: vec2<f32>) -> vec3<f32> {
+    let p1 = c10 - c00;
+    let p2 = c11 - c00;
+    let p3 = c01 - c00;
+    let d1 = p1 - p2;
+    let d2 = p3 - p2;
+    let d3 = p2 - p1 - p3;
+    let den = d1.x * d2.y - d2.x * d1.y;
+    let g = (d3.x * d2.y - d2.x * d3.y) / den;
+    let h = (d1.x * d3.y - d3.x * d1.y) / den;
+    let q = P - c00;
+    let m00 = p1.x * (1.0 + g) - g * q.x;
+    let m01 = p3.x * (1.0 + h) - h * q.x;
+    let m10 = p1.y * (1.0 + g) - g * q.y;
+    let m11 = p3.y * (1.0 + h) - h * q.y;
+    let det = m00 * m11 - m01 * m10;
+    let s = (q.x * m11 - m01 * q.y) / det;
+    let t = (m00 * q.y - q.x * m10) / det;
+    var ok = 0.0;
+    if s >= -0.02 && s <= 1.02 && t >= -0.02 && t <= 1.02 {
+        ok = 1.0;
+    }
+    return vec3<f32>(s, t, ok);
+}
+
+// Warp inverse d'un calque pose sur le plan : projectif sous la camera reelle (`projective` = 1),
+// bilineaire sous un angle fixe, inchange.
+fn quad_inverse(P: vec2<f32>, c00: vec2<f32>, c10: vec2<f32>, c11: vec2<f32>, c01: vec2<f32>, projective: f32) -> vec3<f32> {
+    if projective > 0.5 {
+        return quad_inverse_projective(P, c00, c10, c11, c01);
+    }
+    return quad_inverse_bilinear(P, c00, c10, c11, c01);
+}
+
 // Hash 2D -> [0,1) sans sin(). Miroir de `hash12` cote HLSL.
 fn hash12(p: vec2<f32>) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
@@ -336,7 +373,8 @@ fn blur_webcam_bg(uv: vec2<f32>, intensity: f32, qpx: vec2<f32>, local_px: vec2<
 // cbuffer : `cursor_model_cb`.
 // Textures : le sprite RGBA (alpha droit) au binding 1 (`texY`, comme aux modes 7 et 13), son
 // champ R16F au binding 2 (`texU`), sur le meme rect ; `color.rg` = coin du sprite dans le repere
-// du modele, `mb.zw` = sa taille, `color.b` = un texel du sprite (unites du modele).
+// du modele, `sprite_size()` = sa taille (w/h dans `radius_px`), `color.b` = un texel du sprite (unites
+// du modele).
 const MODEL_THICK: f32 = 0.19;
 const MODEL_BEVEL: f32 = 0.045;
 const MODEL_LIGHT = vec3<f32>(-0.4194, -0.5792, 0.6990);
@@ -350,11 +388,16 @@ const MODEL_SHADOW_ALPHA: f32 = 0.5;
 const MODEL_CONTACT_RADIUS: f32 = 0.12;
 const MODEL_CONTACT_ALPHA: f32 = 0.5;
 
+// Taille du sprite, repere du modele : son plus grand cote vaut 1, `radius_px` porte w/h.
+fn sprite_size() -> vec2<f32> {
+    return vec2<f32>(min(layer.radius_px, 1.0), min(1.0 / layer.radius_px, 1.0));
+}
+
 fn sd_sprite2(p: vec2<f32>) -> f32 {
     let lo = layer.color.rg;
-    let c = clamp(p, lo, lo + layer.mb.zw);
+    let c = clamp(p, lo, lo + sprite_size());
     // Niveau 0 explicite : la marche est une boucle a sortie anticipee (pas de derivees).
-    let d = textureSampleLevel(texU, samp, (c - lo) / layer.mb.zw, 0.0).r;
+    let d = textureSampleLevel(texU, samp, (c - lo) / sprite_size(), 0.0).r;
     let o = p - c;
     let out2 = dot(o, o);
     let e = max(d, 0.0);
@@ -439,7 +482,7 @@ fn model_albedo(p: vec2<f32>) -> vec3<f32> {
     let g = vec2<f32>(sd_sprite2(p + vec2<f32>(e, 0.0)) - sd_sprite2(p - vec2<f32>(e, 0.0)),
                       sd_sprite2(p + vec2<f32>(0.0, e)) - sd_sprite2(p - vec2<f32>(0.0, e)));
     let q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * layer.color.b, 0.0);
-    return textureSampleLevel(texY, samp, (q - layer.color.rg) / layer.mb.zw, 0.0).rgb;
+    return textureSampleLevel(texY, samp, (q - layer.color.rg) / sprite_size(), 0.0).rgb;
 }
 
 fn model_shade(q: vec3<f32>, rd: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
@@ -463,11 +506,12 @@ fn cursor_model(local: vec2<f32>) -> vec4<f32> {
     let unit = layer.src.w;
     let tip = layer.src_prev.xyz;
     let lo = vec3<f32>(layer.color.rg, -MODEL_THICK);
-    let hi = vec3<f32>(layer.color.rg + layer.mb.zw, 0.0);
+    let hi = vec3<f32>(layer.color.rg + sprite_size(), 0.0);
 
     let dw = vec3<f32>(local + layer.src.xy, -persp);
     let dlen = length(dw);
-    let ro = plane_to_model((world_to_plane(vec3<f32>(0.0, 0.0, persp), f) - tip) / unit, f);
+    // Plan translate de mb.zw dans le repere camera (camera reelle ; 0 sous un angle fixe).
+    let ro = plane_to_model((world_to_plane(vec3<f32>(-layer.mb.z, -layer.mb.w, persp), f) - tip) / unit, f);
     let rd = plane_to_model(world_to_plane(dw / dlen, f), f);
     let l = plane_to_model(world_to_plane(MODEL_LIGHT, f), f);
     let nz = plane_to_model(vec3<f32>(0.0, 0.0, 1.0), f);
@@ -645,15 +689,15 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
         // fx.x = 0 mosaique / 1 flou ; fx.y = taille de bloc px (mosaique) ou
         // rayon px (flou) ; fx.z = 0 rectangle / 1 ovale ; fx.w = 1 si teinte ;
         // mb.z = 1 si le masque est un quad incline (coins TL, TR dans dst_prev,
-        // BR, BL dans src_prev).
+        // BR, BL dans src_prev) ; mb.w = 1 si son warp est projectif.
         var n = i.local / max(layer.quad_px, vec2<f32>(1e-6));
         // Ecran incline : le masque est warpe comme le contenu qu'il cache
         // (`FrameGeometry::privacy_mask`), par le meme inverse que le mode 8.
         // Bord net, marge de 2 % comprise : un fondu rendrait le masque en
         // partie transparent SUR la zone a cacher.
         if layer.mb.z > 0.5 {
-            let wq = quad_inverse_bilinear(i.local, layer.dst_prev.xy, layer.dst_prev.zw,
-                                           layer.src_prev.xy, layer.src_prev.zw);
+            let wq = quad_inverse(i.local, layer.dst_prev.xy, layer.dst_prev.zw,
+                                  layer.src_prev.xy, layer.src_prev.zw, layer.mb.w);
             if wq.z < 0.5 {
                 return vec4<f32>(0.0, 0.0, 0.0, 0.0);
             }
@@ -727,13 +771,14 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     } else if layer.mode > 7.5 && layer.mode < 8.5 {
         // Mode 8 -- ecran tilte (rotation 3D des zoom regions). Le quad projete est
         // dessine dans sa BBOX (le VS ne sait tracer qu'un rect) et chaque fragment
-        // remonte au (s,t) du plan par warp bilineaire inverse.
+        // remonte au (s,t) du plan par warp inverse : bilineaire sous un angle fixe, projectif exact
+        // sous la camera reelle (dst_prev.w = 1), qui eclaire aussi le plan (color.xy).
         //
         // PAS de test de clip sur `dst_prev` : en mode 8 `dst_prev.xy` porte
         // `plane_px`, la taille du plan en PIXELS (~1600), la ou `i.pout` vit dans
         // [0,1]. Un clip la-dessus serait vrai partout et n'afficherait rien.
-        let r = quad_inverse_bilinear(
-            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw,
+        let r = quad_inverse(
+            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw, layer.dst_prev.w,
         );
         if r.z < 0.5 {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0); // hors du quad projete
@@ -768,6 +813,11 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
             let lod = clamp(log2(coc) - 1.0, 0.0, DOF_MAX_LOD);
             let far_rgb = textureSampleLevel(texMask, samp, uv, lod).rgb;
             tilt_rgb = mix(tilt_rgb, far_rgb, clamp((coc - 0.5) / 1.5, 0.0, 1.0));
+        }
+        if layer.dst_prev.w > 0.5 {
+            // La lampe de la camera reelle : le cote proche un peu plus clair.
+            let shade = 1.0 + layer.color.x * (rs.x - 0.5) + layer.color.y * (rs.y - 0.5);
+            tilt_rgb = clamp(tilt_rgb * shade, vec3<f32>(0.0), vec3<f32>(1.0));
         }
         // L'alpha est cette couverture, pas `color.a` : les draws du mode 8 laissent
         // `color` a zero, donc s'en servir rendrait un plan totalement transparent.
@@ -805,8 +855,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
             || i.pout.y < layer.dst_prev.y || i.pout.y > layer.dst_prev.y + layer.dst_prev.w {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
         }
-        let r = quad_inverse_bilinear(
-            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw,
+        // mb.x = 1 : warp projectif (camera reelle).
+        let r = quad_inverse(
+            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw, layer.mb.x,
         );
         if r.z < 0.5 {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -820,8 +871,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
         // Mode 14 -- CADRE DE FENETRE autour de l'ecran (barre de titre, trois pastilles,
         // filet), dessine SOUS lui. Meme warp que le mode 8 : le cadre est le quad de l'ecran
         // prolonge, il penche donc avec lui ; a plat le quad est un rect et le warp l'identite.
-        let r = quad_inverse_bilinear(
-            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw,
+        // src.x = 1 : warp projectif (camera reelle).
+        let r = quad_inverse(
+            i.local, layer.fx.xy, layer.fx.zw, layer.src_prev.xy, layer.src_prev.zw, layer.src.x,
         );
         if r.z < 0.5 {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0); // hors du cadre projete

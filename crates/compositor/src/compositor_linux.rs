@@ -44,7 +44,8 @@ pub use crate::frame_geometry::{
 };
 use crate::frame_geometry::{
     cursor_model_cb, cursor_sprite_cb, cursor_sprite_dst, parse_hex, plan_cursor, plan_frame,
-    CursorPlacement, CursorPlanInput, FrameGeometryInput, ShadowCaster, SpriteShape,
+    tilted_screen_cb, CursorPlacement, CursorPlanInput, FrameGeometryInput, ShadowCaster,
+    SpriteShape,
 };
 use crate::scene::{Scene, SceneBackground};
 
@@ -1165,58 +1166,6 @@ impl Compositor {
         }
     }
 
-    /// `LayerCB` de l'ecran incline (mode 8) : le quad projete est dessine dans sa
-    /// BBOX et le fragment remonte au (s,t) du plan par warp bilineaire inverse.
-    /// Port de `compositor_macos::draw_tilted_screen`. Pas de motion blur sur ce
-    /// chemin -- le tilt est bref, la simplification ne se voit pas.
-    fn tilted_screen_cb(
-        &self,
-        quad: &crate::regions::TiltedQuad,
-        s_px: [f32; 2],
-        center_px: [f32; 2],
-        cut: [f32; 4],
-        focus_plane: [f32; 2],
-        radius: f32,
-        dof: bool,
-    ) -> LayerCB {
-        let (rw, rh) = (self.render_w as f32, self.render_h as f32);
-        let corners = quad.corners;
-        // Taille du plan dans son propre repere, AVANT projection : c'est la que vit
-        // le rayon, pour qu'il reste constant le long du bord au lieu de s'etirer
-        // avec la perspective.
-        let plane_px = [s_px[0] * quad.scale, s_px[1] * quad.scale];
-        let (min_x, max_x) =
-            corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
-        let (min_y, max_y) =
-            corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| (mn.min(y), mx.max(y)));
-        let bbox_w = (max_x - min_x).max(1.0);
-        let bbox_h = (max_y - min_y).max(1.0);
-        // Coins en px LOCAUX a la bbox, pour matcher `i.local` du shader.
-        let local = |(x, y): (f32, f32)| -> [f32; 2] { [x - min_x, y - min_y] };
-        let [tl0, tl1] = local(corners[0]);
-        let [tr0, tr1] = local(corners[1]);
-        let [br0, br1] = local(corners[2]);
-        let [bl0, bl1] = local(corners[3]);
-        LayerCB {
-            dst: [
-                (center_px[0] + min_x) / rw,
-                (center_px[1] + min_y) / rh,
-                bbox_w / rw,
-                bbox_h / rh,
-            ],
-            src: cut,
-            quad_px: [bbox_w, bbox_h],
-            radius_px: radius * quad.scale,
-            mode: 8.0,
-            fx: [tl0, tl1, tr0, tr1],
-            src_prev: [br0, br1, bl0, bl1],
-            dst_prev: [plane_px[0], plane_px[1], 0.0, 0.0],
-            // Gradient de profondeur du plan, profondeur du focus et `k` (`depth_mb`).
-            mb: quad.depth_mb(s_px, focus_plane, dof),
-            ..Default::default()
-        }
-    }
-
     fn make_bind(
         &self,
         cb: &LayerCB,
@@ -2127,19 +2076,18 @@ impl Compositor {
                 mb: [g.mb_taps, g.mb_amount, 1.0, square_top],
                 ..Default::default()
             },
-            Some(quad) => {
-                let mut cb = self.tilted_screen_cb(
-                    quad,
-                    s_px,
-                    quad_center_px,
-                    g.cut,
-                    g.focus_plane,
-                    g.s_radius,
-                    dof,
-                );
-                cb.dst_prev[2] = square_top;
-                cb
-            }
+            // Mode 8, partage avec Windows et macOS (`tilted_screen_cb`).
+            Some(quad) => tilted_screen_cb(
+                quad,
+                s_px,
+                quad_center_px,
+                g.cut,
+                g.focus_plane,
+                g.s_radius,
+                square_top,
+                dof,
+                [rw, rh],
+            ),
         };
         // Bind group construit AVANT le pass (doit vivre pendant tout le pass) ;
         // `_screen_uniform` garde le buffer uniforme en vie (reference par le bind).
@@ -2185,7 +2133,7 @@ impl Compositor {
         // titre flotterait au-dessus de l'ombre.
         let screen_shadow = cfg.shadow.then(|| {
             let spread = crate::frame_geometry::SCREEN_SHADOW_SPREAD_FRAC * g.frame_min_px;
-            let offset = [0.0, crate::frame_geometry::SCREEN_SHADOW_OFFSET_FRAC * g.frame_min_px];
+            let offset = g.screen_shadow_offset();
             let opacity = 0.45 * lp.shadow_scale;
             let cb = match g.shadow_caster([rw, rh]) {
                 ShadowCaster::Upright { dst, size_px, radius } => {
@@ -5122,6 +5070,84 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Camera reelle (`follow-cursor`) : pendant de `tests/follow_camera_render.rs` (Windows).
+    // -----------------------------------------------------------------------
+
+    /// Le warp projectif du WGSL pose chaque ligne verticale d'une grille la ou la camera la
+    /// projette (`TiltedQuad::point_px`), a un quart de pixel pres, camera tournee a fond.
+    #[test]
+    fn the_follow_camera_warp_lands_every_grid_line_where_projected() {
+        let Some(gpu) = gpu() else { return };
+        let comp = Compositor::new_sized(&gpu, 1280, 720).expect("Compositor::new_sized");
+        let (w, h, grid) = (640u32, 360u32, 32u32);
+        let y: Vec<u8> = (0..w * h)
+            .map(|i| if (i % w) % grid < 2 || (i / w) % grid < 2 { 30 } else { 220 })
+            .collect();
+        let uv = vec![128u8; (w * (h / 2)) as usize];
+        let screen = FakeFrame::from_planes(&gpu, w, h, &y, &uv);
+        let json = model_scene_json(r#""follow-cursor""#, None, "none", true, 0.05)
+            .replace(r#""scale":1,"#, r#""scale":2.2,"#)
+            .replace(r#""roundnessFrac":0.03"#, r#""roundnessFrac":0"#);
+        let scene = crate::scene::Scene::from_json(&json).expect("scene json");
+        let track = crate::cursor::CursorTrack::new(vec![(0.0, 0.93, 0.08), (9.0, 0.93, 0.08)], vec![], vec![]);
+        let rgba = compose_model(&comp, &screen, &json, &track);
+        let cfg = {
+            let mut c = crate::config::Cfg::c8();
+            c.cursor = true;
+            c
+        };
+        let g = plan_frame(&FrameGeometryInput {
+            render_px: [1280.0, 720.0],
+            screen_tex_px: [w as f32, h as f32],
+            screen_visible_px: [w as f32, h as f32],
+            webcam_visible_px: [w as f32, h as f32],
+            u_max: 1.0,
+            v_max: 1.0,
+            frame: 0.0,
+            cfg: &cfg,
+            live: live_params_from_scene(&scene),
+            scene: Some(&scene),
+            cursor: Some(&track),
+            timeline_t_override: Some(2.0),
+            programme_time: None,
+        });
+        assert!(g.camera.is_some(), "la camera reelle doit etre posee");
+        let s_px = [g.s_dst[2] * 1280.0, g.s_dst[3] * 720.0];
+        let center = [(g.s_dst[0] + g.s_dst[2] * 0.5) * 1280.0, (g.s_dst[1] + g.s_dst[3] * 0.5) * 720.0];
+        let quad = g.screen_tilt(s_px).expect("quad de la camera");
+        let luma = |x: i32, y: i32| {
+            let i = ((y * 1280 + x) * 4) as usize;
+            0.2126 * rgba[i] as f32 + 0.7152 * rgba[i + 1] as f32 + 0.0722 * rgba[i + 2] as f32
+        };
+        let (mut worst, mut n) = (0.0f32, 0);
+        for k in 0..w / grid {
+            let u = (k * grid + 1) as f32 / w as f32;
+            for j in 0..h / grid {
+                let v = ((j * grid) as f32 + grid as f32 * 0.5 + 1.0) / h as f32;
+                let p = quad.point_px(u, v);
+                let (x, yy) = (center[0] + p.0, center[1] + p.1);
+                if !(40.0..1240.0).contains(&x) || !(40.0..680.0).contains(&yy) {
+                    continue;
+                }
+                // Barycentre de l'assombrissement sur la rangee, a +-8 px de la prevision.
+                let (mut sum, mut wsum) = (0.0f32, 0.0f32);
+                for dx in -8..=8 {
+                    let xi = x.round() as i32 + dx;
+                    let wgt = (200.0 - luma(xi, yy.floor() as i32)).max(0.0);
+                    (sum, wsum) = (sum + wgt * (xi as f32 + 0.5), wsum + wgt);
+                }
+                if wsum > 200.0 {
+                    worst = worst.max((sum / wsum - x).abs());
+                    n += 1;
+                }
+            }
+        }
+        println!("camera reelle : {n} points de grille, ecart au rendu {worst:.2} px");
+        assert!(n > 50, "trop peu de points visibles : {n}");
+        assert!(worst <= 0.25, "le rendu s'ecarte de la projection de {worst:.2} px");
     }
 }
 

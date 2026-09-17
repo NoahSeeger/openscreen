@@ -531,6 +531,9 @@ impl CursorPlacement {
                         lerp(quad.depth_k.1, quad_b.depth_k.1, f),
                     ),
                     rot: std::array::from_fn(|i| lerp(quad.rot[i], quad_b.rot[i], f)),
+                    perspective: lerp(quad.perspective, quad_b.perspective, f),
+                    offset: std::array::from_fn(|i| lerp(quad.offset[i], quad_b.offset[i], f)),
+                    projective: quad.projective,
                 },
                 center_px: [lerp(center_px[0], center_b[0], f), lerp(center_px[1], center_b[1], f)],
                 screen_px: [lerp(screen_px[0], screen_b[0], f), lerp(screen_px[1], screen_b[1], f)],
@@ -617,9 +620,88 @@ pub fn cursor_sprite_cb(
                 src_prev: [br0, br1, bl0, bl1],
                 // Le clip vit ici et NON dans `fx` (mode 7) : `fx` porte les coins.
                 dst_prev: clip,
+                // `mb.x` : 1 = warp projectif (caméra réelle).
+                mb: [quad.warp_flag(), 0.0, 0.0, 0.0],
                 ..Default::default()
             }
         }
+    }
+}
+
+/// Gain de l'éclairage de la caméra réelle : une lampe posée sur la caméra, dont la lumière
+/// décroît avec le carré de la distance. 1 = la décroissance physique ; moins, pour que le
+/// contenu reste lisible.
+pub const CAMERA_LIGHT_GAIN: f32 = 0.5;
+
+/// `LayerCB` de l'écran incliné (mode 8), pour les trois backends : le quad projeté est dessiné
+/// dans sa BBOX et le fragment remonte au (s, t) du plan par le warp inverse. Pas de flou de
+/// mouvement sur ce chemin : `src_prev`/`dst_prev` y portent déjà les coins et le plan.
+///
+/// - `src` : la coupe source en UV texture ; `center_px` : le centre du rect `s_px` à l'écran ;
+/// - `radius` : le rayon de l'écran droit, que le plan réduit de `quad.scale` ;
+/// - `square_top` : 1 sous un cadre de fenêtre (coins hauts carrés) ;
+/// - `dof` : la profondeur de champ tourne (`FrameGeometry::depth_of_field_on`).
+///
+/// Sous la caméra réelle (`quad.projective`) : `dst_prev.w` = 1 (warp projectif), et `color.xy`
+/// porte l'éclairage, `1 + color.x·(s − 0,5) + color.y·(t − 0,5)` : la lampe de la caméra, fixe
+/// dans le monde comme l'œil, éclaire un peu plus le côté proche. Nuls sous un angle fixe, dont le
+/// rendu reste celui d'avant à l'octet.
+#[allow(clippy::too_many_arguments)]
+pub fn tilted_screen_cb(
+    quad: &crate::regions::TiltedQuad,
+    s_px: [f32; 2],
+    center_px: [f32; 2],
+    src: [f32; 4],
+    focus_plane: [f32; 2],
+    radius: f32,
+    square_top: f32,
+    dof: bool,
+    render_px: [f32; 2],
+) -> LayerCB {
+    let [rw, rh] = render_px;
+    let corners = quad.corners;
+    // Taille du plan dans son propre repère, avant projection : c'est là que vit le rayon, pour
+    // qu'il reste constant le long du bord au lieu de s'étirer avec la perspective.
+    let plane_px = [s_px[0] * quad.scale, s_px[1] * quad.scale];
+    let (min_x, max_x) =
+        corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
+    let (min_y, max_y) =
+        corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(_, y)| (mn.min(y), mx.max(y)));
+    let bbox_w = (max_x - min_x).max(1.0);
+    let bbox_h = (max_y - min_y).max(1.0);
+    // Coins en px LOCAUX à la bbox, pour matcher `i.local` du shader.
+    let local = |(x, y): (f32, f32)| -> [f32; 2] { [x - min_x, y - min_y] };
+    let [tl0, tl1] = local(corners[0]);
+    let [tr0, tr1] = local(corners[1]);
+    let [br0, br1] = local(corners[2]);
+    let [bl0, bl1] = local(corners[3]);
+    let light = if quad.projective {
+        // Œil dans le repère du plan, et la dérivée de (d_centre / d)² au centre du plan.
+        let eye = crate::regions::rotate_point_inv(
+            [-quad.offset[0], -quad.offset[1], quad.perspective],
+            quad.rot,
+        );
+        let e2 = eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2];
+        let k = 2.0 * CAMERA_LIGHT_GAIN / e2.max(1e-6);
+        [k * plane_px[0] * eye[0], k * plane_px[1] * eye[1], 0.0, 0.0]
+    } else {
+        [0.0; 4]
+    };
+    LayerCB {
+        dst: [(center_px[0] + min_x) / rw, (center_px[1] + min_y) / rh, bbox_w / rw, bbox_h / rh],
+        src,
+        quad_px: [bbox_w, bbox_h],
+        // Le rayon suit la réduction du plan : l'écran incliné est plus petit, ses coins le sont
+        // d'autant, exactement comme s'il s'éloignait.
+        radius_px: radius * quad.scale,
+        mode: 8.0,
+        color: light,
+        fx: [tl0, tl1, tr0, tr1],
+        src_prev: [br0, br1, bl0, bl1],
+        dst_prev: [plane_px[0], plane_px[1], square_top, quad.warp_flag()],
+        // Gradient de profondeur du plan, profondeur du focus et `k` (`depth_mb`).
+        mb: quad.depth_mb(s_px, focus_plane, dof),
+        ..Default::default()
     }
 }
 
@@ -1038,9 +1120,9 @@ pub struct FrameGeometry {
     /// Part dynamique du tilt (parallaxe, `regions::dynamic_tilt`), ajoutée à la base à la
     /// projection. Nulle quand la base est neutre.
     pub zoom_rotation_dyn: [f32; 3],
-    /// Poids de la caméra mobile (`ZoomState::moving`) : 0 sous un angle fixe. Gèle l'échelle
-    /// de containment sur tout le chemin des poses (`regions::tilted_quad`).
-    pub zoom_moving: f32,
+    /// Caméra réelle de `follow-cursor` (`camera.rs`), `None` sans elle. Jamais en même temps
+    /// qu'une `zoom_rotation` non nulle.
+    pub camera: Option<crate::camera::CameraPose>,
     pub padding_scale: f32,
     /// Coupe source de l'écran en UV texture (crop utilisateur + zoom).
     pub cut: [f32; 4],
@@ -1106,16 +1188,25 @@ impl FrameGeometry {
     /// Le quad de l'écran incliné pour une boîte de `s_px` px, `None` quand l'écran est droit.
     /// LE point de passage de l'écran, de son ombre, du curseur et du masque de flou : tous
     /// doivent porter la même séparation base / dynamique, sinon ils se décollent.
+    ///
+    /// Sous la caméra réelle, c'est l'écran vu par elle (`camera::View::quad`), même boîte.
     pub fn screen_tilt(&self, s_px: [f32; 2]) -> Option<crate::regions::TiltedQuad> {
-        (!crate::regions::is_identity_rotation(self.zoom_rotation)).then(|| {
-            crate::regions::tilted_quad(
+        if let Some(pose) = self.camera {
+            return Some(crate::camera::View::new(s_px, pose).quad(s_px));
+        }
+        self.tilted().then(|| {
+            crate::regions::rotated_quad_corners_px(
                 s_px[0],
                 s_px[1],
                 self.zoom_rotation,
                 self.zoom_rotation_dyn,
-                self.zoom_moving,
             )
         })
+    }
+
+    /// L'écran passe-t-il par le plan projeté (modes 8, 12, 13, 14) plutôt que par le rect droit ?
+    pub fn tilted(&self) -> bool {
+        self.camera.is_some() || !crate::regions::is_identity_rotation(self.zoom_rotation)
     }
 
     /// La profondeur de champ tourne-t-elle sur CETTE frame ? Réglage allumé, écran réellement
@@ -1123,9 +1214,7 @@ impl FrameGeometry {
     /// `DOF_ON_CPU_BACKEND`). Une seule réponse pour les trois backends : elle décide à la fois
     /// du remplissage de la pyramide et du `k` du mode 8, qui ne doivent jamais diverger.
     pub fn depth_of_field_on(&self, cpu_backend: bool) -> bool {
-        self.depth_of_field
-            && !crate::regions::is_identity_rotation(self.zoom_rotation)
-            && (DOF_ON_CPU_BACKEND || !cpu_backend)
+        self.depth_of_field && self.tilted() && (DOF_ON_CPU_BACKEND || !cpu_backend)
     }
 
     /// `annotation_dst_in` appliqué à `s_ann`, pour les backends qui tiennent la géométrie
@@ -1167,8 +1256,13 @@ impl FrameGeometry {
     /// plan (1 à plat). Incliné, c'est le MÊME `TiltedQuad` que l'écran, prolongé au-delà de
     /// 0..1 : un warp bilinéaire est entièrement fixé par ses quatre coins, donc le prolonger
     /// donne exactement le plan que le mode 8 dessine, et le cadre penche avec l'écran sans
-    /// aucune trigonométrie de plus.
-    fn window_frame_corners(&self, frame: &WindowFrame, render_px: [f32; 2]) -> ([(f32, f32); 4], f32) {
+    /// aucune trigonométrie de plus. Sous la caméra réelle, le prolongement est celui de
+    /// l'homographie, et le drapeau rendu (`TiltedQuad::warp_flag`) le dit au mode 14.
+    fn window_frame_corners(
+        &self,
+        frame: &WindowFrame,
+        render_px: [f32; 2],
+    ) -> ([(f32, f32); 4], f32, f32) {
         let [ml, mt, mr, mb] = frame.margins;
         let quad = self.screen_tilt_in(render_px).unwrap_or_else(|| {
             let (hw, hh) = (self.s_dst[2] * render_px[0] * 0.5, self.s_dst[3] * render_px[1] * 0.5);
@@ -1177,6 +1271,9 @@ impl FrameGeometry {
                 scale: 1.0,
                 depth_k: (0.0, 0.0),
                 rot: [0.0; 3],
+                perspective: 0.0,
+                offset: [0.0; 2],
+                projective: false,
             }
         });
         let corners = [
@@ -1185,7 +1282,7 @@ impl FrameGeometry {
             quad.point_px(1.0 + mr, 1.0 + mb),
             quad.point_px(-ml, 1.0 + mb),
         ];
-        (corners, quad.scale)
+        (corners, quad.scale, quad.warp_flag())
     }
 
     /// Ce qui porte l'ombre portée : le cadre quand il y en a un — sinon l'ombre tomberait sous
@@ -1220,10 +1317,25 @@ impl FrameGeometry {
                 }
             }
             (Some(frame), Some(_)) => {
-                let (corners, scale) = self.window_frame_corners(frame, render_px);
+                let (corners, scale, _) = self.window_frame_corners(frame, render_px);
                 ShadowCaster::Tilted { corners, center_px, radius: frame.radius * scale }
             }
         }
+    }
+
+    /// Décalage de l'ombre portée de l'écran, en px de sortie : vers le bas sous un écran droit
+    /// ou un angle fixe (inchangé) ; sous la caméra réelle, le long de la lumière qui éclaire aussi
+    /// la flèche modélisée (`MODEL_LIGHT`), pour que les deux ombres tombent du même côté. La
+    /// direction glisse avec le poids de la caméra : aucun saut à l'entrée du zoom.
+    pub fn screen_shadow_offset(&self) -> [f32; 2] {
+        let off = SCREEN_SHADOW_OFFSET_FRAC * self.frame_min_px;
+        let Some(pose) = self.camera else { return [0.0, off] };
+        let (lx, ly) = (-MODEL_LIGHT[0], -MODEL_LIGHT[1]);
+        let n = lx.hypot(ly);
+        let w = pose.weight.clamp(0.0, 1.0);
+        let dir = [lx / n * w, ly / n * w + (1.0 - w)];
+        let len = dir[0].hypot(dir[1]).max(1e-6);
+        [off * dir[0] / len, off * dir[1] / len]
     }
 
     /// Le calque du cadre (mode 14), à dessiner après l'ombre et AVANT l'écran. `None` sans cadre.
@@ -1234,7 +1346,7 @@ impl FrameGeometry {
     pub fn window_frame_cb(&self, render_px: [f32; 2]) -> Option<LayerCB> {
         let frame = self.window_frame.as_ref()?;
         let [rw, rh] = render_px;
-        let (corners, scale) = self.window_frame_corners(frame, render_px);
+        let (corners, scale, warp) = self.window_frame_corners(frame, render_px);
         let center = self.screen_center_px(render_px);
         let (min_x, max_x) =
             corners.iter().fold((f32::MAX, f32::MIN), |(mn, mx), &(x, _)| (mn.min(x), mx.max(x)));
@@ -1255,6 +1367,8 @@ impl FrameGeometry {
         };
         Some(LayerCB {
             dst: [(center[0] + min_x) / rw, (center[1] + min_y) / rh, bbox[0] / rw, bbox[1] / rh],
+            // `src.x` : 1 = warp projectif (caméra réelle). Le mode 14 ne lit pas d'UV.
+            src: [warp, 0.0, 0.0, 0.0],
             quad_px: bbox,
             radius_px: frame.radius * scale,
             mode: 14.0,
@@ -1309,7 +1423,7 @@ impl FrameGeometry {
         let zoom_k =
             if self.s_ann[3] > 0.0 { (self.s_dst[3] / self.s_ann[3]).max(1.0) } else { 1.0 };
 
-        if crate::regions::is_identity_rotation(self.zoom_rotation) {
+        if !self.tilted() {
             // Le mode 0 étale chaque pixel entre sa position courante et celle de la frame
             // précédente (`dst_prev = s_dst_prev`) : pendant une rampe de zoom, une copie traînée
             // du secret sort du rect courant. Chaque coordonnée étalée reste entre ses deux
@@ -1375,6 +1489,7 @@ impl FrameGeometry {
             dst: [min_x / rw, min_y / rh, quad_px[0] / rw, quad_px[1] / rh],
             quad_px,
             warp: Some(local),
+            projective: quad.projective,
             strength: (zoom_k * tilt_k).max(1.0),
             oval_ok: true,
         })
@@ -1398,6 +1513,8 @@ pub struct PrivacyMask {
     /// Écran incliné : coins TL, TR, BR, BL du masque, en px locaux à `dst` (la convention de
     /// `i.local` dans le shader). `None` : le masque est le rect `dst` lui-même.
     pub warp: Option<[[f32; 2]; 4]>,
+    /// `warp` suit l'homographie de ses coins (caméra réelle) plutôt que leur warp bilinéaire.
+    pub projective: bool,
     /// Multiplicateur du rayon de flou et du pas de mosaïque, jamais sous 1.
     pub strength: f32,
     /// `false` quand le rect a été élargi à la trace du flou de mouvement : un ovale inscrit
@@ -1411,21 +1528,23 @@ impl PrivacyMask {
             dst,
             quad_px: [dst[2] * render_px[0], dst[3] * render_px[1]],
             warp: None,
+            projective: false,
             strength,
             oval_ok: true,
         }
     }
 
     /// Les champs du mode 10 qui portent le masque incliné : `(dst_prev, src_prev, mb)`, avec
-    /// `dst_prev` = TL, TR, `src_prev` = BR, BL et `mb.z` = 1. Le mode 10 lit déjà `fx` pour
-    /// ses propres réglages, d'où ces trois champs-là, qu'il ne lisait pas.
+    /// `dst_prev` = TL, TR, `src_prev` = BR, BL, `mb.z` = 1 et `mb.w` = 1 pour le warp projectif.
+    /// Le mode 10 lit déjà `fx` pour ses propres réglages, d'où ces trois champs-là, qu'il ne
+    /// lisait pas.
     pub fn warp_fields(&self) -> ([f32; 4], [f32; 4], [f32; 4]) {
         match self.warp {
             None => ([0.0; 4], [0.0; 4], [0.0; 4]),
             Some([tl, tr, br, bl]) => (
                 [tl[0], tl[1], tr[0], tr[1]],
                 [br[0], br[1], bl[0], bl[1]],
-                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0, if self.projective { 1.0 } else { 0.0 }],
             ),
         }
     }
@@ -1528,10 +1647,10 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let mut zoom_rotation = [0.0f32; 3];
         let mut zoom_tilt = 0.0f32;
         let mut zoom_click_impact = 0.0f32;
-        let mut zoom_parallax = 1.0f32;
-        let mut zoom_moving = 0.0f32;
-        // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, caméras
-        // mobiles) : l'export ne charge la piste que si le curseur est affiché
+        let mut zoom_camera = 0.0f32;
+        let mut zoom_aim = [0.5f32; 2];
+        // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, caméra
+        // `follow-cursor`) : l'export ne charge la piste que si le curseur est affiché
         // (`timeline_walk`), la preview toujours. Sans cette porte, la preview pencherait un
         // plan que l'export laisse immobile.
         let parallax_track = cursor_for_zoom.filter(|_| scene.is_some_and(|s| s.cursor.show));
@@ -1539,8 +1658,8 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             scene.crop_by_clip.get(scene.active_clip_index).copied().flatten()
         });
         if !zoom_regions.is_empty() {
-            // Les caméras mobiles lisent le curseur dans l'image SOURCE recadrée — pas dans la
-            // coupe zoomée, qu'un focus auto recentre sur lui — et ignorent ce qu'une coupe retire.
+            // La caméra `follow-cursor` lit le curseur dans l'image SOURCE recadrée — pas dans la
+            // coupe zoomée, qu'un focus auto recentre sur lui — et ignore ce qu'une coupe retire.
             let camera = crate::regions::CameraFrame {
                 track: parallax_track,
                 crop: normalized_crop(active_crop),
@@ -1555,8 +1674,8 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             zoom_rotation = zs.rotation;
             zoom_tilt = zs.tilt;
             zoom_click_impact = zs.click_impact;
-            zoom_parallax = zs.parallax;
-            zoom_moving = zs.moving;
+            zoom_camera = zs.camera;
+            zoom_aim = zs.aim;
             let zs_p = crate::regions::zoom_state_at(zoom_regions, source_t_prev, cursor_for_zoom);
             pp.zoom = zs_p.scale;
             pp.focus = zs_p.focus;
@@ -1736,7 +1855,17 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let cut_ref = cover(screen_source_rect(u_max, v_max, active_crop, p.zoom, p.focus));
         let cut_ref_prev = cover(screen_source_rect(u_max, v_max, active_crop, pp.zoom, p.focus));
         let cut = cover(screen_source_rect(u_max, v_max, active_crop, 1.0, p.focus));
-        let focus_plane = focus_in_cut(u_max, v_max, active_crop, p.focus, cut);
+        // Sous la caméra réelle, la visée vit dans le recadrage, comme le focus : même report dans
+        // la coupe (un cover la rogne). C'est aussi là que se fait la mise au point : le flou suit
+        // le point visé quand la caméra pivote.
+        let camera = (zoom_camera > 0.0).then(|| crate::camera::CameraPose {
+            weight: zoom_camera,
+            aim: focus_in_cut(u_max, v_max, active_crop, zoom_aim, cut),
+        });
+        let focus_plane = match camera {
+            Some(pose) => pose.aim,
+            None => focus_in_cut(u_max, v_max, active_crop, p.focus, cut),
+        };
         let s_dst = remap_box(s_base, cut_ref, cut);
         // Parallaxe : calculée ici, une fois la coupe connue — elle mesure la vitesse du curseur
         // en coupes VISIBLES par seconde. La coupe visible est `cut_ref`, zoom compris : `cut`
@@ -1762,7 +1891,6 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
             cut_norm,
             zoom_tilt,
             impact,
-            zoom_parallax,
         );
         let s_dst_prev = remap_box(s_base_prev, cut_ref_prev, cut);
         // le padding n'affecte QUE l'écran (la quantité de fond révélée). La webcam reste ancrée
@@ -1902,7 +2030,7 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         programme_t: input.programme_time.unwrap_or(frame / FPS),
         zoom_rotation,
         zoom_rotation_dyn,
-        zoom_moving,
+        camera,
         padding_scale,
         cut,
         focus_plane,
@@ -2219,8 +2347,9 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
 //   src_prev.w    lacet du modèle (rad)
 //   dst_prev      rect de clip « Clip to canvas » (sortie 0..1), comme au mode 13
 //   mb.xy         demi-taille du plan dans son repère (px) : l'ombre s'arrête à ses bords
-//   mb.zw         taille du sprite (unités) : `(p.xy - color.rg) / mb.zw` = UV du sprite
-//   radius_px     inutilisé
+//   mb.zw         translation du plan dans le repère caméra (px, `TiltedQuad::offset`) : le
+//                 plan vaut `R·p + (mb.zw, 0)`, œil en (0, 0, P). Nulle sous un angle fixe.
+//   radius_px     rapport w/h du sprite : sa taille (unités) en découle, plus grand côté = 1
 // Textures : le sprite RGBA (alpha droit) et son champ R16F (`cursor_sdf`), sur le même rect.
 //   Windows et macOS : sprite en t2/texture(2) (`texImg`), champ en t4/texture(4) (`texSdf`).
 //   Linux : sprite au binding 1 (`texY`), champ au binding 2 (`texU`).
@@ -2392,6 +2521,8 @@ pub(crate) struct ModelView {
     /// Rotation dessinée du plan, degrés (`TiltedQuad::rot`).
     rot: [f32; 3],
     perspective: f32,
+    /// Translation du plan dans le repère caméra (`TiltedQuad::offset`).
+    offset: [f32; 2],
     /// L'unité du modèle (plus grand côté du sprite) en px du plan.
     unit: f32,
     /// Hotspot du dessus, repère du plan (px).
@@ -2428,9 +2559,12 @@ impl ModelView {
         };
         let s = quad.scale;
         let half = [screen_px[0] * s * 0.5, screen_px[1] * s * 0.5];
-        let perspective = screen_px[0].min(screen_px[1]) * crate::regions::PERSPECTIVE_FACTOR;
+        let perspective = quad.perspective;
         let unit = size_px * s;
-        let eye = crate::regions::rotate_point_inv([0.0, 0.0, perspective], quad.rot);
+        let eye = crate::regions::rotate_point_inv(
+            [-quad.offset[0], -quad.offset[1], perspective],
+            quad.rot,
+        );
         if !(unit > 0.0) || !(eye[2] > 1e-3) {
             return None;
         }
@@ -2443,6 +2577,7 @@ impl ModelView {
         let mut view = ModelView {
             rot: quad.rot,
             perspective,
+            offset: quad.offset,
             unit,
             tip,
             anchor: [0.0; 2],
@@ -2474,10 +2609,8 @@ impl ModelView {
             return None;
         }
         let f = self.perspective / d;
-        Some([
-            self.center[0] + self.anchor[0] + w[0] * f,
-            self.center[1] + self.anchor[1] + w[1] * f,
-        ])
+        let (x, y) = (w[0] + self.offset[0], w[1] + self.offset[1]);
+        Some([self.center[0] + self.anchor[0] + x * f, self.center[1] + self.anchor[1] + y * f])
     }
 
     /// La lumière dans le repère du plan (elle est fixée à la caméra, pas au plan).
@@ -2555,7 +2688,8 @@ pub fn cursor_model_cb(
         fx: [r[0], r[1], r[2], pose.pitch],
         src_prev: [view.tip[0], view.tip[1], view.tip[2], pose.yaw],
         dst_prev: clip,
-        mb: [view.half[0], view.half[1], shape.size[0], shape.size[1]],
+        mb: [view.half[0], view.half[1], view.offset[0], view.offset[1]],
+        radius_px: shape.size[0] / shape.size[1],
         ..Default::default()
     })
 }
@@ -3344,11 +3478,12 @@ mod tests {
         }
     }
 
-    /// Une caméra mobile passe par `plan_frame` : elle lit le curseur dans le RECADRAGE, se tourne
-    /// de son côté à échelle gelée, perd la parallaxe mais garde l'impact du clic, et tient la
-    /// pose de face quand le curseur est masqué (l'export n'a alors pas de piste).
+    /// `follow-cursor` passe par `plan_frame` : l'écran n'est ni incliné ni pressé par les clics,
+    /// la caméra vise le pointeur dans le RECADRAGE, la boîte zoome sur son centre sans glisser, la
+    /// mise au point suit la visée, et curseur masqué (l'export n'a alors pas de piste) la caméra
+    /// vise le centre.
     #[test]
-    fn a_moving_camera_turns_with_the_pointer_in_the_crop() {
+    fn the_follow_camera_aims_at_the_pointer_in_the_crop() {
         let cfg = crate::config::all().pop().expect("au moins une config");
         let json = zoomed_golden_scene_json()
             .replace(r#""rotation":"none""#, r#""rotation":"follow-cursor","clickImpact":true"#);
@@ -3367,32 +3502,37 @@ mod tests {
         // que dans l'image entière ce serait presque le centre.
         let right = plan(&scene, parked(0.55, vec![]));
         let left = plan(&scene, parked(0.05, vec![]));
-        assert_eq!(right.zoom_moving, 1.0);
-        assert!(right.zoom_rotation[1] > 14.0, "{:?}", right.zoom_rotation);
-        assert!(left.zoom_rotation[1] < -14.0, "{:?}", left.zoom_rotation);
-        assert_eq!(right.zoom_rotation_dyn, [0.0; 3], "pas de clic, pas de parallaxe");
+        let (cr, cl) = (right.camera.expect("caméra"), left.camera.expect("caméra"));
+        assert_eq!(cr.weight, 1.0);
+        // Zoom 2 : la vue reste dans l'écran tant que la visée reste dans [0,275 ; 0,725].
+        assert!(cr.aim[0] > 0.72 && cl.aim[0] < 0.28, "{:?} {:?}", cr.aim, cl.aim);
+        assert_eq!((right.zoom_rotation, right.zoom_rotation_dyn), ([0.0; 3], [0.0; 3]));
+        assert_eq!(right.focus_plane, cr.aim, "la mise au point suit la visée");
+        assert_eq!(right.s_dst, left.s_dst, "la boîte ne glisse pas");
+        assert!(right.tilted() && right.depth_of_field_on(false) == right.depth_of_field);
 
         let render = [1170.0, 658.0];
         let s_px = [right.s_dst[2] * render[0], right.s_dst[3] * render[1]];
-        let (qr, ql) = (right.screen_tilt(s_px).expect("incliné"), left.screen_tilt(s_px).expect("incliné"));
-        assert_eq!(qr.scale, ql.scale, "échelle gelée d'un côté à l'autre");
-        // À droite, le bord gauche est le proche : son coin haut monte nettement.
-        assert!(ql.corners[0].1 > qr.corners[0].1 + 20.0, "le côté se voit : {:?} / {:?}", qr.corners, ql.corners);
+        let (qr, ql) = (right.screen_tilt(s_px).expect("caméra"), left.screen_tilt(s_px).expect("caméra"));
+        assert!(qr.projective && ql.projective);
+        assert!((qr.scale - ql.scale).abs() < 0.03, "{} {}", qr.scale, ql.scale);
+        // Tournée vers la droite, la caméra rejette le centre de l'écran à gauche de l'image.
+        assert!(qr.offset[0] < -100.0 && ql.offset[0] > 100.0, "{:?} {:?}", qr.offset, ql.offset);
 
-        // Un geste rapide ne penche rien de plus ; un clic, si.
-        let swipe: &'static crate::cursor::CursorTrack = Box::leak(Box::new(crate::cursor::CursorTrack::new(
-            (0..=90).map(|i| (i as f32 / 30.0, 0.05 + 0.2 * i as f32 / 30.0, 0.3)).collect(),
-            vec![],
-            vec![],
-        )));
-        assert_eq!(plan(&scene, swipe).zoom_rotation_dyn, [0.0; 3]);
+        // L'ombre de l'écran tombe du côté de celle de la flèche (lumière en haut à gauche), sur la
+        // même longueur que l'ombre droite, qui reste verticale.
+        let flat = plan(&zoomed_golden_scene(), parked(0.55, vec![]));
+        let ([fx, fy], [cx, cy]) = (flat.screen_shadow_offset(), right.screen_shadow_offset());
+        assert!(fx == 0.0 && fy > 0.0, "{fx} {fy}");
+        assert!(cx > 0.0 && cy > 0.0 && (cx.hypot(cy) - fy).abs() < 1e-3, "{cx} {cy}");
+
+        // Un clic ne presse pas l'écran immobile.
         let clicked = plan(&scene, parked(0.55, vec![1.45]));
-        assert!(clicked.zoom_rotation_dyn[1] > 1.0, "{:?}", clicked.zoom_rotation_dyn);
-        assert_eq!(clicked.zoom_rotation, right.zoom_rotation, "l'impact ne touche pas la base");
+        assert_eq!((clicked.zoom_rotation, clicked.zoom_rotation_dyn), ([0.0; 3], [0.0; 3]));
 
         let hidden = Scene::from_json(&json.replace(r#""show":true"#, r#""show":false"#)).expect("scène");
-        let front = plan(&hidden, parked(0.55, vec![]));
-        assert_eq!(front.zoom_rotation, crate::regions::camera_pose(0.0, 0.0));
+        let front = plan(&hidden, parked(0.55, vec![])).camera.expect("caméra au repos");
+        assert!((front.aim[0] - 0.5).abs() < 1e-4 && (front.aim[1] - 0.5).abs() < 1e-4, "{:?}", front.aim);
     }
 
     /// Sous un préset 3D, le masque est le quad du contenu, warpé comme le mode 8 le dessine.
@@ -3981,7 +4121,7 @@ mod tests {
             programme_t: 0.0,
             zoom_rotation: [0.0, 0.0, 0.0],
             zoom_rotation_dyn: [0.0, 0.0, 0.0],
-            zoom_moving: 0.0,
+            camera: None,
             padding_scale: 1.0,
             cut: [0.0, 0.0, 1.0, 1.0],
             focus_plane: [0.5, 0.5],
@@ -4600,11 +4740,17 @@ mod tests {
             assert_eq!(cb.src_prev, [view.tip[0], view.tip[1], view.tip[2], pose.yaw]);
             assert_eq!(cb.fx[3], pose.pitch);
             assert!((cb.dst[2] * 1920.0 - cb.quad_px[0]).abs() < 1e-2);
-            // Le rect du sprite : `(p - color.rg) / mb.zw` vaut le hotspot à l'origine.
+            // Le rect du sprite : sa taille se déduit de `radius_px` (w/h, plus grand côté = 1),
+            // comme `sprite_size()` dans les shaders, et `(p - color.rg) / taille` vaut le hotspot
+            // à l'origine. `mb.zw` porte la translation du plan, nulle sous un angle fixe.
+            let a = cb.radius_px;
+            let size = [a.min(1.0), (1.0 / a).min(1.0)];
             let [x0, y0] = [cb.color[0], cb.color[1]];
-            let hotspot = [-x0 / cb.mb[2], -y0 / cb.mb[3]];
+            let hotspot = [-x0 / size[0], -y0 / size[1]];
             assert!((hotspot[0] - shape.hotspot[0]).abs() < 1e-6 && (hotspot[1] - shape.hotspot[1]).abs() < 1e-6);
-            assert_eq!([cb.mb[2], cb.mb[3], cb.color[2]], [shape.size[0], shape.size[1], shape.texel]);
+            assert!((size[0] - shape.size[0]).abs() < 1e-6 && (size[1] - shape.size[1]).abs() < 1e-6);
+            assert_eq!(cb.color[2], shape.texel);
+            assert_eq!([cb.mb[2], cb.mb[3]], view.offset, "{name}: translation du plan");
             assert!(shape.size[0].max(shape.size[1]) == 1.0, "{name}: {:?}", shape.size);
         }
     }

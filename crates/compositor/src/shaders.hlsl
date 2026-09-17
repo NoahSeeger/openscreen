@@ -12,7 +12,7 @@ cbuffer Layer : register(b0)
     float4 fx;        // fx.x = spread ombre (px), fx.y,fx.z libres ; mode 15 : rotation du plan (rad), tangage
     float4 src_prev;  // src à la frame précédente (flou de mouvement par vélocité) ; mode 15 : hotspot, lacet
     float4 dst_prev;  // dst à la frame précédente ; modes 13 et 15 : rect de clip
-    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan, taille du sprite
+    float4 mb;        // mb.x = nombre de taps de motion blur (1 = désactivé) ; mode 15 : demi-taille du plan, translation
 };
 // Mode 15 (curseur modélisé) : le détail des emplacements est dans `frame_geometry.rs`, en tête
 // de la section « Curseur modélisé » (`cursor_model_cb`).
@@ -183,6 +183,45 @@ float3 quad_inverse_bilinear(float2 P, float2 c00, float2 c10, float2 c11, float
     return (r0.z > 0.5) ? r0 : r1;
 }
 
+// (s, t, ok) du point `P` dans le quad c00->c10->c11->c01 par l'homographie EXACTE du carré unité
+// sur le quad (forme de Heckbert, coordonnées relatives à c00), résolue à l'envers par Cramer.
+// C'est la projection d'un plan par une vraie caméra (`camera.rs`) : le warp bilinéaire s'en écarte
+// de plusieurs dizaines de px au centre d'un écran vu de biais. Miroir de `regions::square_to_quad`.
+float3 quad_inverse_projective(float2 P, float2 c00, float2 c10, float2 c11, float2 c01)
+{
+    float2 p1 = c10 - c00;
+    float2 p2 = c11 - c00;
+    float2 p3 = c01 - c00;
+    float2 d1 = p1 - p2;
+    float2 d2 = p3 - p2;
+    float2 d3 = p2 - p1 - p3;
+    float den = d1.x * d2.y - d2.x * d1.y;
+    float g = (d3.x * d2.y - d2.x * d3.y) / den;
+    float h = (d1.x * d3.y - d3.x * d1.y) / den;
+    float2 q = P - c00;
+    // x·(g s + h t + 1) = a s + b t, idem en y : un système 2×2 linéaire en (s, t).
+    float m00 = p1.x * (1.0 + g) - g * q.x;
+    float m01 = p3.x * (1.0 + h) - h * q.x;
+    float m10 = p1.y * (1.0 + g) - g * q.y;
+    float m11 = p3.y * (1.0 + h) - h * q.y;
+    float det = m00 * m11 - m01 * m10;
+    float s = (q.x * m11 - m01 * q.y) / det;
+    float t = (m00 * q.y - q.x * m10) / det;
+    float ok = (s >= -0.02 && s <= 1.02 && t >= -0.02 && t <= 1.02) ? 1.0 : 0.0;
+    return float3(s, t, ok);
+}
+
+// Le warp inverse d'un calque posé sur le plan : projectif sous la caméra réelle (`projective` =
+// 1, cf. `TiltedQuad::warp_flag`), bilinéaire sous un angle fixe, inchangé.
+float3 quad_inverse(float2 P, float2 c00, float2 c10, float2 c11, float2 c01, float projective)
+{
+    if (projective > 0.5)
+    {
+        return quad_inverse_projective(P, c00, c10, c11, c01);
+    }
+    return quad_inverse_bilinear(P, c00, c10, c11, c01);
+}
+
 // Hash 2D -> [0,1) sans sin() : le hash `frac(sin(x) * 43758)` dépend de la précision du GPU,
 // celui-ci (Hoskins, « hash12 ») ne fait que des produits de petites valeurs.
 float hash12(float2 p)
@@ -312,11 +351,17 @@ float3 blur_webcam_bg(float2 uv, float intensity, float2 qpx, float2 local_px)
 //
 // Repère du MODÈLE : unité = plus grand côté du sprite, origine au hotspot de la face du dessus,
 // x à droite, y vers le bas, z vers la caméra ; le modèle occupe z de -MODEL_THICK à 0. Le rect
-// du sprite y commence en `color.rg` et mesure `mb.zw`.
+// du sprite y commence en `color.rg` et mesure `sprite_size()` (rapport w/h dans `radius_px`).
 // Textures : t2 (texImg) = le sprite, RGBA en alpha droit ; t4 (texSdf) = son champ, R16F, en
 // unités du modèle, négatif dedans, sur le même rect.
 // Constantes : miroir exact de `frame_geometry.rs` (MODEL_*).
 static const float MODEL_THICK = 0.19;
+
+// Taille du sprite, repère du modèle : son plus grand côté vaut 1, `radius_px` porte w/h.
+float2 sprite_size()
+{
+    return float2(min(radius_px, 1.0), min(1.0 / radius_px, 1.0));
+}
 static const float MODEL_BEVEL = 0.045;
 // Direction VERS la lumière, repère caméra : haut-gauche, devant.
 static const float3 MODEL_LIGHT = float3(-0.4194, -0.5792, 0.6990);
@@ -342,8 +387,8 @@ static const float MODEL_CONTACT_ALPHA = 0.5;
 // dans le rect). Échantillonné au niveau 0 : la marche est une boucle à sortie anticipée.
 float sd_sprite2(float2 p)
 {
-    float2 c = clamp(p, color.rg, color.rg + mb.zw);
-    float d = texSdf.SampleLevel(samp, (c - color.rg) / mb.zw, 0.0);
+    float2 c = clamp(p, color.rg, color.rg + sprite_size());
+    float d = texSdf.SampleLevel(samp, (c - color.rg) / sprite_size(), 0.0);
     float2 o = p - c;
     float out2 = dot(o, o);
     float e = max(d, 0.0);
@@ -453,7 +498,7 @@ float3 model_albedo(float2 p)
     float2 g = float2(sd_sprite2(p + float2(e, 0.0)) - sd_sprite2(p - float2(e, 0.0)),
                       sd_sprite2(p + float2(0.0, e)) - sd_sprite2(p - float2(0.0, e)));
     float2 q = p - g / max(length(g), 1e-6) * max(sd_sprite2(p) + MODEL_RIM_INSET * color.b, 0.0);
-    return texImg.SampleLevel(samp, (q - color.rg) / mb.zw, 0.0).rgb;
+    return texImg.SampleLevel(samp, (q - color.rg) / sprite_size(), 0.0).rgb;
 }
 
 // Couleur (alpha droit) d'un point de la surface vu le long de `rd`.
@@ -483,12 +528,13 @@ float4 cursor_model(float2 local)
     float3 tip = src_prev.xyz;
     // La boîte du modèle : le rect du sprite, sur toute l'épaisseur.
     float3 lo = float3(color.rg, -MODEL_THICK);
-    float3 hi = float3(color.rg + mb.zw, 0.0);
+    float3 hi = float3(color.rg + sprite_size(), 0.0);
 
     // Le rayon de ce pixel : de la caméra (0, 0, P) à travers le pixel sur le plan image z = 0.
+    // Le plan est translaté de mb.zw dans le repère caméra (caméra réelle, 0 sous un angle fixe).
     float3 dw = float3(local + src.xy, -persp);
     float dlen = length(dw);
-    float3 ro = plane_to_model((world_to_plane(float3(0.0, 0.0, persp), f) - tip) / unit, f);
+    float3 ro = plane_to_model((world_to_plane(float3(-mb.z, -mb.w, persp), f) - tip) / unit, f);
     float3 rd = plane_to_model(world_to_plane(dw / dlen, f), f);
     float3 l = plane_to_model(world_to_plane(MODEL_LIGHT, f), f);
     // Le plan de l'écran dans le repère du modèle : dot(p, nz) = hz.
@@ -576,10 +622,10 @@ float4 ps_main(VSOut i) : SV_Target
     // fx.xy/fx.zw = coins TL/TR, src_prev.xy/.zw = BR/BL (px locaux) ; dst_prev.xy = taille du
     // cadre dans son plan, dst_prev.z = hauteur de la barre, dst_prev.w = épaisseur du filet
     // (px du plan) ; radius_px = rayon extérieur (les coins hauts plafonnent à la barre) ;
-    // color = fond de la barre, mb = couleur du filet (alpha droit).
+    // color = fond de la barre, mb = couleur du filet (alpha droit) ; src.x = 1 : warp projectif.
     if (mode > 13.5)
     {
-        float3 r = quad_inverse_bilinear(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw);
+        float3 r = quad_inverse(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw, src.x);
         if (r.z < 0.5)
         {
             return float4(0.0, 0.0, 0.0, 0.0); // hors du cadre projeté
@@ -614,7 +660,7 @@ float4 ps_main(VSOut i) : SV_Target
     // doit donc subir la même inclinaison qu'elle, sinon il se lit comme un autocollant plat
     // collé par-dessus la scène. Corriger sa seule position ne suffisait pas.
     // fx.xy/fx.zw = coins TL/TR (px locaux) ; src_prev.xy/.zw = BR/BL ; dst_prev = rect de clip
-    // « Clip to canvas » en espace sortie.
+    // « Clip to canvas » en espace sortie ; mb.x = 1 : warp projectif.
     // Un mode supérieur doit être testé AVANT cette branche, qui n'a pas de borne haute.
     if (mode > 12.5)
     {
@@ -623,7 +669,7 @@ float4 ps_main(VSOut i) : SV_Target
         {
             return float4(0.0, 0.0, 0.0, 0.0);
         }
-        float3 r = quad_inverse_bilinear(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw);
+        float3 r = quad_inverse(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw, mb.x);
         if (r.z < 0.5)
         {
             return float4(0.0, 0.0, 0.0, 0.0); // hors du sprite projeté
@@ -633,12 +679,13 @@ float4 ps_main(VSOut i) : SV_Target
         return float4(s.rgb * a, a);
     }
 
-    // mode 8 : écran tilté en 3D (zoom regions "rotation" : iso/left/right). `dst`/`quad_px`
-    // couvrent la BOUNDING BOX des 4 coins projetés (calculée côté CPU, `regions.rs`) ; ce
-    // shader retrouve où tombe chaque pixel DANS le quad tilté (warp bilinéaire inverse — pas
-    // de perspective-correct exact, mais indiscernable à l'œil pour un tilt de 10-22°) et
-    // échantillonne la vidéo à l'UV correspondant, sinon transparent (hors du quad projeté).
+    // mode 8 : écran tilté en 3D (zoom regions "rotation" : iso/left/right) ou vu par la caméra
+    // réelle (`follow-cursor`). `dst`/`quad_px` couvrent la BOUNDING BOX des 4 coins projetés
+    // (`frame_geometry::tilted_screen_cb`) ; ce shader retrouve où tombe chaque pixel DANS le quad
+    // (warp inverse : bilinéaire sous un angle fixe, projectif exact sous la caméra réelle,
+    // dst_prev.w = 1) et échantillonne la vidéo à l'UV correspondant, sinon transparent.
     // fx.xy/fx.zw = coins TL/TR (px locaux, 0..quad_px) ; src_prev.xy/.zw = coins BR/BL.
+    // color.xy (caméra réelle) : éclairage 1 + color.x·(s − 0.5) + color.y·(t − 0.5).
     // mb = [gx, gy, z_focus, k] : profondeur du point r du plan = (r.x - 0.5)*gx + (r.y - 0.5)*gy
     // en px, positive vers la caméra ; z_focus = celle du focus du zoom (`TiltedQuad::depth_mb`) ;
     // k = texels source de flou par px d'écart de profondeur (0 = profondeur de champ coupée).
@@ -693,7 +740,8 @@ float4 ps_main(VSOut i) : SV_Target
     // laquelle on dessine). `i.pout` donne directement l'UV de sortie, donc aucun mapping à
     // refaire. fx.x = 0 mosaïque / 1 flou ; fx.y = taille de bloc px (mosaïque) ou rayon px
     // (flou) ; fx.z = 0 rectangle / 1 ovale ; fx.w = 1 si le masque doit être teinté ;
-    // mb.z = 1 si le masque est un quad incliné (coins TL, TR dans dst_prev, BR, BL dans src_prev).
+    // mb.z = 1 si le masque est un quad incliné (coins TL, TR dans dst_prev, BR, BL dans src_prev),
+    // mb.w = 1 si son warp est projectif.
     if (mode > 9.5)
     {
         // Masque de forme, en coords locales normalisées du quad.
@@ -704,7 +752,7 @@ float4 ps_main(VSOut i) : SV_Target
         // transparent SUR la zone à cacher.
         if (mb.z > 0.5)
         {
-            float3 w = quad_inverse_bilinear(i.local, dst_prev.xy, dst_prev.zw, src_prev.xy, src_prev.zw);
+            float3 w = quad_inverse(i.local, dst_prev.xy, dst_prev.zw, src_prev.xy, src_prev.zw, mb.w);
             if (w.z < 0.5)
             {
                 return float4(0.0, 0.0, 0.0, 0.0);
@@ -780,7 +828,7 @@ float4 ps_main(VSOut i) : SV_Target
 
     if (mode > 7.5)
     {
-        float3 r = quad_inverse_bilinear(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw);
+        float3 r = quad_inverse(i.local, fx.xy, fx.zw, src_prev.xy, src_prev.zw, dst_prev.w);
         if (r.z < 0.5)
         {
             return float4(0.0, 0.0, 0.0, 0.0); // hors du quad projeté
@@ -819,6 +867,11 @@ float4 ps_main(VSOut i) : SV_Target
             float lod = clamp(log2(coc) - 1.0, 0.0, DOF_MAX_LOD);
             float3 far_rgb = texImg.SampleLevel(samp, uv, lod).rgb;
             rgb = lerp(rgb, far_rgb, saturate((coc - 0.5) / 1.5));
+        }
+        if (dst_prev.w > 0.5)
+        {
+            // La lampe de la caméra réelle : le côté proche un peu plus clair.
+            rgb = saturate(rgb * (1.0 + color.x * (rs.x - 0.5) + color.y * (rs.y - 0.5)));
         }
         return float4(rgb * tilt_a, tilt_a); // prémultiplié, comme les autres modes
     }

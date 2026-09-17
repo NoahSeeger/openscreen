@@ -80,11 +80,11 @@ export const FIXED_ROTATION_3D_PRESETS = ["iso", "left", "right"] as const;
 export type FixedRotation3DPreset = (typeof FIXED_ROTATION_3D_PRESETS)[number];
 
 /**
- * A moving 3D camera: the pose follows the cursor, turns to each click, or orbits over the
- * zoom. The native compositor animates it (`regions.rs::camera_pose`); it needs the cursor
- * track, which the export only loads while the cursor is shown.
+ * A moving 3D camera. `follow-cursor` keeps the screen still and turns a real camera to look at
+ * the cursor; the native compositor renders it (`crates/compositor/src/camera.rs`). It needs the
+ * cursor track, which the export only loads while the cursor is shown.
  */
-export const MOVING_ROTATION_3D_PRESETS = ["follow-cursor", "swing-clicks", "orbit"] as const;
+export const MOVING_ROTATION_3D_PRESETS = ["follow-cursor"] as const;
 export type MovingRotation3DPreset = (typeof MOVING_ROTATION_3D_PRESETS)[number];
 
 /** The zoom's "3D camera": absent means a flat screen. */
@@ -106,15 +106,14 @@ export function isRotation3DPreset(value: unknown): value is Rotation3DPreset {
 // recording is truncated" while the plane was in fact drawn whole. `regions.rs` holds the same
 // numbers and a test asserting no edge comes within 2° of an axis.
 //
-// The moving cameras have no single pose. Their entry is the centre of their path
-// (`camera_pose(0, 0)` in `regions.rs`): what a renderer without the cursor track draws.
+// A moving camera has no single pose. Its entry is its resting angle (`REST_DEG` in `camera.rs`:
+// seen from the left, level), what a renderer without the cursor track draws. It is a camera
+// angle, not a screen rotation, so this is the nearest equivalent rather than the same picture.
 export const ROTATION_3D_PRESETS: Record<Rotation3DPreset, Rotation3D> = {
 	iso: { rotationX: -12, rotationY: -18, rotationZ: -2 },
 	left: { rotationX: -8, rotationY: -16, rotationZ: -1 },
 	right: { rotationX: -8, rotationY: 16, rotationZ: 1 },
-	"follow-cursor": { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
-	"swing-clicks": { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
-	orbit: { rotationX: -3, rotationY: 0, rotationZ: -5.5 },
+	"follow-cursor": { rotationX: 0, rotationY: 12, rotationZ: 0 },
 };
 
 /** Perspective distance in CSS px is this factor times min(viewport w, h). Same
@@ -147,7 +146,7 @@ export interface ZoomRegion {
 	source?: ZoomRegionSource;
 	/** When true, cursor is hidden during this zoom region. */
 	hideCursor?: boolean;
-	/** When true, each click presses the tilted plane (needs `rotationPreset`). Omitted when off. */
+	/** When true, each click presses the tilted plane (needs a fixed `rotationPreset`). Omitted when off. */
 	clickImpact?: true;
 }
 
