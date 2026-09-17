@@ -1,21 +1,23 @@
-//! La caméra réelle de `follow-cursor` rendue par le vrai compositeur D3D11.
+//! La caméra réelle de `follow-cursor` (l'orbite) rendue par le vrai compositeur D3D11.
 //!
 //! Deux tests sans variable d'environnement, sur une frame NV12 SYNTHÉTIQUE (une grille, donc une
 //! géométrie connue au texel près ; sans adaptateur matériel, ils se sautent : « test saute ») :
 //!
 //! - le warp projectif du mode 8 pose chaque ligne de la grille là où la caméra la projette
 //!   (`TiltedQuad::point_px`), là où le warp bilinéaire des angles fixes la manquerait ;
-//! - le roulis est nul au pixel près : la ligne verticale qui passe par l'axe de la caméra reste
-//!   verticale à l'image.
+//! - le roulis est nul au pixel près : la verticale qui passe par l'axe de la caméra reste
+//!   verticale à l'image, les autres convergent comme la projection le dit.
 //!
-//! Et une vidéo, opt-in : 6 s à 30 i/s d'un zoom `follow-cursor` sur une vraie source décodée,
-//! avec un pointeur qui se promène et clique, flèche 3D, cadre, ombre et profondeur de champ.
+//! Et, opt-in, une vidéo de 8 s à 30 i/s sur une vraie source décodée (une interface), avec un
+//! pointeur qui visite la gauche, la droite, le haut et le bas et clique, au zoom 1 puis 1,8,
+//! flèche 3D, cadre, ombre et profondeur de champ ; plus la planche gauche / droite / haut / bas
+//! aux deux zooms et la trace de la caméra.
 //!
 //! ```powershell
-//! $env:OPENSCREEN_FOLLOW_VIDEO_SOURCE = "...\screen.mp4"   # 1920×1080, 8 s au moins
-//! $env:OPENSCREEN_FOLLOW_VIDEO_OUT = "...\frames"         # un PNG par frame
+//! $env:OPENSCREEN_FOLLOW_VIDEO_SOURCE = "...\screen.mp4"   # 1920×1080, 10 s au moins
+//! $env:OPENSCREEN_FOLLOW_VIDEO_OUT = "...\orbit"          # frames\NNN.png, sheet-*.png, trace
 //! cargo test -p openscreen-compositor --test follow_camera_render -- --nocapture
-//! ffmpeg -framerate 30 -i frames\%03d.png -c:v h264_mf -b:v 12M -pix_fmt nv12 follow.mp4
+//! ffmpeg -framerate 30 -i orbit\frames\%03d.png -c:v h264_mf -b:v 12M -pix_fmt nv12 orbit.mp4
 //! ```
 
 // Windows seulement : le readback et le décodage D3D11VA de ce harnais n'existent que là.
@@ -125,12 +127,12 @@ fn track(name: &str, dur: f32, at: &dyn Fn(f32) -> (f32, f32), clicks: &[f32]) -
     track
 }
 
-fn grid_scene(scale: f32) -> Scene {
+fn grid_scene_dof(scale: f32, dof: bool) -> Scene {
     Scene::from_json(&format!(
         r##"{{"clips":[{{"screenPath":"/s.mp4","webcamPath":"","sourceStartSec":0,"sourceEndSec":10,"webcamOffsetSec":0,"hasAudio":false}}],
             "layout":{{"preset":"no-webcam","webcamSize":1,"webcamShape":"rounded","webcamMirror":false,"webcamPosition":null,"webcamReactiveZoom":false,
                        "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
-            "effects":{{"padding":0.2,"blur":false,"shadow":0,"roundnessFrac":0.0,"motionBlur":0}},
+            "effects":{{"padding":0.2,"blur":false,"shadow":0,"roundnessFrac":0.0,"motionBlur":0,"depthOfField":{dof}}},
             "background":{{"kind":"color","color":"#000000"}},
             "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":"follow-cursor"}}],
             "annotations":[],
@@ -139,6 +141,12 @@ fn grid_scene(scale: f32) -> Scene {
             "output":{{"width":1280,"height":720,"fps":30}}}}"##
     ))
     .expect("scène valide")
+}
+
+/// La grille nette : la profondeur de champ (allumée par défaut) floute le côté lointain, et un
+/// trait flou ne se mesure plus au pixel.
+fn grid_scene(scale: f32) -> Scene {
+    grid_scene_dof(scale, false)
 }
 
 fn cfg() -> Cfg {
@@ -263,64 +271,142 @@ fn the_projective_warp_lands_every_line_where_the_camera_projects_it() {
     assert!(worst_bilinear > 5.0, "{worst_bilinear}");
 }
 
-/// Roulis nul au pixel près : la ligne verticale de la grille la plus proche de l'axe de la caméra
-/// reste verticale sur toute la hauteur du cadre, où que vise la caméra.
+/// Une ligne verticale de la grille, mesurée au pixel : `x = a + b·(y − cy)`, relative au point
+/// principal. La prévision vient de la projection (`TiltedQuad::point_px`), la mesure du rendu.
+fn measure_line(rgba: &[u8], quad: &openscreen_compositor::regions::TiltedQuad, center: [f32; 2], u: f32) -> Option<((f32, f32), (f32, f32))> {
+    let (p0, p1) = (quad.point_px(u, 0.0), quad.point_px(u, 1.0));
+    let predicted = |y: f32| p0.0 + (p1.0 - p0.0) * (y - p0.1) / (p1.1 - p0.1);
+    let pts: Vec<(f32, f32)> = (60..660)
+        .step_by(4)
+        .filter_map(|y| {
+            let dy = y as f32 + 0.5 - center[1];
+            let x = center[0] + predicted(dy);
+            // Hors des croisements de lignes horizontales, qui tirent le barycentre.
+            (luma(rgba, (x + 14.0) as i32, y) > 150.0).then_some(())?;
+            line_center(rgba, x, y, 10).map(|found| (dy, found - center[0]))
+        })
+        .collect();
+    if pts.len() < 60 {
+        return None;
+    }
+    let fit = |pts: &[(f32, f32)]| {
+        let n = pts.len() as f32;
+        let (my, mx) = (pts.iter().map(|p| p.0).sum::<f32>() / n, pts.iter().map(|p| p.1).sum::<f32>() / n);
+        let b = pts.iter().map(|p| (p.0 - my) * (p.1 - mx)).sum::<f32>()
+            / pts.iter().map(|p| (p.0 - my).powi(2)).sum::<f32>();
+        (mx - b * my, b)
+    };
+    let want: Vec<(f32, f32)> = pts.iter().map(|&(y, _)| (y, predicted(y))).collect();
+    Some((fit(&pts), fit(&want)))
+}
+
+/// Roulis nul au pixel près. Sous l'élévation de l'orbite, les verticales convergent vers un
+/// point de fuite À LA VERTICALE du point principal : la pente d'une ligne verticale de la grille
+/// est proportionnelle à sa distance à l'axe, et nulle SUR l'axe. On mesure les deux lignes qui
+/// l'encadrent, on interpole leur pente à l'axe : elle doit être nulle, où que soit le pointeur.
+/// Chaque pente mesurée tombe aussi sur la projection.
 #[test]
-fn a_vertical_line_through_the_view_axis_stays_vertical() {
+fn the_vertical_through_the_view_axis_stays_vertical() {
     let Some(gpu) = gpu() else { return };
     let comp = Compositor::new_sized(&gpu, 1280, 720).expect("compositor");
     let screen = GridFrame::new(&gpu);
-    for (name, at) in [("tl", (0.1, 0.1)), ("br", (0.9, 0.92)), ("r", (0.9, 0.5)), ("t", (0.5, 0.1))] {
+    for (name, at, scale) in [
+        ("tl", (0.1, 0.1), 1.8),
+        ("br", (0.9, 0.92), 1.8),
+        ("r", (0.9, 0.5), 1.0),
+        ("t", (0.5, 0.05), 1.0),
+        ("b", (0.3, 0.95), 2.2),
+    ] {
         let tr = track(name, 10.0, &|_| at, &[]);
-        let (rgba, quad, center) = render(&comp, &screen, &grid_scene(1.8), &tr);
-        // La ligne de la grille la plus proche du point principal (le centre de la boîte).
-        let k = (0..=SRC.0 / GRID)
-            .min_by(|&a, &b| {
-                let x = |k: u32| (quad.point_px((k * GRID + 1) as f32 / SRC.0 as f32, 0.5).0).abs();
-                x(a).total_cmp(&x(b))
-            })
-            .unwrap();
-        let x0 = center[0] + quad.point_px((k * GRID + 1) as f32 / SRC.0 as f32, 0.5).0;
-        let pts: Vec<(f32, f32)> = (60..660)
-            .step_by(4)
-            .filter_map(|y| line_center(&rgba, x0, y, 10).map(|x| (y as f32, x)))
-            // Hors des croisements de lignes horizontales, qui tirent le barycentre.
-            .filter(|&(y, _)| luma(&rgba, (x0 + 14.0) as i32, y as i32) > 150.0)
+        let (rgba, quad, center) = render(&comp, &screen, &grid_scene(scale), &tr);
+        let x_at_axis = |k: u32| quad.point_px((k * GRID + 1) as f32 / SRC.0 as f32, 0.5).0;
+        let right = (0..=SRC.0 / GRID).find(|&k| x_at_axis(k) > 0.0).expect("une ligne à droite de l'axe");
+        let lines: Vec<_> = [right - 1, right]
+            .iter()
+            .map(|&k| measure_line(&rgba, &quad, center, (k * GRID + 1) as f32 / SRC.0 as f32))
             .collect();
-        assert!(pts.len() > 60, "{name}: ligne introuvable ({} points)", pts.len());
-        let n = pts.len() as f32;
-        let (my, mx) = (pts.iter().map(|p| p.0).sum::<f32>() / n, pts.iter().map(|p| p.1).sum::<f32>() / n);
-        let slope = pts.iter().map(|p| (p.0 - my) * (p.1 - mx)).sum::<f32>()
-            / pts.iter().map(|p| (p.0 - my).powi(2)).sum::<f32>();
-        let deg = slope.atan().to_degrees();
-        println!("{name}: ligne {k}, {} px de l'axe, pente {deg:.3}° sur {} points", (x0 - center[0]).abs(), pts.len());
-        assert!(deg.abs() < 0.3, "{name}: la verticale de l'axe penche de {deg:.3}°");
+        let [Some(((a1, b1), (_, w1))), Some(((a2, b2), (_, w2)))] = lines[..] else {
+            panic!("{name}: lignes introuvables autour de l'axe");
+        };
+        let axis = b1 + (b2 - b1) * (0.0 - a1) / (a2 - a1);
+        let deg = |b: f32| b.atan().to_degrees();
+        println!(
+            "{name}: lignes à {a1:.0} et {a2:.0} px de l'axe, pentes {:.3}° et {:.3}° (projection {:.3}° et {:.3}°), à l'axe {:.3}°",
+            deg(b1), deg(b2), deg(w1), deg(w2), deg(axis)
+        );
+        assert!(deg(axis).abs() < 0.1, "{name}: la verticale de l'axe penche de {:.3}°", deg(axis));
+        assert!((deg(b1) - deg(w1)).abs() < 0.1 && (deg(b2) - deg(w2)).abs() < 0.1, "{name}");
     }
 }
 
-/// Le chemin du pointeur de la vidéo, en fractions de l'image source (celle de `screen.mp4`) :
-/// repos, un bouton en bas à droite, le menu en haut à gauche, puis du texte en bas au centre.
+/// Le chemin du pointeur de la vidéo, en fractions de l'image source (une interface : menu à
+/// gauche, cartes, boutons à droite). Zoom 1 : gauche, droite, haut, bas ; puis zoom 1,8 : un
+/// bouton à droite, le menu en haut à gauche, un bouton en bas à droite. Chaque trajet dure 0,5 s
+/// et finit à l'heure du point ; un clic tombe 0,2 s après chaque arrivée.
+const TOUR: [(f32, f32, f32); 9] = [
+    (0.0, 0.55, 0.45),
+    (1.4, 0.10, 0.44),
+    (2.4, 0.90, 0.40),
+    (3.3, 0.64, 0.04),
+    (4.2, 0.45, 0.93),
+    (5.3, 0.82, 0.70),
+    (6.4, 0.10, 0.20),
+    (7.4, 0.80, 0.885),
+    (9.0, 0.80, 0.885),
+];
+
 fn tour(t: f32) -> (f32, f32) {
-    const WAY: [(f32, f32, f32); 6] = [
-        (0.0, 0.52, 0.48),
-        (1.2, 0.55, 0.45),
-        (1.9, 0.86, 0.90),
-        (3.2, 0.08, 0.17),
-        (4.3, 0.40, 0.62),
-        (9.0, 0.40, 0.62),
-    ];
-    let i = WAY.iter().rposition(|w| w.0 <= t).unwrap_or(0).min(WAY.len() - 2);
-    let (a, b) = (WAY[i], WAY[i + 1]);
-    // Chaque trajet dure 0,6 s, en fin de segment : le pointeur attend, puis file.
-    let e = ((t - (b.0 - 0.6)) / 0.6).clamp(0.0, 1.0);
+    let i = TOUR.iter().rposition(|w| w.0 <= t).unwrap_or(0).min(TOUR.len() - 2);
+    let (a, b) = (TOUR[i], TOUR[i + 1]);
+    let e = ((t - (b.0 - 0.5)) / 0.5).clamp(0.0, 1.0);
     let s = e * e * (3.0 - 2.0 * e);
-    let wobble = 0.004 * (t * 5.0).sin();
+    let wobble = 0.003 * (t * 5.0).sin();
     (a.1 + (b.1 - a.1) * s + wobble, a.2 + (b.2 - a.2) * s)
 }
 
-/// Opt-in : les frames d'une vidéo de 6 s, 30 i/s. Cf. l'en-tête du fichier.
+/// La scène de la vidéo et de la planche : interface, cadre sombre, ombre, profondeur de champ,
+/// flèche 3D, impact du clic.
+fn orbit_scene(source: &str, regions: &str, (w, h): (u32, u32)) -> Scene {
+    let arrow = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../public/cursors/default/arrow.png")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let src = source.replace('\\', "/");
+    Scene::from_json(&format!(
+        r##"{{"clips":[{{"screenPath":"{src}","webcamPath":"","sourceStartSec":0,"sourceEndSec":10,"webcamOffsetSec":0,"hasAudio":false}}],
+            "layout":{{"preset":"no-webcam","webcamSize":1,"webcamShape":"rounded","webcamMirror":false,"webcamPosition":null,"webcamReactiveZoom":false,
+                       "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
+            "effects":{{"padding":0.2,"blur":false,"shadow":0.6,"roundnessFrac":0.015,"motionBlur":0,"depthOfField":true,"frame":"window-dark"}},
+            "background":{{"kind":"gradient","angleDeg":135,"stops":["#3b4fd1","#c86fa6"]}},
+            "zoomRegions":[{regions}],
+            "annotations":[],
+            "cursor":{{"show":true,"size":2.2,"smoothing":0,"motionBlur":0,"clickBounce":2.5,"model3d":true,"clipToBounds":false,"theme":"default",
+                       "cursorSprites":{{"arrow":{{"path":"{arrow}","hotspotX":0.119,"hotspotY":0.0874}}}}}},
+            "cropByClip":[null],
+            "output":{{"width":{w},"height":{h},"fps":30}}}}"##
+    ))
+    .expect("scène valide")
+}
+
+fn orbit_region(start: f32, end: f32, scale: f32) -> String {
+    format!(
+        r#"{{"clipIndex":0,"startSec":{start},"endSec":{end},"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":"follow-cursor","clickImpact":true}}"#
+    )
+}
+
+fn video_cfg() -> Cfg {
+    let mut cfg = openscreen_compositor::config::all().pop().expect("au moins une config");
+    cfg.zoom = false;
+    cfg.layout_anim = false;
+    cfg.shadow = true;
+    cfg.cursor = true;
+    cfg
+}
+
+/// Opt-in : les frames d'une vidéo de 8 s à 30 i/s, zoom 1 puis zoom 1,8, et la planche
+/// gauche / droite / haut / bas aux deux zooms. Cf. l'en-tête du fichier.
 #[test]
-fn a_follow_camera_video() {
+fn an_orbit_camera_video() {
     let (Ok(source), Ok(out)) = (
         std::env::var("OPENSCREEN_FOLLOW_VIDEO_SOURCE"),
         std::env::var("OPENSCREEN_FOLLOW_VIDEO_OUT"),
@@ -328,53 +414,48 @@ fn a_follow_camera_video() {
         println!("SKIP: definir OPENSCREEN_FOLLOW_VIDEO_SOURCE et OPENSCREEN_FOLLOW_VIDEO_OUT.");
         return;
     };
-    std::fs::create_dir_all(&out).expect("dossier de sortie");
-    let (w, h) = (1920u32, 1080u32);
-    let scale: f32 = std::env::var("OPENSCREEN_FOLLOW_VIDEO_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(2.2);
-    let arrow = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../public/cursors/default/arrow.png")
-        .to_string_lossy()
-        .replace('\\', "/");
-    let src = source.replace('\\', "/");
-    let scene = Scene::from_json(&format!(
-        r##"{{"clips":[{{"screenPath":"{src}","webcamPath":"","sourceStartSec":0,"sourceEndSec":8,"webcamOffsetSec":0,"hasAudio":false}}],
-            "layout":{{"preset":"no-webcam","webcamSize":1,"webcamShape":"rounded","webcamMirror":false,"webcamPosition":null,"webcamReactiveZoom":false,
-                       "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
-            "effects":{{"padding":0.2,"blur":false,"shadow":0.6,"roundnessFrac":0.015,"motionBlur":0,"depthOfField":true,"frame":"window-dark"}},
-            "background":{{"kind":"gradient","angleDeg":135,"stops":["#3b4fd1","#c86fa6"]}},
-            "zoomRegions":[{{"clipIndex":0,"startSec":1.0,"endSec":4.8,"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":"follow-cursor"}}],
-            "annotations":[],
-            "cursor":{{"show":true,"size":2.2,"smoothing":0,"motionBlur":0,"clickBounce":2.5,"model3d":true,"clipToBounds":false,"theme":"default",
-                       "cursorSprites":{{"arrow":{{"path":"{arrow}","hotspotX":0.119,"hotspotY":0.0874}}}}}},
-            "cropByClip":[null],
-            "output":{{"width":{w},"height":{h},"fps":30}}}}"##
-    ))
-    .expect("scène valide");
+    let size = (1920u32, 1080u32);
+    let (w, h) = size;
+    let frames = format!("{out}/frames");
+    std::fs::create_dir_all(&frames).expect("dossier de sortie");
     let gpu = Gpu::create(false).expect("device d3d11");
-    let mut cfg = openscreen_compositor::config::all().pop().expect("au moins une config");
-    cfg.zoom = false;
-    cfg.layout_anim = false;
-    cfg.shadow = true;
-    cfg.cursor = true;
+    let cfg = video_cfg();
     let comp = Compositor::new_sized(&gpu, w, h).expect("compositor");
-    let live = live_params_from_scene(&scene);
-    comp.set_live_params(live);
-    comp.set_scene(Some(scene.clone()));
-    let clicks = [2.2, 3.5, 4.5];
-    let pointer = track("video", 8.0, &tour, &clicks).smoothed(0.0);
-    comp.set_cursor(pointer.clone());
     let mut player = unsafe { openscreen_compositor::live::Player::open(&source, "", &gpu) }.expect("source");
+    let mut present = |scene: &Scene, pointer: &CursorTrack, t: f32| -> Vec<u8> {
+        let live = live_params_from_scene(scene);
+        comp.set_live_params(live);
+        comp.set_scene(Some(scene.clone()));
+        comp.set_cursor(pointer.clone());
+        unsafe {
+            player.present_frame(&comp, &cfg, t as f64).expect("composer la frame");
+            comp.readback_resized(w, h).expect("readback")
+        }
+    };
+
+    // La planche : pointeur posé à gauche, à droite, en haut, en bas, au zoom 1 puis 1,8.
+    for (zoom, tag) in [(1.0f32, "z1"), (1.8, "z18")] {
+        let scene = orbit_scene(&source, &orbit_region(0.0, 10.0, zoom), size);
+        for (side, at) in [("left", (0.06, 0.5)), ("right", (0.94, 0.5)), ("top", (0.5, 0.05)), ("bottom", (0.5, 0.95))] {
+            let pointer = track(&format!("sheet_{tag}_{side}"), 10.0, &|_| at, &[]);
+            let rgba = present(&scene, &pointer, 3.0);
+            image::save_buffer(format!("{out}/sheet-{tag}-{side}.png"), &rgba, w, h, image::ColorType::Rgba8).expect("png");
+        }
+    }
+
+    // La vidéo : une région au zoom 1, chaînée à une région au zoom 1,8.
+    let regions = format!("{},{}", orbit_region(0.8, 4.6, 1.0), orbit_region(5.1, 8.5, 1.8));
+    let scene = orbit_scene(&source, &regions, size);
+    let clicks: Vec<f32> = TOUR[1..8].iter().map(|w| w.0 + 0.2).collect();
+    let pointer = track("video", 10.0, &tour, &clicks).smoothed(0.0);
+    let live = live_params_from_scene(&scene);
     // La trace de la caméra, frame par frame, par la géométrie partagée : de quoi juger la douceur
     // du mouvement sans regarder la vidéo.
-    let mut trace = String::from("t,poids,visee_x,visee_y,centre_x,centre_y
-");
-    for i in 0..180u32 {
-        let t = i as f64 / 30.0;
-        let rgba = unsafe {
-            player.present_frame(&comp, &cfg, t).expect("composer la frame");
-            comp.readback_resized(w, h).expect("readback")
-        };
-        image::save_buffer(format!("{out}/{i:03}.png"), &rgba, w, h, image::ColorType::Rgba8).expect("png");
+    let mut trace = String::from("t,poids,zoom,orbite_x,orbite_y,visee_x,visee_y,azimut,elevation,recul,centre_x,centre_y\n");
+    for i in 0..240u32 {
+        let t = i as f32 / 30.0;
+        let rgba = present(&scene, &pointer, t);
+        image::save_buffer(format!("{frames}/{i:03}.png"), &rgba, w, h, image::ColorType::Rgba8).expect("png");
         let g = plan_frame(&FrameGeometryInput {
             render_px: [w as f32, h as f32],
             screen_tex_px: [1920.0, 1080.0],
@@ -387,20 +468,18 @@ fn a_follow_camera_video() {
             live,
             scene: Some(&scene),
             cursor: Some(&pointer),
-            timeline_t_override: Some(t as f32),
+            timeline_t_override: Some(t),
             programme_time: None,
         });
         let s_px = [g.s_dst[2] * w as f32, g.s_dst[3] * h as f32];
-        let (pose, offset) = match (g.camera, g.screen_tilt(s_px)) {
-            (Some(p), Some(q)) => (p, q.offset),
-            _ => (openscreen_compositor::camera::CameraPose { weight: 0.0, aim: [0.5; 2] }, [0.0; 2]),
-        };
+        let pose = g.camera.unwrap_or(openscreen_compositor::camera::CameraPose { weight: 0.0, ..openscreen_compositor::camera::CameraPose::REST });
+        let [az, el] = openscreen_compositor::camera::View::new(s_px, pose).angles_deg();
+        let offset = g.screen_tilt(s_px).map(|q| q.offset).unwrap_or([0.0; 2]);
         trace += &format!(
-            "{t:.4},{:.4},{:.4},{:.4},{:.2},{:.2}
-",
-            pose.weight, pose.aim[0], pose.aim[1], offset[0], offset[1]
+            "{t:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{az:.3},{el:.3},{:.3},{:.2},{:.2}\n",
+            pose.weight, pose.zoom, pose.orbit[0], pose.orbit[1], pose.aim[0], pose.aim[1], pose.press, offset[0], offset[1]
         );
     }
-    std::fs::write(format!("{out}/trace.csv"), trace).expect("trace");
-    println!("180 frames dans {out}");
+    std::fs::write(format!("{out}/camera-trace.csv"), trace).expect("trace");
+    println!("240 frames et 8 planches dans {out}");
 }
