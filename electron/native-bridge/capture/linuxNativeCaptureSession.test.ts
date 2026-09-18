@@ -373,4 +373,29 @@ describe("LinuxNativeCaptureSession", () => {
 
 		await expect(session.waitUntilCapturing()).rejects.toThrow();
 	});
+	/**
+	 * The latch is a shortcut past the WAIT, never past the liveness check. A
+	 * helper that died after its first frame has stopped recording, so a caller
+	 * arriving late must still be told — answering "capturing" from a latch set
+	 * before the crash would report a recording that is no longer running.
+	 */
+	it("rejects the capture wait when the helper died after its first frame", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		await flushStdout();
+		helper.emit("exit", 1, null);
+		await flushStdout();
+
+		await expect(session.waitUntilCapturing()).rejects.toThrow();
+	});
 });

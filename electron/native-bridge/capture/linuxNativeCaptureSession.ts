@@ -227,11 +227,15 @@ export class LinuxNativeCaptureSession {
 	 * answered the portal picker. No timeout, on purpose: see the class doc.
 	 */
 	waitUntilCapturing(): Promise<void> {
-		if (this.capturing) {
-			return Promise.resolve();
-		}
 		if (!this.process) {
 			return Promise.reject(new Error("The Linux capture helper is not running."));
+		}
+		// Checked AFTER the liveness test, unlike the latch in
+		// [`waitUntilSourceSelected`]: a helper that died after its first frame
+		// has stopped recording, so reporting a running capture would be worse
+		// than the wait this latch exists to end.
+		if (this.capturing) {
+			return Promise.resolve();
 		}
 		return new Promise<void>((resolve, reject) => {
 			this.startedResolve = resolve;
