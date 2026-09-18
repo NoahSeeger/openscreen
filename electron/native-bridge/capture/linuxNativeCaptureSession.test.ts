@@ -297,14 +297,9 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * The latch `waitUntilSourceSelected` has and this one did not.
-	 *
-	 * `start-native-linux-recording` arms the helper and only THEN awaits this,
-	 * so `capture-started` can already have been read — the helper emits it as
-	 * soon as the first frame stages, and a stdout chunk carrying it is parsed
-	 * synchronously. Without a latch the answer is dropped on the floor and the
-	 * returned promise has nothing left to resolve it: the recording is running,
-	 * the file is filling, and the app waits for it forever.
+	 * A capture-started event received before the wait is registered must
+	 * satisfy that wait: the helper emits it as soon as the first frame stages,
+	 * which can be before the caller awaits.
 	 */
 	it("resolves the capture wait immediately once the first frame already landed", async () => {
 		const session = newSession(true);
@@ -326,10 +321,8 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * The same loss through the ONE path that makes it more than theoretical:
-	 * both events in a single stdout chunk. `NdjsonLineReader` hands them to the
-	 * session back to back within one `data` callback, so no caller — however
-	 * promptly it awaits — can install its handler in between.
+	 * Both events in one stdout chunk are handed to the session within one
+	 * `data` callback, so no caller can register a wait between them.
 	 */
 	it("resolves the capture wait when arming and the first frame share a stdout chunk", async () => {
 		const session = newSession(true);
@@ -359,9 +352,8 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * The latch must not swallow a failure that arrived first: a helper that died
-	 * before any frame has nothing to report, and the caller has to learn that
-	 * rather than be told the capture is running.
+	 * A helper that died before any frame has nothing to report; the wait
+	 * rejects.
 	 */
 	it("still rejects the capture wait when the helper died before any frame", async () => {
 		const session = newSession(true);
@@ -373,11 +365,10 @@ describe("LinuxNativeCaptureSession", () => {
 
 		await expect(session.waitUntilCapturing()).rejects.toThrow();
 	});
+
 	/**
-	 * The latch is a shortcut past the WAIT, never past the liveness check. A
-	 * helper that died after its first frame has stopped recording, so a caller
-	 * arriving late must still be told — answering "capturing" from a latch set
-	 * before the crash would report a recording that is no longer running.
+	 * A capture-started event received before the helper died must not answer
+	 * a later wait: the recording is no longer running.
 	 */
 	it("rejects the capture wait when the helper died after its first frame", async () => {
 		const session = newSession(true);
@@ -400,9 +391,8 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * The same early answer on a session that was never deferred. Nothing about
-	 * the loss is specific to `deferStart`: the helper connects immediately, so
-	 * the first frame can land even sooner relative to the caller's `await`.
+	 * An undeferred session connects immediately, so the first frame can land
+	 * before the caller awaits; the same wait must still be satisfied.
 	 */
 	it("resolves the capture wait on an undeferred session whose first frame already landed", async () => {
 		const session = newSession();
@@ -422,10 +412,8 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * Asking twice must answer twice. The handler clears `startedResolve` after
-	 * it fires, so a second caller has no event left to wake it — only the latch
-	 * can, and a running capture does not stop being running because someone
-	 * already asked about it.
+	 * A running capture answers every wait, not only the first one registered
+	 * before the event.
 	 */
 	it("resolves a second capture wait after the first was answered by the event", async () => {
 		const session = newSession(true);
@@ -448,9 +436,8 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * A diagnostic that arrives after the first frame does not end the capture:
-	 * `error` records the cause and fails the picker wait, but the helper is
-	 * still alive and still encoding. The latch must answer for it.
+	 * A non-fatal `error` event after the first frame does not end the capture;
+	 * a later wait is still satisfied.
 	 */
 	it("resolves the capture wait after a non-fatal error follows the first frame", async () => {
 		const session = newSession(true);
@@ -477,23 +464,19 @@ describe("LinuxNativeCaptureSession", () => {
 	});
 
 	/**
-	 * (control) The latch starts closed, so it must not answer for a capture
-	 * that has not started — the wait is still a wait. Passes on both arms by
-	 * construction; it controls against a latch initialised `true` or read
-	 * unconditionally, either of which would make the discriminating tests above
-	 * pass for the wrong reason.
+	 * A wait registered before the first frame stays pending until it lands.
 	 */
-	it("(control) leaves the capture wait pending until the first frame lands", async () => {
+	it("leaves the capture wait pending until the first frame lands", async () => {
 		const session = newSession(true);
 		await startReady(session);
 
 		session.arm();
-		const pending = session.waitUntilCapturing();
-		const settled = Promise.race([
-			pending.then(() => "settled"),
-			new Promise((resolve) => setTimeout(() => resolve("pending"), 0)),
-		]);
-		expect(await settled).toBe("pending");
+		let settled = false;
+		const pending = session.waitUntilCapturing().then(() => {
+			settled = true;
+		});
+		await flushStdout();
+		expect(settled).toBe(false);
 
 		helper.emitEvent({
 			event: "capture-started",
@@ -504,6 +487,7 @@ describe("LinuxNativeCaptureSession", () => {
 			fps: 30,
 		});
 		await flushStdout();
-		await expect(pending).resolves.toBeUndefined();
+		await pending;
+		expect(settled).toBe(true);
 	});
 });

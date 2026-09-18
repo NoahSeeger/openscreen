@@ -230,10 +230,8 @@ export class LinuxNativeCaptureSession {
 		if (!this.process) {
 			return Promise.reject(new Error("The Linux capture helper is not running."));
 		}
-		// Checked AFTER the liveness test, unlike the latch in
-		// [`waitUntilSourceSelected`]: a helper that died after its first frame
-		// has stopped recording, so reporting a running capture would be worse
-		// than the wait this latch exists to end.
+		// A previously observed capture-started event must not bypass the helper
+		// liveness check above.
 		if (this.capturing) {
 			return Promise.resolve();
 		}
@@ -429,8 +427,8 @@ export class LinuxNativeCaptureSession {
 				// before the portal picker. The recording's zero is HERE, so the
 				// telemetry is re-based onto it and anything from during the
 				// picker is dropped rather than left pinned to the start.
-				this.capturing = true;
 				this.cursor.rebase(payload.timestampMs);
+				this.capturing = true;
 				console.info(
 					"[capture-linux] capture started",
 					JSON.stringify({ width: payload.width, height: payload.height, fps: payload.fps }),
