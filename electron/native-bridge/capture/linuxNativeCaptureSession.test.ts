@@ -295,4 +295,82 @@ describe("LinuxNativeCaptureSession", () => {
 
 		expect(session.grantedSourceKind).toBe("window");
 	});
+
+	/**
+	 * The latch `waitUntilSourceSelected` has and this one did not.
+	 *
+	 * `start-native-linux-recording` arms the helper and only THEN awaits this,
+	 * so `capture-started` can already have been read — the helper emits it as
+	 * soon as the first frame stages, and a stdout chunk carrying it is parsed
+	 * synchronously. Without a latch the answer is dropped on the floor and the
+	 * returned promise has nothing left to resolve it: the recording is running,
+	 * the file is filling, and the app waits for it forever.
+	 */
+	it("resolves the capture wait immediately once the first frame already landed", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		await flushStdout();
+
+		// Callers must not have to race the event to observe it.
+		await expect(session.waitUntilCapturing()).resolves.toBeUndefined();
+	});
+
+	/**
+	 * The same loss through the ONE path that makes it more than theoretical:
+	 * both events in a single stdout chunk. `NdjsonLineReader` hands them to the
+	 * session back to back within one `data` callback, so no caller — however
+	 * promptly it awaits — can install its handler in between.
+	 */
+	it("resolves the capture wait when arming and the first frame share a stdout chunk", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		helper.stdout.write(
+			`${JSON.stringify({
+				schemaVersion: 1,
+				event: "source-selected",
+				timestampMs: 1_100,
+				nodeId: 42,
+				sourceKind: "window",
+			})}\n${JSON.stringify({
+				schemaVersion: 1,
+				event: "capture-started",
+				timestampMs: 1_200,
+				path: "/tmp/recording.mp4",
+				width: 800,
+				height: 600,
+				fps: 30,
+			})}\n`,
+		);
+		await flushStdout();
+
+		await expect(session.waitUntilCapturing()).resolves.toBeUndefined();
+	});
+
+	/**
+	 * The latch must not swallow a failure that arrived first: a helper that died
+	 * before any frame has nothing to report, and the caller has to learn that
+	 * rather than be told the capture is running.
+	 */
+	it("still rejects the capture wait when the helper died before any frame", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		helper.emit("exit", 1, null);
+		await flushStdout();
+
+		await expect(session.waitUntilCapturing()).rejects.toThrow();
+	});
 });

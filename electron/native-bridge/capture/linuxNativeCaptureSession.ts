@@ -76,6 +76,7 @@ export class LinuxNativeCaptureSession {
 	private readyReject: ((error: Error) => void) | null = null;
 	private readyTimer: NodeJS.Timeout | null = null;
 
+	private capturing = false;
 	private startedResolve: (() => void) | null = null;
 	private startedReject: ((error: Error) => void) | null = null;
 
@@ -226,6 +227,9 @@ export class LinuxNativeCaptureSession {
 	 * answered the portal picker. No timeout, on purpose: see the class doc.
 	 */
 	waitUntilCapturing(): Promise<void> {
+		if (this.capturing) {
+			return Promise.resolve();
+		}
 		if (!this.process) {
 			return Promise.reject(new Error("The Linux capture helper is not running."));
 		}
@@ -421,6 +425,7 @@ export class LinuxNativeCaptureSession {
 				// before the portal picker. The recording's zero is HERE, so the
 				// telemetry is re-based onto it and anything from during the
 				// picker is dropped rather than left pinned to the start.
+				this.capturing = true;
 				this.cursor.rebase(payload.timestampMs);
 				console.info(
 					"[capture-linux] capture started",
