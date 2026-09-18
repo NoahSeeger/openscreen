@@ -398,4 +398,112 @@ describe("LinuxNativeCaptureSession", () => {
 
 		await expect(session.waitUntilCapturing()).rejects.toThrow();
 	});
+
+	/**
+	 * The same early answer on a session that was never deferred. Nothing about
+	 * the loss is specific to `deferStart`: the helper connects immediately, so
+	 * the first frame can land even sooner relative to the caller's `await`.
+	 */
+	it("resolves the capture wait on an undeferred session whose first frame already landed", async () => {
+		const session = newSession();
+		await startReady(session);
+
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		await flushStdout();
+
+		await expect(session.waitUntilCapturing()).resolves.toBeUndefined();
+	});
+
+	/**
+	 * Asking twice must answer twice. The handler clears `startedResolve` after
+	 * it fires, so a second caller has no event left to wake it — only the latch
+	 * can, and a running capture does not stop being running because someone
+	 * already asked about it.
+	 */
+	it("resolves a second capture wait after the first was answered by the event", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		const first = session.waitUntilCapturing();
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		await flushStdout();
+		await first;
+
+		await expect(session.waitUntilCapturing()).resolves.toBeUndefined();
+	});
+
+	/**
+	 * A diagnostic that arrives after the first frame does not end the capture:
+	 * `error` records the cause and fails the picker wait, but the helper is
+	 * still alive and still encoding. The latch must answer for it.
+	 */
+	it("resolves the capture wait after a non-fatal error follows the first frame", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		helper.emitEvent({
+			event: "error",
+			timestampMs: 1_300,
+			code: "audio-unavailable",
+			message: "the system audio node vanished",
+		});
+		await flushStdout();
+
+		await expect(session.waitUntilCapturing()).resolves.toBeUndefined();
+	});
+
+	/**
+	 * (control) The latch starts closed, so it must not answer for a capture
+	 * that has not started — the wait is still a wait. Passes on both arms by
+	 * construction; it controls against a latch initialised `true` or read
+	 * unconditionally, either of which would make the discriminating tests above
+	 * pass for the wrong reason.
+	 */
+	it("(control) leaves the capture wait pending until the first frame lands", async () => {
+		const session = newSession(true);
+		await startReady(session);
+
+		session.arm();
+		const pending = session.waitUntilCapturing();
+		const settled = Promise.race([
+			pending.then(() => "settled"),
+			new Promise((resolve) => setTimeout(() => resolve("pending"), 0)),
+		]);
+		expect(await settled).toBe("pending");
+
+		helper.emitEvent({
+			event: "capture-started",
+			timestampMs: 1_200,
+			path: "/tmp/recording.mp4",
+			width: 800,
+			height: 600,
+			fps: 30,
+		});
+		await flushStdout();
+		await expect(pending).resolves.toBeUndefined();
+	});
 });
