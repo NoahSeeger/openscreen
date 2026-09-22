@@ -30,6 +30,7 @@ function normalizeTelemetrySample(
 		timeMs: Math.max(0, Math.min(sample.timeMs, totalMs)),
 		cx: Math.max(0, Math.min(sample.cx, 1)),
 		cy: Math.max(0, Math.min(sample.cy, 1)),
+		visible: sample.visible,
 		interactionType: sample.interactionType,
 	};
 }
@@ -92,7 +93,13 @@ export function detectZoomDwellCandidates(
 		});
 	};
 
-	for (let index = 1; index < samples.length; index += 1) {
+	for (let index = 0; index < samples.length; index += 1) {
+		if (samples[index].visible === false) {
+			pushRunIfDwell(runStart, index);
+			runStart = index + 1;
+			continue;
+		}
+		if (index <= runStart) continue;
 		const prev = samples[index - 1];
 		const curr = samples[index];
 		const distance = Math.hypot(curr.cx - prev.cx, curr.cy - prev.cy);
@@ -119,16 +126,32 @@ const CLICK_INTERACTION_TYPES: ReadonlySet<NonNullable<CursorTelemetryPoint["int
  * ties between two clicks, where the stable sort keeps the earlier one.
  */
 function detectZoomClickCandidates(samples: CursorTelemetryPoint[]): ZoomDwellCandidate[] {
-	return samples
-		.filter(
-			(sample) =>
-				sample.interactionType !== undefined && CLICK_INTERACTION_TYPES.has(sample.interactionType),
-		)
-		.map((sample) => ({
-			centerTimeMs: sample.timeMs,
-			focus: { cx: sample.cx, cy: sample.cy },
-			strength: 0,
-		}));
+	const candidates: ZoomDwellCandidate[] = [];
+	let pendingClick: CursorTelemetryPoint | null = null;
+	let hiddenDuringPress = false;
+	const finishPress = () => {
+		if (pendingClick && !hiddenDuringPress) {
+			candidates.push({
+				centerTimeMs: pendingClick.timeMs,
+				focus: { cx: pendingClick.cx, cy: pendingClick.cy },
+				strength: 0,
+			});
+		}
+		pendingClick = null;
+		hiddenDuringPress = false;
+	};
+
+	for (const sample of samples) {
+		if (sample.interactionType && CLICK_INTERACTION_TYPES.has(sample.interactionType)) {
+			finishPress();
+			pendingClick = sample.visible === false ? null : sample;
+		} else {
+			if (sample.visible === false) hiddenDuringPress = true;
+			if (sample.interactionType === "mouseup") finishPress();
+		}
+	}
+	finishPress();
+	return candidates;
 }
 
 export interface AutoZoomSuggestion {
