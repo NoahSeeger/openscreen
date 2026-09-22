@@ -154,7 +154,19 @@ impl CursorTrack {
         let mut samples = Vec::new();
         let mut clicks = Vec::new();
         let mut types: Vec<(f32, String)> = Vec::new();
-        let mut visibility: Vec<(f32, bool)> = Vec::new();
+        let mut visibility_at_offset = true;
+        let mut visibility_sample_time = f64::NEG_INFINITY;
+        // A clipped track inherits the last recorded state at its source offset. Using the first
+        // later sample would reveal a cursor early when that sample is the transition to visible.
+        for s in arr {
+            let tm = s["timeMs"].as_f64().unwrap_or(-1.0);
+            if tm >= 0.0 && tm <= offset_ms && tm >= visibility_sample_time {
+                visibility_sample_time = tm;
+                visibility_at_offset =
+                    s.get("visible").and_then(|value| value.as_bool()).unwrap_or(true);
+            }
+        }
+        let mut visibility = vec![(0.0, visibility_at_offset)];
         let end = offset_ms + dur_s * 1000.0;
         for s in arr {
             let tm = s["timeMs"].as_f64().unwrap_or(-1.0);
@@ -167,9 +179,7 @@ impl CursorTrack {
             samples.push((t, cx, cy));
             let visible = s.get("visible").and_then(|value| value.as_bool()).unwrap_or(true);
             if visibility.last().map(|(_, previous)| *previous) != Some(visible) {
-                // La première valeur de la fenêtre vaut dès son début. Sans cela, un clip dont
-                // le curseur était déjà masqué à `offset_ms` affichait une frame fugitive.
-                visibility.push((if visibility.is_empty() { 0.0 } else { t }, visible));
+                visibility.push((t, visible));
             }
             if visible && s["interactionType"].as_str() == Some("click") {
                 clicks.push(t);
@@ -502,7 +512,6 @@ mod tests {
             r#"{"samples":[
                 {"timeMs":0,"cx":0.1,"cy":0.1,"visible":true},
                 {"timeMs":100,"cx":0.2,"cy":0.2,"visible":false,"interactionType":"click"},
-                {"timeMs":500,"cx":0.8,"cy":0.8,"visible":false},
                 {"timeMs":600,"cx":0.9,"cy":0.9,"visible":true,"interactionType":"click"}
             ]}"#,
         )
@@ -518,6 +527,7 @@ mod tests {
         assert!(track.visible_at(0.6));
         assert_eq!(track.clicks, vec![0.6], "le clic masqué ne doit pas animer le curseur");
         assert!(!clipped.visible_at(0.0), "la fenêtre commence dans la phase masquée");
+        assert!(!clipped.visible_at(0.39), "l'état masqué tient jusqu'à la transition");
         assert!(clipped.visible_at(0.4), "la transition visible garde son temps relatif");
 
         let smoothed = track.smoothed(0.5);
