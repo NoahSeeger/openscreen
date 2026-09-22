@@ -127,10 +127,20 @@ const CLICK_INTERACTION_TYPES: ReadonlySet<NonNullable<CursorTelemetryPoint["int
  */
 function detectZoomClickCandidates(samples: CursorTelemetryPoint[]): ZoomDwellCandidate[] {
 	const candidates: ZoomDwellCandidate[] = [];
+	const hasMouseupTelemetry = samples.some((sample) => sample.interactionType === "mouseup");
+	// PipeWire and older sidecars have clicks but no mouse-up events. A hidden sample on the next
+	// sampler tick still identifies a slider press; a much later hidden interval must not erase an
+	// already completed click merely because that format cannot mark its release.
+	const LEGACY_PRESS_GRACE_MS = 150;
+
 	let pendingClick: CursorTelemetryPoint | null = null;
-	let hiddenDuringPress = false;
+	let hiddenAtMs: number | null = null;
 	const finishPress = () => {
-		if (pendingClick && !hiddenDuringPress) {
+		if (!pendingClick) return;
+		const hiddenDuringPress =
+			hiddenAtMs !== null &&
+			(hasMouseupTelemetry || hiddenAtMs - pendingClick.timeMs <= LEGACY_PRESS_GRACE_MS);
+		if (!hiddenDuringPress) {
 			candidates.push({
 				centerTimeMs: pendingClick.timeMs,
 				focus: { cx: pendingClick.cx, cy: pendingClick.cy },
@@ -138,17 +148,19 @@ function detectZoomClickCandidates(samples: CursorTelemetryPoint[]): ZoomDwellCa
 			});
 		}
 		pendingClick = null;
-		hiddenDuringPress = false;
+		hiddenAtMs = null;
 	};
 
 	for (const sample of samples) {
 		if (sample.interactionType && CLICK_INTERACTION_TYPES.has(sample.interactionType)) {
 			finishPress();
 			pendingClick = sample.visible === false ? null : sample;
-		} else {
-			if (sample.visible === false) hiddenDuringPress = true;
-			if (sample.interactionType === "mouseup") finishPress();
+			continue;
 		}
+		if (pendingClick && sample.visible === false && hiddenAtMs === null) {
+			hiddenAtMs = sample.timeMs;
+		}
+		if (sample.interactionType === "mouseup") finishPress();
 	}
 	finishPress();
 	return candidates;

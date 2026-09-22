@@ -107,6 +107,34 @@ describe("buildAutoZoomSuggestions", () => {
 		expect(suggestions[0].focus).toEqual({ cx: 0.2, cy: 0.8 });
 	});
 
+	it("keeps a legacy click without mouseup when the cursor hides much later", () => {
+		const suggestions = buildAutoZoomSuggestions({
+			cursorTelemetry: [
+				{ ...click(1000, 0.2, 0.8), visible: true },
+				{ timeMs: 1050, cx: 0.3, cy: 0.7, visible: true, interactionType: "move" },
+				{ timeMs: 2000, cx: 0.7, cy: 0.3, visible: false, interactionType: "move" },
+			],
+			totalMs: 4000,
+			existingRegions: [],
+			defaultDurationMs: 1000,
+		});
+		expect(suggestions).toHaveLength(1);
+		expect(suggestions[0].focus).toEqual({ cx: 0.2, cy: 0.8 });
+	});
+
+	it("rejects a legacy click when the cursor hides on the next sampler tick", () => {
+		const suggestions = buildAutoZoomSuggestions({
+			cursorTelemetry: [
+				{ ...click(1000, 0.2, 0.8), visible: true },
+				{ timeMs: 1033, cx: 0.25, cy: 0.75, visible: false, interactionType: "move" },
+			],
+			totalMs: 4000,
+			existingRegions: [],
+			defaultDurationMs: 1000,
+		});
+		expect(suggestions).toEqual([]);
+	});
+
 	it("does not join visible samples across a hidden interval into a dwell", () => {
 		const suggestions = buildAutoZoomSuggestions({
 			cursorTelemetry: [
