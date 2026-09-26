@@ -815,10 +815,13 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 								tiles
 								options={[
 									"off" as const,
-									// The orbit follows the cursor under auto focus, the default for a new zoom,
-									// and a hidden cursor drives nothing: not offered then, rather than a camera
-									// that silently holds still. Still listed once picked, so the row can show it.
-									...(settings.cursorShow || region.rotationPreset === "orbit"
+									// The orbit follows the cursor under auto focus, and a hidden cursor drives
+									// nothing: not offered then, rather than a camera that silently holds still.
+									// Under manual focus the focus point poses it, cursor or not. Still listed
+									// once picked, so the row can show it.
+									...(settings.cursorShow ||
+									(!autoFocusAll && (region.focusMode ?? "manual") === "manual") ||
+									region.rotationPreset === "orbit"
 										? MOVING_ROTATION_3D_PRESETS
 										: []),
 									...FIXED_ROTATION_3D_PRESETS,

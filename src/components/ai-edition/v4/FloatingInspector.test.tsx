@@ -251,19 +251,25 @@ describe("FloatingInspector", () => {
 			}
 		});
 
-		it("offers no cursor-driven camera while the cursor is hidden, unless already picked", () => {
+		it("offers the orbit with the cursor hidden only where the focus point poses it, or once picked", () => {
 			editorSettings.cursorShow = false;
-			try {
-				const moving = () =>
-					screen.queryByRole("button", { name: "settings.zoom.camera.preset.orbit" });
-				const { tl } = zoomTl({});
-				const { unmount } = render(<FloatingInspector {...defaultProps} tl={tl} />);
-				expect(moving()).toBeNull();
+			const offered = (region: Record<string, unknown>) => {
+				const { unmount } = render(<FloatingInspector {...defaultProps} tl={zoomTl(region).tl} />);
+				const orbit = screen.queryByRole("button", { name: "settings.zoom.camera.preset.orbit" });
 				unmount();
-				render(<FloatingInspector {...defaultProps} tl={zoomTl({ rotationPreset: "orbit" }).tl} />);
-				expect(moving()).not.toBeNull();
+				return orbit !== null;
+			};
+			try {
+				expect(offered({ focusMode: "auto" })).toBe(false);
+				expect(offered({ focusMode: "manual" })).toBe(true);
+				expect(offered({})).toBe(true);
+				expect(offered({ focusMode: "auto", rotationPreset: "orbit" })).toBe(true);
+				// The timeline's Auto-Focus makes every zoom auto, whatever it stores.
+				editorSettings.autoFocusAll = true;
+				expect(offered({ focusMode: "manual" })).toBe(false);
 			} finally {
 				editorSettings.cursorShow = true;
+				editorSettings.autoFocusAll = false;
 			}
 		});
 	});
