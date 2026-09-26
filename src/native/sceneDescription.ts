@@ -1121,6 +1121,7 @@ export function buildSceneDescription(
 			webcamAnchor: settings.webcamAnchor,
 			webcamMaskShape: settings.webcamMaskShape,
 			webcamRoundness: settings.webcamRoundness,
+			frame: settings.frame,
 		});
 	};
 	const toFrameFractions = (r: RenderRect) => ({

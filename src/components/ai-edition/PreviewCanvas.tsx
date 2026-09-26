@@ -280,6 +280,7 @@ export function PreviewCanvas(props: PreviewCanvasProps) {
 			webcamAnchor: settings.webcamAnchor,
 			webcamMaskShape: mask,
 			webcamRoundness: settings.webcamRoundness,
+			frame: settings.frame,
 		});
 	}, [
 		frameSize,
@@ -294,6 +295,7 @@ export function PreviewCanvas(props: PreviewCanvasProps) {
 		settings.padding,
 		settings.aspectRatio,
 		formatFill,
+		settings.frame,
 	]);
 
 	// Full Camera: during a cameraFullscreen region the webcam takes the whole
@@ -320,9 +322,9 @@ export function PreviewCanvas(props: PreviewCanvasProps) {
 		};
 	}, [layout, cameraFullscreenProgress, frameSize]);
 
-	// The stage hosting the interactive overlays is the CONTENT rect, and a frame never changes
-	// it: the compositor keeps the footage the same size with or without a frame and grows the
-	// frame outward, so every handle (annotations, privacy blur, zoom focus) sits on `layout`.
+	// The stage hosting the interactive overlays is the CONTENT rect: the compositor draws the
+	// frame around it (grown outward, or laid out beside the camera in a block layout), so every
+	// handle (annotations, privacy blur, zoom focus) sits on `layout`.
 	const frameStyle = useMemo(() => wallpaperStyle(settings.wallpaper), [settings.wallpaper]);
 	const screenStyle = useMemo(
 		() => buildScreenStyle(layout, settings, frameSize),
