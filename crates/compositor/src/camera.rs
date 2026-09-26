@@ -1,12 +1,14 @@
-//! Caméra 3D réelle, en orbite, pour `follow-cursor`.
+//! Caméra 3D réelle, en orbite, pour le préset `orbit`.
 //!
 //! L'ÉCRAN NE BOUGE PAS. L'œil tourne autour de lui sur une sphère : l'azimut suit la position
-//! horizontale du pointeur (à droite, on voit l'écran par la droite et son côté droit vient vers
-//! nous), l'élévation sa position verticale (en haut, la caméra monte et plonge sur le haut de
-//! l'écran), autour d'une petite élévation de repos. L'œil regarde toujours son point visé, haut du
-//! monde fixe (le `lookAt` classique) : le roulis est donc nul PAR CONSTRUCTION. L'axe horizontal
-//! de l'image reste horizontal dans le monde, et une verticale qui passe par le point visé reste
-//! verticale à l'image. Ce qui penche encore, c'est la perspective, et elle seule.
+//! horizontale d'un point de l'écran (à droite, on voit l'écran par la droite et son côté droit
+//! vient vers nous), l'élévation sa position verticale (en haut, la caméra monte et plonge sur le
+//! haut de l'écran), autour d'une petite élévation de repos. Ce point est le pointeur lissé en
+//! focus auto (`follow`), le point de focus de la région en manuel (`fixed`). L'œil regarde
+//! toujours son point visé, haut du monde fixe (le `lookAt` classique) : le roulis est donc nul
+//! PAR CONSTRUCTION. L'axe horizontal de l'image reste horizontal dans le monde, et une verticale
+//! qui passe par le point visé reste verticale à l'image. Ce qui penche encore, c'est la
+//! perspective, et elle seule.
 //!
 //! Pourquoi une orbite et pas un pivot sur place : depuis un œil fixe, tourner la caméra n'est
 //! presque qu'un pan à plat, l'angle sous lequel on voit l'écran change à peine. L'orientation ne
@@ -259,8 +261,23 @@ impl Follow {
     pub const CENTRE: Follow = Follow { aim: [0.5; 2], orbit: [0.5; 2] };
 }
 
-/// Où `follow-cursor` vise à `t` et où il place l'œil, pour une région de zoom `zoom`. Sans
-/// piste : le centre, caméra au repos.
+/// Portée du point visé au zoom `zoom` : il reste dans `0,5 ± reach`, là où la vue reste dans
+/// l'écran ; au zoom 1, le centre.
+fn reach(zoom: f32) -> f32 {
+    (0.5 - 0.5 * VIEW_MARGIN / zoom.max(1.0)).max(0.0)
+}
+
+/// L'orbite en focus manuel, posée par le point de focus de la région (`point`, fractions de
+/// l'écran recadré) comme par un pointeur garé là : l'œil sur l'orbite de ce point, le point visé
+/// le même borné à la portée du zoom. Sans piste : rien ne bouge pendant la région.
+pub fn fixed(point: [f32; 2], zoom: f32) -> Follow {
+    let r = reach(zoom);
+    let orbit = point.map(|p| p.clamp(0.0, 1.0));
+    Follow { aim: orbit.map(|p| p.clamp(0.5 - r, 0.5 + r)), orbit }
+}
+
+/// Où l'orbite en focus auto vise à `t` et où elle place l'œil, pour une région de zoom `zoom`.
+/// Sans piste : le centre, caméra au repos.
 ///
 /// Le pointeur (lu dans l'image source recadrée, borné à l'écran et à la fenêtre du clip) passe
 /// par la réponse impulsionnelle d'un ressort critique, `h(τ) = ω²·τ·e^(−ωτ)`, avancée de
@@ -273,7 +290,7 @@ impl Follow {
 ///   reste dans l'écran ; au zoom 1, le centre.
 pub fn follow(frame: &CameraFrame, t: f32, zoom: f32) -> Follow {
     let Some(track) = frame.track else { return Follow::CENTRE };
-    let reach = (0.5 - 0.5 * VIEW_MARGIN / zoom.max(1.0)).max(0.0);
+    let reach = reach(zoom);
     let [x0, y0, x1, y1] = frame.crop;
     let size = [(x1 - x0).max(1e-6), (y1 - y0).max(1e-6)];
     let (mut aim, mut orbit, mut total) = ([0.0f32; 2], [0.0f32; 2], 0.0f32);

@@ -81,20 +81,21 @@ export const FIXED_ROTATION_3D_PRESETS = ["left", "right"] as const;
 export type FixedRotation3DPreset = (typeof FIXED_ROTATION_3D_PRESETS)[number];
 
 /**
- * A moving 3D camera. `follow-cursor` keeps the screen still and moves a real camera around it:
- * the camera orbits to the side the cursor is on and rises or dips with it, always level. The
- * native compositor renders it (`crates/compositor/src/camera.rs`). It needs the cursor track,
- * which only drives it while the cursor is shown.
+ * A moving 3D camera. `orbit` keeps the screen still and moves a real camera around it, always
+ * level: to the side of a point of the screen, rising or dipping with it. The zoom's focus mode
+ * picks the point: the cursor under auto focus, which only drives it while the cursor is shown,
+ * the focus point under manual. The native compositor renders it
+ * (`crates/compositor/src/camera.rs`).
  */
-export const MOVING_ROTATION_3D_PRESETS = ["follow-cursor"] as const;
+export const MOVING_ROTATION_3D_PRESETS = ["orbit"] as const;
 export type MovingRotation3DPreset = (typeof MOVING_ROTATION_3D_PRESETS)[number];
 
 /** The zoom's "3D camera": absent means a flat screen. */
 export type Rotation3DPreset = FixedRotation3DPreset | MovingRotation3DPreset;
 
 export const ROTATION_3D_PRESET_ORDER: Rotation3DPreset[] = [
-	...FIXED_ROTATION_3D_PRESETS,
 	...MOVING_ROTATION_3D_PRESETS,
+	...FIXED_ROTATION_3D_PRESETS,
 ];
 
 export function isRotation3DPreset(value: unknown): value is Rotation3DPreset {
@@ -128,7 +129,7 @@ export function readRotation3DPreset(value: unknown): Rotation3DPreset | undefin
 export const ROTATION_3D_PRESETS: Record<Rotation3DPreset, Rotation3D> = {
 	left: { rotationX: -12, rotationY: -18, rotationZ: -2 },
 	right: { rotationX: -12, rotationY: 18, rotationZ: 2 },
-	"follow-cursor": { rotationX: -4, rotationY: 0, rotationZ: 0 },
+	orbit: { rotationX: -4, rotationY: 0, rotationZ: 0 },
 };
 
 /** Perspective distance in CSS px is this factor times min(viewport w, h). Same

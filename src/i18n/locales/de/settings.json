@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Bildschirm nach links gedreht",
 				"right": "Bildschirm nach rechts gedreht",
-				"followCursor": "Kreist mit dem Cursor"
+				"orbit": "3D-Orbit"
 			}
 		},
 		"level": "Zoomstufe",

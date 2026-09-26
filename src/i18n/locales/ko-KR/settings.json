@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "화면 왼쪽으로 돌림",
 				"right": "화면 오른쪽으로 돌림",
-				"followCursor": "커서를 따라 회전"
+				"orbit": "3D 궤도"
 			}
 		},
 		"level": "줌 레벨",

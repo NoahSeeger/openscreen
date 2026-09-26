@@ -193,22 +193,22 @@ describe("FloatingInspector", () => {
 			expect(screen.queryByRole("group", { name: /cameraMotion|threeD/ })).toBeNull();
 		});
 
-		it("lists off, then the fixed angles, then the moving camera", () => {
+		it("lists off, then the orbit, then the fixed angles", () => {
 			const { tl } = zoomTl({});
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
 			expect(cameraButtons().map((b) => b.getAttribute("aria-label"))).toEqual([
 				"settings.zoom.camera.off",
+				"settings.zoom.camera.preset.orbit",
 				"settings.zoom.camera.preset.left",
 				"settings.zoom.camera.preset.right",
-				"settings.zoom.camera.preset.followCursor",
 			]);
 		});
 
 		it("writes the camera into rotationPreset, and off by absence", () => {
-			const { tl, updateZoomRotation } = zoomTl({ rotationPreset: "follow-cursor" });
+			const { tl, updateZoomRotation } = zoomTl({ rotationPreset: "orbit" });
 			render(<FloatingInspector {...defaultProps} tl={tl} />);
 			expect(
-				screen.getByRole("button", { name: "settings.zoom.camera.preset.followCursor" }),
+				screen.getByRole("button", { name: "settings.zoom.camera.preset.orbit" }),
 			).toHaveAttribute("aria-pressed", "true");
 			fireEvent.click(screen.getByRole("button", { name: "settings.zoom.camera.preset.left" }));
 			expect(updateZoomRotation).toHaveBeenCalledWith("z", "left");
@@ -255,17 +255,12 @@ describe("FloatingInspector", () => {
 			editorSettings.cursorShow = false;
 			try {
 				const moving = () =>
-					screen.queryByRole("button", { name: "settings.zoom.camera.preset.followCursor" });
+					screen.queryByRole("button", { name: "settings.zoom.camera.preset.orbit" });
 				const { tl } = zoomTl({});
 				const { unmount } = render(<FloatingInspector {...defaultProps} tl={tl} />);
 				expect(moving()).toBeNull();
 				unmount();
-				render(
-					<FloatingInspector
-						{...defaultProps}
-						tl={zoomTl({ rotationPreset: "follow-cursor" }).tl}
-					/>,
-				);
+				render(<FloatingInspector {...defaultProps} tl={zoomTl({ rotationPreset: "orbit" }).tl} />);
 				expect(moving()).not.toBeNull();
 			} finally {
 				editorSettings.cursorShow = true;

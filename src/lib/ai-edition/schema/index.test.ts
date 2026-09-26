@@ -11,6 +11,7 @@ import {
 	documentSchema,
 	ensureDocument,
 	legacyEditorSchema,
+	parseDocumentFile,
 	rangeSchema,
 	timelineSchema,
 	trimRangeSchema,
@@ -1188,5 +1189,42 @@ describe("zoom click impact lifted to the cursor setting", () => {
 	it("leaves a document without it untouched", () => {
 		const raw = doc([zoom()]);
 		expect(migrateRawDocumentToCurrent(raw)).toBe(raw);
+	});
+});
+
+// --- follow-cursor -> orbit : the orbit camera gains a manual mode ---------------------------
+
+describe("follow-cursor zooms read as orbits under auto focus", () => {
+	const zoom = (extra: Record<string, unknown>) => ({
+		id: "z",
+		startMs: 0,
+		endMs: 1000,
+		depth: 3,
+		focus: { cx: 0.2, cy: 0.7 },
+		...extra,
+	});
+	const docWith = (zoomRanges: unknown[]) => ({
+		...createEmptyDocument({ projectId: "p", title: "t" }),
+		zoomRanges,
+	});
+
+	it("keeps them following the cursor, whatever focus mode they stored", () => {
+		const doc = parseDocumentFile(
+			docWith([
+				zoom({ id: "manual", rotationPreset: "follow-cursor", focusMode: "manual" }),
+				zoom({ id: "unset", rotationPreset: "follow-cursor" }),
+				zoom({ id: "left", rotationPreset: "left" }),
+			]),
+		);
+		expect(doc.zoomRanges.map((z) => [z.id, z.rotationPreset, z.focusMode])).toEqual([
+			["manual", "orbit", "auto"],
+			["unset", "orbit", "auto"],
+			["left", "left", undefined],
+		]);
+	});
+
+	it("leaves an orbit set to manual alone, so a second load changes nothing", () => {
+		const manualOrbit = docWith([zoom({ rotationPreset: "orbit", focusMode: "manual" })]);
+		expect(migrateRawDocumentToCurrent(manualOrbit)).toBe(manualOrbit);
 	});
 });

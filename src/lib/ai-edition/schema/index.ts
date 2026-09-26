@@ -504,12 +504,13 @@ export const zoomRegionSchema = endGteStart(
 		}),
 		focusMode: z.enum(["manual", "auto"]).optional(),
 		/** The zoom's 3D camera (`Rotation3DPreset` in `components/video-editor/types.ts` — same
-		 *  literal list, duplicated here): a fixed angle, or the camera that turns to the cursor
-		 *  (`crates/compositor/src/camera.rs`). Absent means a flat screen. A stored `iso`, the
-		 *  retired "turned left, seen from above" angle, reads as `left`, which kept its look
-		 *  (`readRotation3DPreset`): every document load goes through this parse. */
+		 *  literal list, duplicated here): a fixed angle, or the camera that orbits the screen
+		 *  (`crates/compositor/src/camera.rs`), placed by the zoom's focus mode. Absent means a flat
+		 *  screen. A stored `iso`, the retired "turned left, seen from above" angle, reads as
+		 *  `left`, which kept its look (`readRotation3DPreset`): every document load goes through
+		 *  this parse. A stored `follow-cursor` never reaches it (`readFollowCursorAsAutoOrbit`). */
 		rotationPreset: z
-			.enum(["iso", "left", "right", "follow-cursor"])
+			.enum(["iso", "left", "right", "orbit"])
 			.transform((preset) => (preset === "iso" ? "left" : preset))
 			.optional(),
 		customScale: z.number().positive().optional(),
@@ -1051,13 +1052,42 @@ function liftZoomClickImpact(raw: unknown): unknown {
 	return { ...doc, legacyEditor: { ...legacy, cursorClickImpact: true } };
 }
 
+/**
+ * Read a zoom stored with the `follow-cursor` camera as the `orbit` camera under auto focus.
+ *
+ * `follow-cursor` was the orbit before it had a manual mode: it followed the cursor whatever the
+ * zoom's focus mode said, and most such zooms carry "manual", the default. The camera now reads
+ * the focus mode like every other zoom, so the auto focus is written down along with the new
+ * name, and the zoom keeps following the cursor as it did.
+ *
+ * No `schemaVersion` bump, as for `iso` → `left`: the retired value is the marker, and nothing
+ * writes it any more, so a second run finds nothing. A document without such a zoom comes back
+ * untouched. Runs on RAW, untrusted input, so every read is guarded.
+ */
+function readFollowCursorAsAutoOrbit(raw: unknown): unknown {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+	const doc = raw as Record<string, unknown>;
+	if (!Array.isArray(doc.zoomRanges)) return raw;
+	let renamed = false;
+	const zoomRanges = doc.zoomRanges.map((entry) => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+		const zoom = entry as Record<string, unknown>;
+		if (zoom.rotationPreset !== "follow-cursor") return entry;
+		renamed = true;
+		return { ...zoom, rotationPreset: "orbit", focusMode: "auto" };
+	});
+	return renamed ? { ...doc, zoomRanges } : raw;
+}
+
 export function migrateRawDocumentToCurrent(raw: unknown): unknown {
-	return raiseInvertedTranscriptEnds(
-		dropAudioAnchoredTrims(
-			liftZoomClickImpact(
-				upgradeV7DocumentToV8(
-					upgradeV6DocumentToV7(
-						upgradeV5DocumentToV6(upgradeV4DocumentToV5(upgradeV3DocumentToV4(raw))),
+	return readFollowCursorAsAutoOrbit(
+		raiseInvertedTranscriptEnds(
+			dropAudioAnchoredTrims(
+				liftZoomClickImpact(
+					upgradeV7DocumentToV8(
+						upgradeV6DocumentToV7(
+							upgradeV5DocumentToV6(upgradeV4DocumentToV5(upgradeV3DocumentToV4(raw))),
+						),
 					),
 				),
 			),

@@ -1784,7 +1784,7 @@ pub struct FrameGeometry {
     /// Part dynamique du tilt (parallaxe, `regions::dynamic_tilt`), ajoutée à la base à la
     /// projection. Nulle quand la base est neutre.
     pub zoom_rotation_dyn: [f32; 3],
-    /// Caméra réelle de `follow-cursor` (`camera.rs`), `None` sans elle. Jamais en même temps
+    /// Caméra réelle de `orbit` (`camera.rs`), `None` sans elle. Jamais en même temps
     /// qu'une `zoom_rotation` non nulle.
     pub camera: Option<crate::camera::CameraPose>,
     /// La rotation de base une frame d'écran plus tôt : avec `s_dst_prev` et `camera_prev`, le
@@ -2864,15 +2864,15 @@ pub fn plan_frame(input: &FrameGeometryInput) -> FrameGeometry {
         let mut zoom_aim = [0.5f32; 2];
         let mut zoom_orbit = [0.5f32; 2];
         let (mut zoom_aim_prev, mut zoom_orbit_prev) = ([0.5f32; 2], [0.5f32; 2]);
-        // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, caméra
-        // `follow-cursor`) : un plan ne bouge que sous un pointeur qu'on voit. Preview et export
+        // Curseur masqué → pas de piste pour ce qui anime le plan (parallaxe, impact, orbite en
+        // focus auto) : un plan ne bouge que sous un pointeur qu'on voit. Preview et export
         // chargent la piste dans tous les cas (le focus auto la suit), cette porte fait le reste.
         let parallax_track = cursor_for_zoom.filter(|_| scene.is_some_and(|s| s.cursor.show));
         let active_crop = scene.and_then(|scene| {
             scene.crop_by_clip.get(scene.active_clip_index).copied().flatten()
         });
         if !zoom_regions.is_empty() {
-            // La caméra `follow-cursor` lit le curseur dans l'image SOURCE recadrée — pas dans la
+            // L'orbite en focus auto lit le curseur dans l'image SOURCE recadrée — pas dans la
             // coupe zoomée, qu'un focus auto recentre sur lui — et ignore ce qu'une coupe retire.
             let camera = crate::regions::CameraFrame {
                 track: parallax_track,
@@ -4393,6 +4393,10 @@ mod tests {
         assert_eq!(a.s_ann, a.s_dst, "sans zoom, ancre et boîte écran coïncident");
     }
 
+    /// La caméra en orbite, en focus auto : celle qui bouge avec le pointeur. Sans piste, elle
+    /// rend comme l'orbite manuelle posée au centre.
+    const ORBIT: &str = r#""orbit","focusMode":"auto""#;
+
     /// Scène à boîte écran résolue par l'app, pour le cadre de fenêtre. `frame` est inséré tel
     /// quel dans `effects` (chaîne vide = clé absente).
     fn framed_scene(frame: &str, rotation: &str, zoom: f32, cover: bool) -> Scene {
@@ -4583,7 +4587,7 @@ mod tests {
     #[test]
     fn a_moving_tilted_screen_is_motion_blurred_as_one_object() {
         let cfg = crate::config::all().pop().expect("au moins une config");
-        for rotation in [r#""iso""#, r#""follow-cursor""#] {
+        for rotation in [r#""iso""#, ORBIT] {
             for frame in ["", r#","frame":"laptop""#] {
                 let mut scene = framed_scene(frame, rotation, 1.5, false);
                 scene.effects.motion_blur = 1.0;
@@ -4782,7 +4786,7 @@ mod tests {
     #[test]
     fn the_device_screen_face_lands_on_the_footage_plane() {
         for (name, _) in DEVICES {
-            for rotation in ["null", r#""iso""#, r#""left""#, r#""follow-cursor""#] {
+            for rotation in ["null", r#""iso""#, r#""left""#, ORBIT] {
                 let g = device_plan(name, rotation, 1.0);
                 let view = g.device_view(RENDER).expect("caméra");
                 let center = g.screen_center_px(RENDER);
@@ -4825,7 +4829,7 @@ mod tests {
     fn the_footage_edge_falls_on_the_aperture_edge() {
         let mut worst: f32 = 0.0;
         for (name, _) in DEVICES {
-            for rotation in ["null", r#""iso""#, r#""left""#, r#""right""#, r#""follow-cursor""#] {
+            for rotation in ["null", r#""iso""#, r#""left""#, r#""right""#, ORBIT] {
                 let g = device_plan(name, rotation, 1.0);
                 let view = g.device_view(RENDER).expect("caméra");
                 let center = g.screen_center_px(RENDER);
@@ -4892,7 +4896,7 @@ mod tests {
         // caméra réelle, elle, garde les deux.
         let plain = flat_cb(&framed_plan(&framed_scene("", r#""iso""#, 1.0, false)));
         assert_eq!((plain.dst_prev[3], plain.color), (0.0, [0.0; 4]));
-        let orbit = flat_cb(&framed_plan(&framed_scene("", r#""follow-cursor""#, 1.0, false)));
+        let orbit = flat_cb(&framed_plan(&framed_scene("", ORBIT, 1.0, false)));
         assert_eq!(orbit.dst_prev[3], 1.0);
         assert!(orbit.color[0] != 0.0 || orbit.color[1] != 0.0, "la caméra réelle n'éclaire plus");
     }
@@ -4903,7 +4907,7 @@ mod tests {
     #[test]
     fn the_device_box_and_its_shadow_contain_the_model() {
         for (name, kind) in DEVICES {
-            for rotation in ["null", r#""iso""#, r#""left""#, r#""right""#, r#""follow-cursor""#] {
+            for rotation in ["null", r#""iso""#, r#""left""#, r#""right""#, ORBIT] {
                 let g = device_plan(name, rotation, 1.0);
                 let frame = g.window_frame.expect("un cadre");
                 let view = g.device_view(RENDER).expect("caméra");
@@ -4991,7 +4995,7 @@ mod tests {
     /// RAYON, lui, suit la course de Roundness propre au cadre : `roundness_spans_each_frames_own_range`.)
     #[test]
     fn the_footage_box_is_the_same_under_every_frame() {
-        for rotation in ["null", r#""iso""#, r#""follow-cursor""#] {
+        for rotation in ["null", r#""iso""#, ORBIT] {
             for zoom in [1.0f32, 2.0] {
                 let bare = framed_plan(&framed_scene("", rotation, zoom, false));
                 for frame in ["window", "laptop", "phone", "monitor"] {
@@ -5143,7 +5147,7 @@ mod tests {
     /// curseur affiché quand `rotation` est la caméra en orbite (elle le suit).
     fn ratio_scene(frame: &str, ar: f32, roundness: f32, rotation: &str, zoom: f32) -> Scene {
         let (w, h) = if ar >= 16.0 / 9.0 { (0.8, 0.8 * 16.0 / 9.0 / ar) } else { (0.8 * ar * 9.0 / 16.0, 0.8) };
-        let show = rotation.contains("follow-cursor");
+        let show = rotation.contains("orbit");
         Scene::from_json(&format!(
             r##"{{
             "clips":[{{"screenPath":"/s.mp4","webcamPath":"","sourceStartSec":0,"sourceEndSec":10,"webcamOffsetSec":0,"hasAudio":false}}],
@@ -5293,10 +5297,10 @@ mod tests {
         }
     }
 
-    /// Une scène 1080p où la caméra en orbite (`follow-cursor`) zoome de `zoom` sur un pointeur
+    /// Une scène 1080p où la caméra en orbite (focus auto) zoome de `zoom` sur un pointeur
     /// garé en (x, y) de l'image, sous le cadre `frame`, clip de ratio `ar`.
     fn orbit_plan(frame: &str, ar: f32, zoom: f32, x: f32, y: f32) -> FrameGeometry {
-        let scene = ratio_scene(&format!(r#","frame":"{frame}""#), ar, 0.03, r#""follow-cursor""#, zoom);
+        let scene = ratio_scene(&format!(r#","frame":"{frame}""#), ar, 0.03, ORBIT, zoom);
         let cfg = crate::config::all().pop().expect("au moins une config");
         let track: &'static crate::cursor::CursorTrack = Box::leak(Box::new(crate::cursor::CursorTrack::new(
             (0..=150).map(|i| (i as f32 / 30.0, x, y)).collect(),
@@ -5452,7 +5456,7 @@ mod tests {
             [(r[0] - b[0]) / b[2], (r[1] - b[1]) / b[3], r[2] / b[2], r[3] / b[3]]
         };
         for roundness in [0.0f32, 0.05] {
-            for rotation in ["null", r#""iso""#, r#""right""#, r#""follow-cursor""#] {
+            for rotation in ["null", r#""iso""#, r#""right""#, ORBIT] {
                 for zoom in [1.0f32, 2.0] {
                     let bare = plan("", roundness, rotation, zoom);
                     for frame in
@@ -5963,7 +5967,7 @@ mod tests {
     /// ce qu'on voit, le plan rogné par le slot.
     #[test]
     fn a_tilted_zoom_tilts_the_footage_inside_its_slot() {
-        for rotation in [r#""iso""#, r#""right""#, r#""follow-cursor""#] {
+        for rotation in [r#""iso""#, r#""right""#, ORBIT] {
             let g = slot_plan(&slot_scene(rotation, 2.0, true), Some((0.8, 0.3)));
             let free = slot_plan(&slot_scene(rotation, 2.0, false), Some((0.8, 0.3)));
             let mask = g.screen_mask.expect("masque");
@@ -6034,7 +6038,7 @@ mod tests {
             let rest = slot_plan(&slot_scene_with("null", 1.0, true, &extra), pointer);
             let rest_mask = rest.screen_mask.expect("un bloc masque son écran, sous un cadre aussi");
             let rest_off = rest.screen_shadow_offset();
-            for rotation in ["null", r#""iso""#, r#""follow-cursor""#] {
+            for rotation in ["null", r#""iso""#, ORBIT] {
                 let case = format!("{frame} {rotation}");
                 let g = slot_plan(&slot_scene_with(rotation, 2.0, true, &extra), pointer);
                 let bare = slot_plan(&slot_scene(rotation, 2.0, true), pointer);
@@ -6285,7 +6289,7 @@ mod tests {
     }
 
     /// Transition chaînée caméra réelle → angle fixe : la frame d'avant peut encore être dans la
-    /// moitié `follow-cursor` quand celle-ci est dans la moitié fixe. La traînée doit alors partir
+    /// moitié orbite quand celle-ci est dans la moitié fixe. La traînée doit alors partir
     /// du plan vu par la caméra d'AVANT, pas d'un plan droit.
     #[test]
     fn the_trail_keeps_the_previous_camera_across_a_follow_to_fixed_handover() {
@@ -6296,7 +6300,7 @@ mod tests {
         ));
         let json = zoomed_golden_scene_json().replace(
             r#"[{"clipIndex":0,"startSec":0.0,"endSec":5.0,"scale":2.0,"focusX":0.5,"focusY":0.3,"rotation":"none"}]"#,
-            r#"[{"clipIndex":0,"startSec":1.0,"endSec":4.0,"scale":2.0,"focusX":0.5,"focusY":0.5,"rotation":"follow-cursor"},
+            r#"[{"clipIndex":0,"startSec":1.0,"endSec":4.0,"scale":2.0,"focusX":0.5,"focusY":0.5,"rotation":"orbit","focusMode":"auto"},
                 {"clipIndex":0,"startSec":4.5,"endSec":8.0,"scale":2.0,"focusX":0.5,"focusY":0.5,"rotation":"iso"}]"#,
         );
         assert_ne!(json, zoomed_golden_scene_json(), "la substitution doit poser les deux régions");
@@ -6511,7 +6515,7 @@ mod tests {
         }
     }
 
-    /// `follow-cursor` passe par `plan_frame` : l'écran n'est pas incliné, la caméra vise et tourne
+    /// L'orbite en focus auto passe par `plan_frame` : l'écran n'est pas incliné, la caméra vise et tourne
     /// avec le pointeur lu dans le RECADRAGE, la boîte zoome sur son centre sans glisser, la mise au
     /// point suit la visée, un clic fait reculer l'œil sans presser l'écran, et curseur masqué
     /// (l'export n'a alors pas de piste) la caméra vise le centre, au repos.
@@ -6519,7 +6523,7 @@ mod tests {
     fn the_follow_camera_aims_at_the_pointer_in_the_crop() {
         let cfg = crate::config::all().pop().expect("au moins une config");
         let json = zoomed_golden_scene_json()
-            .replace(r#""rotation":"none""#, r#""rotation":"follow-cursor""#)
+            .replace(r#""rotation":"none""#, r#""rotation":"orbit","focusMode":"auto""#)
             .replace(r#""cursor":{"#, r#""cursor":{"clickImpact":true,"#);
         let scene = Scene::from_json(&json).expect("scène");
         let parked = |x: f32, clicks: Vec<f32>| -> &'static crate::cursor::CursorTrack {
@@ -6581,6 +6585,39 @@ mod tests {
         let front = plan(&hidden, parked(0.55, vec![])).camera.expect("caméra au repos");
         assert!((front.aim[0] - 0.5).abs() < 1e-4 && (front.aim[1] - 0.5).abs() < 1e-4, "{:?}", front.aim);
         assert!((front.orbit[0] - 0.5).abs() < 1e-4 && (front.orbit[1] - 0.5).abs() < 1e-4, "{:?}", front.orbit);
+    }
+
+    /// En focus manuel, l'orbite passe par le même chemin, posée par le point de focus de la
+    /// région : déjà dans le recadrage, comme celui d'un zoom à plat. Le pointeur n'y change rien,
+    /// et curseur masqué (pas de piste) elle reste posée.
+    #[test]
+    fn the_manual_orbit_sits_on_its_focus_point_in_the_crop() {
+        let cfg = crate::config::all().pop().expect("au moins une config");
+        let json = zoomed_golden_scene_json().replace(
+            r#""focusX":0.5,"focusY":0.3,"rotation":"none""#,
+            r#""focusX":0.74,"focusY":0.3,"rotation":"orbit","focusMode":"manual""#,
+        );
+        assert_ne!(json, zoomed_golden_scene_json(), "la substitution doit poser l'orbite");
+        let scene = Scene::from_json(&json).expect("scène");
+        let hidden = Scene::from_json(&json.replace(r#""show":true"#, r#""show":false"#)).expect("scène");
+        let parked = |x: f32| -> &'static crate::cursor::CursorTrack {
+            Box::leak(Box::new(crate::cursor::CursorTrack::new(
+                (0..=90).map(|i| (i as f32 / 30.0, x, 0.3)).collect(),
+                vec![],
+                vec![],
+            )))
+        };
+        let pose = |scene: &Scene, x: f32| {
+            plan_frame(&FrameGeometryInput { cursor: Some(parked(x)), ..golden_input(scene, &cfg) })
+                .camera
+                .expect("caméra")
+        };
+        for p in [pose(&scene, 0.55), pose(&scene, 0.05), pose(&hidden, 0.55)] {
+            assert_eq!(p.weight, 1.0);
+            // Zoom 2 : l'œil sur l'orbite du point, la visée bornée à 0,725.
+            assert!((p.orbit[0] - 0.74).abs() < 1e-3 && (p.orbit[1] - 0.3).abs() < 1e-3, "{:?}", p.orbit);
+            assert!((p.aim[0] - 0.725).abs() < 1e-3 && (p.aim[1] - 0.3).abs() < 1e-3, "{:?}", p.aim);
+        }
     }
 
     /// Sous un préset 3D, le masque est le quad du contenu, warpé comme le mode 8 le dessine.
@@ -8007,7 +8044,7 @@ mod tests {
             ("iso", r#""rotation":"iso""#, true),
             ("left", r#""rotation":"left""#, true),
             ("right", r#""rotation":"right""#, true),
-            ("follow", r#""rotation":"follow-cursor""#, true),
+            ("follow", r#""rotation":"orbit","focusMode":"auto""#, true),
         ];
         let (to, from, away) = ([0.3, 0.18], [0.08, 0.05], [0.45, 0.32]);
         let mut worst = 0.0f32;
@@ -8060,7 +8097,7 @@ mod tests {
         let track: &'static crate::cursor::CursorTrack = Box::leak(Box::new(raw.smoothed(0.5)));
         let quiet: &'static crate::cursor::CursorTrack =
             Box::leak(Box::new(crate::cursor::CursorTrack::new(vec![(0.0, 0.3, 0.18), (4.0, 0.3, 0.18)], vec![], vec![])));
-        for rotation in [r#""rotation":"none""#, r#""rotation":"iso""#, r#""rotation":"follow-cursor""#] {
+        for rotation in [r#""rotation":"none""#, r#""rotation":"iso""#, r#""rotation":"orbit","focusMode":"auto""#] {
             let impacts = |track, t| model_frame(rotation, false, 0.0, track, t).1.expect("curseur").impacts;
             assert!(impacts(quiet, TC + 0.1).is_empty(), "{rotation}: pas de clic, pas d'impact");
             assert!(impacts(track, TC + 0.04).is_empty(), "{rotation}: avant le contact");

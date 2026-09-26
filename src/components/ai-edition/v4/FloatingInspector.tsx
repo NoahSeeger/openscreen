@@ -346,13 +346,6 @@ function paneStack(label: string, control: React.ReactNode, value?: string) {
 	);
 }
 
-/** Clé i18n (`zoom.camera.preset.*`) de chaque caméra 3D. */
-const CAMERA_KEYS: Record<Rotation3DPreset, string> = {
-	left: "left",
-	right: "right",
-	"follow-cursor": "followCursor",
-};
-
 /** What each camera does to the screen (viewBox 0 0 32 22, as the camera layout tiles). A fixed
  *  angle is the outline of its pose: `ROTATION_3D_PRESETS` projected with the shipped
  *  perspective and centred. The moving camera leaves the screen flat and circles it. */
@@ -360,7 +353,7 @@ const CAMERA_ICONS: Record<Rotation3DPreset | "off", React.ReactNode> = {
 	off: <rect x="6.5" y="5.5" width="19" height="11" rx="1.5" />,
 	left: <polygon points="6.1,6.2 25.9,4.7 24.7,17.3 7.2,15.1" />,
 	right: <polygon points="6.1,4.7 25.9,6.2 24.8,15.1 7.3,17.3" />,
-	"follow-cursor": (
+	orbit: (
 		<>
 			<rect x="10.5" y="7.5" width="11" height="7" rx="1" />
 			<ellipse cx="16" cy="11" rx="14" ry="7.5" strokeDasharray="2 2.5" />
@@ -805,7 +798,7 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 		const region = tl.zoomRegions.find((z) => z.id === selection.id);
 		if (!region) return null;
 		const cameraLabel = (preset: Rotation3DPreset | "off") =>
-			ts(preset === "off" ? "zoom.camera.off" : `zoom.camera.preset.${CAMERA_KEYS[preset]}`);
+			ts(preset === "off" ? "zoom.camera.off" : `zoom.camera.preset.${preset}`);
 		return (
 			<div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
 				{paneHeader(<ZoomIn size={16} />, tt("labels.zoom"), onClose, tc("actions.close"))}
@@ -822,13 +815,13 @@ function SelectionPane({ tl, onClose }: { tl: TimelineApi; onClose: () => void }
 								tiles
 								options={[
 									"off" as const,
-									...FIXED_ROTATION_3D_PRESETS,
-									// A moving camera reads the cursor track, which the export only loads while
-									// the cursor is shown: not offered then, rather than a camera that silently
-									// holds still. Still listed once picked, so the row can show it.
-									...(settings.cursorShow || region.rotationPreset === "follow-cursor"
+									// The orbit follows the cursor under auto focus, the default for a new zoom,
+									// and a hidden cursor drives nothing: not offered then, rather than a camera
+									// that silently holds still. Still listed once picked, so the row can show it.
+									...(settings.cursorShow || region.rotationPreset === "orbit"
 										? MOVING_ROTATION_3D_PRESETS
 										: []),
+									...FIXED_ROTATION_3D_PRESETS,
 								].map((preset) => ({
 									value: preset,
 									label: cameraLabel(preset),

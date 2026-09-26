@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Pantalla girada a la izquierda",
 				"right": "Pantalla girada a la derecha",
-				"followCursor": "Gira con el cursor"
+				"orbit": "Órbita 3D"
 			}
 		},
 		"level": "Nivel de zoom",

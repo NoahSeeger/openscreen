@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "畫面向左轉",
 				"right": "畫面向右轉",
-				"followCursor": "隨游標環繞"
+				"orbit": "3D 環繞"
 			}
 		},
 		"level": "縮放級別",

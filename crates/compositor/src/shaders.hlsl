@@ -2243,7 +2243,7 @@ float4 ps_main(VSOut i) : SV_Target
     }
 
     // mode 8 : écran tilté en 3D (zoom regions "rotation" : iso/left/right) ou vu par la caméra
-    // réelle (`follow-cursor`). `dst`/`quad_px` couvrent la BOUNDING BOX des 4 coins projetés
+    // réelle (`orbit`). `dst`/`quad_px` couvrent la BOUNDING BOX des 4 coins projetés
     // (`frame_geometry::tilted_screen_cb`) ; ce shader retrouve où tombe chaque pixel DANS le quad
     // (warp inverse : bilinéaire sous un angle fixe, projectif exact sous la caméra réelle ou un
     // appareil, dst_prev.w = 1) et échantillonne la vidéo à l'UV correspondant, sinon transparent.

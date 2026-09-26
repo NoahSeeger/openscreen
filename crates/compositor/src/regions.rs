@@ -2,7 +2,7 @@
 //! web (`zoomRegionUtils.ts` / `cameraFullscreenUtils.ts`) vers le natif, pour que le timing
 //! des transitions soit identique en preview ET en export. Inclut le "connected zoom pan"
 //! (chaînage lissé entre deux régions rapprochées), le focus "auto" (suivi de la télémétrie
-//! curseur) et la 3D (angles fixes iso/left/right, et la caméra `follow-cursor`, dont le modèle
+//! curseur) et la 3D (angles fixes iso/left/right, et la caméra `orbit`, dont le modèle
 //! vit dans `camera.rs` ; le rendu est dans les backends — ce module ne fait que le calcul
 //! temporel et la géométrie, pas le rendu GPU).
 
@@ -468,7 +468,7 @@ pub struct ZoomState {
     /// un, 0 sinon ; interpolé entre deux régions chaînées, et refermé en milieu de course
     /// quand leurs présets diffèrent. C'est la porte de `dynamic_tilt` (`tilt_gate`).
     pub tilt: f32,
-    /// Poids de la caméra réelle (`camera.rs`, 0..1) : la force de la région `follow-cursor`, 0
+    /// Poids de la caméra réelle (`camera.rs`, 0..1) : la force de la région `orbit`, 0
     /// sinon. Jamais non nul en même temps que `rotation` (cf. la transition chaînée).
     pub camera: f32,
     /// Où la caméra vise, 0..1 dans le recadrage, déjà pondéré par `camera` (le centre à 0).
@@ -494,14 +494,14 @@ enum Camera {
     Flat,
     /// Un angle fixe : `iso`, `left`, `right`. L'écran est incliné devant la caméra.
     Fixed([f32; 3]),
-    /// `follow-cursor` : l'écran est immobile, une caméra réelle tourne autour de lui avec le
-    /// pointeur (`camera.rs`).
-    Follow,
+    /// `orbit` : l'écran est immobile, une caméra réelle tourne autour de lui (`camera.rs`), avec
+    /// le pointeur en focus auto, posée par le point de focus en manuel.
+    Orbit,
 }
 
 fn camera_for(rotation: &Option<String>) -> Camera {
     match rotation.as_deref() {
-        Some("follow-cursor") => Camera::Follow,
+        Some("orbit") => Camera::Orbit,
         _ => match rotation3d_for(rotation) {
             r if is_identity_rotation(r) => Camera::Flat,
             r => Camera::Fixed(r),
@@ -509,7 +509,7 @@ fn camera_for(rotation: &Option<String>) -> Camera {
     }
 }
 
-/// Ce que la caméra `follow-cursor` lit de la scène : la piste curseur (celle de la parallaxe,
+/// Ce que l'orbite en focus auto lit de la scène : la piste curseur (celle de la parallaxe,
 /// donc `None` curseur masqué, comme à l'export), le recadrage du clip actif dans le repère
 /// normalisé du curseur (`[x0, y0, x1, y1]`) et sa fenêtre source `[début, fin)`.
 #[derive(Clone, Copy)]
@@ -532,7 +532,7 @@ impl CameraFrame<'static> {
 fn fixed_rotation(region: &SceneZoomRegion) -> [f32; 3] {
     match camera_for(&region.rotation) {
         Camera::Fixed(r) => r,
-        Camera::Flat | Camera::Follow => [0.0; 3],
+        Camera::Flat | Camera::Orbit => [0.0; 3],
     }
 }
 
@@ -546,18 +546,22 @@ fn fixed_flag(region: &SceneZoomRegion) -> f32 {
 }
 
 /// 1 si la région porte la caméra réelle, 0 sinon.
-fn follow_flag(region: &SceneZoomRegion) -> f32 {
-    if camera_for(&region.rotation) == Camera::Follow {
+fn orbit_flag(region: &SceneZoomRegion) -> f32 {
+    if camera_for(&region.rotation) == Camera::Orbit {
         1.0
     } else {
         0.0
     }
 }
 
-/// Ce que la caméra d'une région lit à `t` (le centre hors `follow-cursor`), non pondéré.
-fn follow_at(region: &SceneZoomRegion, t: f32, frame: &CameraFrame) -> Follow {
+/// Ce que l'orbite d'une région lit à `t`, non pondéré : le pointeur lissé en focus auto, le point
+/// de focus de la région en manuel. Le centre hors orbite.
+fn orbit_at(region: &SceneZoomRegion, t: f32, frame: &CameraFrame) -> Follow {
     match camera_for(&region.rotation) {
-        Camera::Follow => crate::camera::follow(frame, t, region.scale),
+        Camera::Orbit if region.focus_mode.as_deref() == Some("auto") => {
+            crate::camera::follow(frame, t, region.scale)
+        }
+        Camera::Orbit => crate::camera::fixed([region.focus_x, region.focus_y], region.scale),
         Camera::Flat | Camera::Fixed(_) => Follow::CENTRE,
     }
 }
@@ -705,10 +709,10 @@ fn resolve_focus(
     cursor: Option<&CursorTrack>,
     clock: &ScreenClock,
 ) -> [f32; 2] {
-    // Sous la caméra réelle, le cadrage vient de son pivot : la boîte zoome sur son centre, sans
-    // glissement 2D. Chaînée à une région plate, la transition glisse donc vers le focus de
-    // celle-ci sans saut.
-    if camera_for(&region.rotation) == Camera::Follow {
+    // Sous la caméra réelle, le cadrage vient de sa visée (`orbit_at`), en auto comme en manuel :
+    // la boîte zoome sur son centre, sans glissement 2D. Chaînée à une région plate, la
+    // transition glisse donc vers le focus de celle-ci sans saut.
+    if camera_for(&region.rotation) == Camera::Orbit {
         return [0.5, 0.5];
     }
     if region.focus_mode.as_deref() == Some("auto") {
@@ -774,7 +778,7 @@ fn connected_pairs(
     pairs
 }
 
-/// `zoom_state_in` sans speed region ni caméra `follow-cursor` : ce que les tests comparent.
+/// `zoom_state_in` sans speed region ni piste pour l'orbite : ce que les tests comparent.
 #[cfg(test)]
 pub fn zoom_state_at(
     regions: &[SceneZoomRegion],
@@ -795,7 +799,7 @@ pub fn zoom_state_at(
 /// hold), sinon la région "dominante" indépendante la plus forte (ties → la plus récente).
 /// Hors de toute région → identité (échelle 1, focus centre, tilt nul).
 ///
-/// `frame` est ce que lit la caméra `follow-cursor` (sans piste, elle vise le centre) ; `clock`
+/// `frame` est ce que lit l'orbite en focus auto (sans piste, elle vise le centre) ; `clock`
 /// mesure les transitions à l'écran, cf. `ScreenClock`.
 pub fn zoom_state_in(
     regions: &[SceneZoomRegion],
@@ -836,7 +840,7 @@ pub fn zoom_state_in(
         // s'éteignant sur la première moitié, l'autre s'allumant sur la seconde.
         let split = matches!(
             (cur_cam, next_cam),
-            (Camera::Follow, Camera::Fixed(_)) | (Camera::Fixed(_), Camera::Follow)
+            (Camera::Orbit, Camera::Fixed(_)) | (Camera::Fixed(_), Camera::Orbit)
         );
         let (rotation, camera) = if split {
             let (out, into) = (
@@ -849,14 +853,14 @@ pub fn zoom_state_in(
             } else {
                 r
             };
-            (r, follow_flag(cur) * out + follow_flag(next) * into)
+            (r, orbit_flag(cur) * out + orbit_flag(next) * into)
         } else {
             (
                 lerp_rotation3d(fixed_rotation(cur), fixed_rotation(next), progress),
-                lerp(follow_flag(cur), follow_flag(next), progress),
+                lerp(orbit_flag(cur), orbit_flag(next), progress),
             )
         };
-        let (a, b) = (follow_at(cur, t, frame), follow_at(next, t, frame));
+        let (a, b) = (orbit_at(cur, t, frame), orbit_at(next, t, frame));
         let mix =
             |p: [f32; 2], q: [f32; 2]| [lerp(p[0], q[0], progress), lerp(p[1], q[1], progress)];
         return ZoomState {
@@ -878,8 +882,8 @@ pub fn zoom_state_in(
     for &(_, ni, _, t_end) in &pairs {
         let next = &regions[ni];
         if screen_t > t_end && t < next.start_sec as f32 {
-            let camera = follow_flag(next);
-            let seen = follow_at(next, t, frame);
+            let camera = orbit_flag(next);
+            let seen = orbit_at(next, t, frame);
             return ZoomState {
                 scale: next.scale,
                 focus: resolve_focus(next, t, cursor, clock),
@@ -931,8 +935,8 @@ pub fn zoom_state_in(
             // comme si une région manuelle suivait le curseur. On inverse donc le mapping pour
             // trouver le centre qui produit la trajectoire de référence.
             let ease = |f: f32| f - (f - 0.5) * (1.0 - strength) / scale.max(1e-3);
-            let camera = follow_flag(r) * strength;
-            let seen = follow_at(r, t, frame);
+            let camera = orbit_flag(r) * strength;
+            let seen = orbit_at(r, t, frame);
             ZoomState {
                 scale,
                 focus: [ease(focus[0]), ease(focus[1])],
@@ -2482,9 +2486,9 @@ mod tilt_tests {
             under_trim: false,
             hide_cursor: false,
         };
-        // `follow-cursor` n'incline pas l'écran (caméra réelle, `camera.rs`) : chaînée à un angle
+        // `orbit` n'incline pas l'écran (caméra réelle, `camera.rs`) : chaînée à un angle
         // fixe, la transition passe par l'écran droit, que ce balayage couvre aussi.
-        let presets = [None, Some("left"), Some("right"), Some("follow-cursor")];
+        let presets = [None, Some("left"), Some("right"), Some("orbit")];
         for a in presets {
             for b in presets {
                 // Transition chaînée sur [4, 5] s.
@@ -2529,7 +2533,7 @@ mod tilt_tests {
                 // entre deux caméras réelles, la caméra aussi.
                 if a.is_some() && a == b {
                     let mid = zoom_state_at(&regions, 4.5, None);
-                    let open = if a == Some("follow-cursor") {
+                    let open = if a == Some("orbit") {
                         mid.camera
                     } else {
                         mid.tilt
@@ -3191,11 +3195,13 @@ mod programme_clock {
 }
 
 #[cfg(test)]
-mod follow_camera_tests {
+mod orbit_camera_tests {
     use super::*;
     use crate::cursor::CursorTrack;
     use crate::scene::SceneZoomRegion;
 
+    /// Une région en focus auto : c'est là que l'orbite suit le pointeur. Son point de focus,
+    /// (0,2 ; 0,7), ne sert qu'en manuel.
     fn region(rotation: &str, start: f64, end: f64) -> SceneZoomRegion {
         SceneZoomRegion {
             id: "z".into(),
@@ -3205,7 +3211,7 @@ mod follow_camera_tests {
             scale: 2.0,
             focus_x: 0.2,
             focus_y: 0.7,
-            focus_mode: Some("manual".into()),
+            focus_mode: Some("auto".into()),
             rotation: Some(rotation.into()),
             under_trim: false,
             hide_cursor: false,
@@ -3235,14 +3241,14 @@ mod follow_camera_tests {
         }
     }
 
-    /// Sous `follow-cursor`, l'écran n'est pas incliné et ne glisse pas (focus au centre, quel que
-    /// soit le réglage de la région) : seule la caméra, de poids la force de la région, vise et
-    /// tourne avec le pointeur. Hors région, l'état plat exact.
+    /// Sous l'orbite en focus auto, l'écran n'est pas incliné et ne glisse pas (focus au centre) :
+    /// seule la caméra, de poids la force de la région, vise et tourne avec le pointeur. Hors
+    /// région, l'état plat exact.
     #[test]
-    fn follow_cursor_rides_the_zoom_envelope() {
+    fn the_auto_orbit_rides_the_zoom_envelope() {
         let tr = track(|_| (0.85, 0.5));
         let f = whole(&tr);
-        let r = [region("follow-cursor", 2.0, 8.0)];
+        let r = [region("orbit", 2.0, 8.0)];
         let full = zoom_state_in(&r, 5.0, Some(&tr), &f, &ScreenClock::default());
         assert_eq!(
             (full.rotation, full.tilt, full.camera),
@@ -3265,7 +3271,7 @@ mod follow_camera_tests {
             "{}",
             easing.camera
         );
-        let raw = follow_at(&r[0], 1.5, &f);
+        let raw = orbit_at(&r[0], 1.5, &f);
         assert_eq!(
             (easing.aim, easing.orbit),
             (
@@ -3285,33 +3291,34 @@ mod follow_camera_tests {
         // Un angle fixe garde exactement son état.
         let left = zoom_state_in(&[region("left", 2.0, 8.0)], 5.0, Some(&tr), &f, &ScreenClock::default());
         assert_eq!((left.rotation, left.camera), ([-12.0, -18.0, -2.0], 0.0));
-        let unknown = zoom_state_in(&[region("orbit", 2.0, 8.0)], 5.0, Some(&tr), &f, &ScreenClock::default());
+        let unknown =
+            zoom_state_in(&[region("swing-clicks", 2.0, 8.0)], 5.0, Some(&tr), &f, &ScreenClock::default());
         assert_eq!((unknown.rotation, unknown.tilt, unknown.camera), ([0.0; 3], 0.0, 0.0));
     }
 
-    /// Focus auto ou manuel, même visée : elle se lit dans l'image source, pas dans la coupe.
+    /// En focus manuel, l'orbite ne suit pas le pointeur : son point de focus la pose comme un
+    /// pointeur garé là (l'œil sur l'orbite du point, la visée bornée à la portée du zoom), et
+    /// l'écran ne glisse pas. Sans piste, pareil : le manuel n'en a pas besoin.
     #[test]
-    fn follow_cursor_aims_the_same_under_auto_focus() {
-        let tr = track(|_| (0.85, 0.3));
-        let mut auto = region("follow-cursor", 2.0, 8.0);
-        auto.focus_mode = Some("auto".into());
-        let manual = region("follow-cursor", 2.0, 8.0);
-        let a = zoom_state_in(
-            &[auto],
-            5.0,
-            Some(&tr),
-            &whole(&tr),
-            &ScreenClock::default(),
-        );
-        let m = zoom_state_in(
-            &[manual],
-            5.0,
-            Some(&tr),
-            &whole(&tr),
-            &ScreenClock::default(),
-        );
-        assert_eq!((a.aim, a.focus), (m.aim, m.focus));
-        assert!(a.aim[0] > 0.7 && a.aim[1] < 0.35, "{:?}", a.aim);
+    fn the_manual_orbit_sits_on_its_focus_point() {
+        let tr = track(|t| (0.5 + 0.4 * (t * 1.3).sin(), 0.3));
+        let parked = track(|_| (0.2, 0.7));
+        let mut manual = region("orbit", 2.0, 8.0);
+        manual.focus_mode = Some("manual".into());
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        for t in [3.0f32, 5.0, 7.0] {
+            let m = zoom_state_in(std::slice::from_ref(&manual), t, Some(&tr), &whole(&tr), &ScreenClock::default());
+            assert_eq!((m.camera, m.focus), (1.0, [0.5, 0.5]), "t {t}");
+            // Zoom 2 : la visée reste dans [0,275 ; 0,725].
+            assert!(near(m.orbit, [0.2, 0.7]) && near(m.aim, [0.275, 0.7]), "t {t} : {:?} {:?}", m.orbit, m.aim);
+            let p = zoom_state_in(&[region("orbit", 2.0, 8.0)], t, Some(&parked), &whole(&parked), &ScreenClock::default());
+            assert!(near(m.orbit, p.orbit) && near(m.aim, p.aim), "t {t} : {:?} {:?}", p.orbit, p.aim);
+            let blind = zoom_state_at(std::slice::from_ref(&manual), t, None);
+            assert_eq!((blind.aim, blind.orbit), (m.aim, m.orbit), "t {t} : sans piste");
+        }
+        // Garde : la même région en auto suit le pointeur.
+        let auto = |t: f32| zoom_state_in(&[region("orbit", 2.0, 8.0)], t, Some(&tr), &whole(&tr), &ScreenClock::default());
+        assert!(!near(auto(3.0).orbit, auto(5.0).orbit));
     }
 
     /// Chaînée à un angle fixe, la transition passe par l'écran droit sans jamais mélanger les
@@ -3321,11 +3328,11 @@ mod follow_camera_tests {
         let tr = track(|t| (0.2 + 0.05 * t, 0.5));
         let f = whole(&tr);
         for regions in [
-            [region("left", 1.0, 4.0), region("follow-cursor", 4.5, 8.0)],
-            [region("follow-cursor", 1.0, 4.0), region("right", 4.5, 8.0)],
+            [region("left", 1.0, 4.0), region("orbit", 4.5, 8.0)],
+            [region("orbit", 1.0, 4.0), region("right", 4.5, 8.0)],
             [
-                region("follow-cursor", 1.0, 4.0),
-                region("follow-cursor", 4.5, 8.0),
+                region("orbit", 1.0, 4.0),
+                region("orbit", 4.5, 8.0),
             ],
         ] {
             let both = regions[0].rotation == regions[1].rotation;
@@ -3362,7 +3369,7 @@ mod follow_camera_tests {
     fn the_follow_state_is_a_pure_function_of_time() {
         let tr = track(|t| (0.5 + 0.4 * (t * 1.3).sin(), 0.5 + 0.3 * (t * 0.7).cos()));
         let f = whole(&tr);
-        let r = [region("follow-cursor", 2.0, 8.0)];
+        let r = [region("orbit", 2.0, 8.0)];
         let at = |i: usize| {
             let s = zoom_state_in(
                 &r,

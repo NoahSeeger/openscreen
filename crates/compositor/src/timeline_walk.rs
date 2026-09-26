@@ -161,7 +161,7 @@ pub(crate) unsafe fn walk_composited_timeline(
     // La piste se charge même curseur MASQUÉ : le focus auto des zooms la suit, comme en preview
     // (qui la charge toujours). Sans elle, un zoom auto suivait en preview et restait figé à
     // l'export. Ce qui ne doit rien voir d'un curseur masqué a sa propre porte sur `cursor.show` :
-    // le dessin (`cursor_alpha`), la parallaxe, l'impact du clic et la caméra `follow-cursor`.
+    // le dessin (`cursor_alpha`), la parallaxe, l'impact du clic et l'orbite en focus auto.
     let cursor_enabled = scene.is_some();
     let cursor_smoothing = scene.as_ref().map(|s| s.cursor.smoothing).unwrap_or(0.0);
     let mut cursor_tracks: HashMap<String, CursorTrack> = HashMap::new();

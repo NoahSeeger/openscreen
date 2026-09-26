@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Obrazovka natočená doleva",
 				"right": "Obrazovka natočená doprava",
-				"followCursor": "Obíhá s kurzorem"
+				"orbit": "3D orbita"
 			}
 		},
 		"level": "Úroveň přiblížení",

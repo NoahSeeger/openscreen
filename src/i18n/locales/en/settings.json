@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Screen turned left",
 				"right": "Screen turned right",
-				"followCursor": "Orbits with the cursor"
+				"orbit": "3D Orbit"
 			}
 		},
 		"level": "Zoom level",

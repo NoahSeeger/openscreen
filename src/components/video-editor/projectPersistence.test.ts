@@ -210,7 +210,7 @@ describe("projectPersistence media compatibility", () => {
 		const [iso, unknown] = normalizeProjectEditor({
 			zoomRegions: [
 				{ ...zoom, id: "iso", rotationPreset: "iso" as never },
-				{ ...zoom, id: "unknown", rotationPreset: "orbit" as never },
+				{ ...zoom, id: "unknown", rotationPreset: "swing-clicks" as never },
 			],
 		}).zoomRegions;
 		expect(iso.rotationPreset).toBe("left");

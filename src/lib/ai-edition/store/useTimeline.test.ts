@@ -821,10 +821,10 @@ describe("useTimeline zoom modifiers (rotation + focus mode)", () => {
 			await result.current.updateZoomRotation("zoom_a", "left");
 		});
 		await act(async () => {
-			await result.current.updateZoomRotation("zoom_a", "follow-cursor");
+			await result.current.updateZoomRotation("zoom_a", "orbit");
 		});
 		const zoom = useProjectStore.getState().document?.zoomRanges[0];
-		expect(zoom?.rotationPreset).toBe("follow-cursor");
+		expect(zoom?.rotationPreset).toBe("orbit");
 		expect(zoom).not.toHaveProperty("cameraMotion");
 	});
 

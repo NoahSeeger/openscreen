@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Schermo ruotato a sinistra",
 				"right": "Schermo ruotato a destra",
-				"followCursor": "Ruota con il cursore"
+				"orbit": "Orbita 3D"
 			}
 		},
 		"level": "Livello zoom",

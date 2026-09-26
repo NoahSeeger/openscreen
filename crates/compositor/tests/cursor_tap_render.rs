@@ -164,7 +164,7 @@ fn scene_json(rotation: &str, hide: bool, click_bounce: f32) -> String {
                        "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
             "effects":{{"padding":0.2,"blur":false,"shadow":0.5,"roundnessFrac":0.03,"motionBlur":0}},
             "background":{{"kind":"gradient","angleDeg":135,"stops":["#5b6ee1","#e8a0bf"]}},
-            "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":1,"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":{rotation},"hideCursor":{hide}}}],
+            "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":1,"focusX":0.5,"focusY":0.5,"rotation":{rotation},"hideCursor":{hide}}}],
             "annotations":[],
             "cursor":{{"show":true,"size":4,"smoothing":0.5,"motionBlur":0.5,"clickBounce":{click_bounce},"model3d":true,"clipToBounds":false,"theme":"default",
                        "cursorSprites":{{"arrow":{{"path":"{dir}/arrow.png","hotspotX":0.1205,"hotspotY":0.0881}},
@@ -310,7 +310,7 @@ fn the_tip_lands_on_the_marked_click_target() {
     let comp = Compositor::new_sized(&gpu, OUT.0, OUT.1).expect("compositor");
     let screen = MockFrame::new(&gpu);
     let track = gesture("contact");
-    for (name, rotation) in [("flat", "null"), ("iso", r#""iso""#), ("follow", r#""follow-cursor""#)] {
+    for (name, rotation) in [("flat", "null"), ("iso", r#""iso""#), ("orbit", r#""orbit","focusMode":"auto""#)] {
         for (target, tc) in TARGETS {
             let t = tc + CONTACT_S;
             // La pastille, lue sans curseur au même instant (la caméra suit la même piste).

@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Màn hình xoay sang trái",
 				"right": "Màn hình xoay sang phải",
-				"followCursor": "Xoay quanh theo con trỏ"
+				"orbit": "Quỹ đạo 3D"
 			}
 		},
 		"level": "Mức độ thu phóng",

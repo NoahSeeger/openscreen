@@ -368,7 +368,7 @@
 			"preset": {
 				"left": "Ekran sola dönük",
 				"right": "Ekran sağa dönük",
-				"followCursor": "İmleçle birlikte döner"
+				"orbit": "3D Yörünge"
 			}
 		},
 		"level": "Yakınlaştırma Seviyesi",

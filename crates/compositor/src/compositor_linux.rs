@@ -5179,7 +5179,7 @@ mod tests {
                            "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
                 "effects":{{"padding":0.2,"blur":false,"shadow":0,"roundnessFrac":0.03,"motionBlur":0}},
                 "background":{{"kind":"gradient","angleDeg":135,"stops":["#5b6ee1","#e8a0bf"]}},
-                "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":1,"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":{rotation}}}],
+                "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":1,"focusX":0.5,"focusY":0.5,"rotation":{rotation}}}],
                 "annotations":[],
                 "cursor":{{"show":{show},"size":{size},"smoothing":0,"motionBlur":0,"clickBounce":2.5{model3d},"clipToBounds":false,"theme":"{theme}",
                            "cursorSprites":{{{sprites}}}}},
@@ -5665,7 +5665,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Camera reelle (`follow-cursor`) : pendant de `tests/follow_camera_render.rs` (Windows).
+    // Camera reelle (`orbit`, focus auto) : pendant de `tests/follow_camera_render.rs` (Windows).
     // -----------------------------------------------------------------------
 
     /// Le warp projectif du WGSL pose chaque ligne verticale d'une grille la ou la camera la
@@ -5682,7 +5682,7 @@ mod tests {
         let screen = FakeFrame::from_planes(&gpu, w, h, &y, &uv);
         // Profondeur de champ coupee (allumee par defaut) : l'orbite a une vraie profondeur, et un
         // trait floute ne se mesure plus a +-8 px.
-        let json = model_scene_json(r#""follow-cursor""#, None, "none", true, 0.05)
+        let json = model_scene_json(r#""orbit","focusMode":"auto""#, None, "none", true, 0.05)
             .replace(r#""scale":1,"#, r#""scale":2.2,"#)
             .replace(r#""roundnessFrac":0.03"#, r#""roundnessFrac":0,"depthOfField":false"#);
         let scene = crate::scene::Scene::from_json(&json).expect("scene json");

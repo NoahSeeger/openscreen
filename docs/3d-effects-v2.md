@@ -44,19 +44,22 @@ deuxième fusionnait tout en un sélecteur avec trois caméras mobiles (`follow-
 `swing-clicks`, `orbit`) qui faisaient tourner **l'écran** sur un chemin de poses à roulis
 permanent (5,5 à 8,5°). Rejetées : « pour chacune, le métrage est de travers ». La troisième,
 une caméra pan-tilt-zoom sur un œil fixe, paraissait figée. Il reste **un** champ,
-`rotationPreset`, et **un** sélecteur « 3D camera » : les deux angles fixes et **une** caméra
-mobile, qui tourne autour de l'écran.
+`rotationPreset`, et **un** sélecteur « 3D camera » : **une** caméra mobile, qui tourne autour
+de l'écran, puis les deux angles fixes. La quatrième révision (26/09) donne à la caméra mobile le
+mode de focus de tout zoom : le pointeur en Auto, le point de focus en Manuel (A.3).
 
 | groupe | valeur | libellé (EN) | ce que ça fait |
 |---|---|---|---|
 | — | absent | Off | écran droit |
+| Caméra mobile | `orbit` | 3D Orbit | l'écran est immobile, une vraie caméra tourne autour de lui : avec le curseur en focus auto, posée par le point de focus en manuel |
 | Angle fixe | `left` | Screen turned left | tourné vers la gauche, vu d'en haut |
 | Angle fixe | `right` | Screen turned right | tourné vers la droite, vu d'en haut |
-| Caméra mobile | `follow-cursor` | Orbits with the cursor | l'écran est immobile, une vraie caméra tourne autour de lui avec le curseur |
 
-`swing-clicks` et `orbit` sont retirés (jamais livrés). La caméra mobile qui reste est l'orbite
-ci-dessous, sous l'identifiant `follow-cursor`. Un projet qui les porte encore s'ouvre à plat
-(valeur inconnue).
+`swing-clicks` est retiré (jamais livré) : un projet qui le porte s'ouvre à plat (valeur
+inconnue). L'identifiant `orbit` d'une caméra retirée, jamais livrée non plus, nomme désormais
+l'orbite ci-dessous. Elle s'appelait `follow-cursor` (v1.13.0) quand elle suivait le curseur quel
+que soit le mode de focus : un zoom stocké ainsi se lit comme `orbit` en focus auto
+(`readFollowCursorAsAutoOrbit`), et rend comme avant.
 
 `left` est l'`iso` de la v1.13.0, à l'identique : [−12, −18, −2], tourné vers la gauche et vu
 d'en haut, dessiné comme alors au warp **bilinéaire** de ses coins. `right` en est le miroir,
@@ -71,10 +74,16 @@ plus rien de l'ancien `iso`.
 « Screen turned right » veut dire que la face de l'écran regarde vers la droite : le bord droit
 recule. C'est ce que fait `right` [−12, 18, 2], vu d'en haut.
 
-### A.3 `follow-cursor` : une caméra en orbite
+### A.3 `orbit` : une caméra en orbite
 
 `crates/compositor/src/camera.rs`. **L'écran ne bouge pas** : c'est le plan z = 0 du monde, en
 px de sa boîte. **L'œil tourne autour de lui** sur une sphère et regarde toujours son point visé.
+
+**Le point qui la pose** : le mode de focus du zoom le choisit. En Auto, le pointeur lissé du
+cadreur (`camera::follow`, plus bas). En Manuel, le point de focus de la région, fixe
+(`camera::fixed`), comme un pointeur garé là : l'œil sur l'orbite de ce point, la visée bornée à
+la portée du zoom. Au centre, la caméra est presque de face (0° d'azimut, 4° d'élévation). Le
+manuel n'a pas besoin de piste : curseur masqué, la caméra reste posée.
 
 **Pourquoi une orbite.** La version précédente (pan-tilt-zoom : œil fixe, objectif de 12°, la
 caméra pivotait sur place) a été jugée « encore plus figée ». Depuis un œil fixe, tourner la caméra
@@ -119,12 +128,13 @@ impulsionnelle d'un ressort critique, `h(τ) = ω²·τ·e^(−ωτ)`, ω = 5 ra
 - Sur la vidéo de revue (8 s, zoom 1 puis 1,8) : azimut de −16° à +15°, élévation de −5° à +14°,
   au plus 1,8° d'azimut et 68 px de déplacement du centre par image à 30 i/s.
 
-Sans piste (curseur masqué : l'export ne la charge pas), la caméra vise le centre, au repos.
+En focus auto, curseur masqué, la caméra n'a pas de piste : elle vise le centre, au repos.
 
 **Ce qui suit la caméra** : l'écran (mode 8), son ombre (mode 12), le cadre de fenêtre (mode 14),
 le curseur plat (mode 13) et modélisé (mode 15), le flou de confidentialité (mode 10) et la
-profondeur de champ. La mise au point suit le **pointeur lissé**, pas le point visé : celui-ci reste
-au centre au zoom 1 et bute sur sa portée au zoom, alors que le spectateur regarde le pointeur.
+profondeur de champ. La mise au point suit le point qui pose l'œil (le **pointeur lissé** en auto,
+le point de focus en manuel), pas le point visé : celui-ci reste au centre au zoom 1 et bute sur
+sa portée au zoom, alors que le spectateur regarde le pointeur.
 L'ombre de l'écran tombe le long de la lumière de la flèche modélisée (haut-gauche). Une lampe posée
 sur la caméra éclaire un peu plus le côté proche : gain 0,2, soit ±4 % d'un bord à l'autre à 22°
 d'azimut (`CAMERA_LIGHT_GAIN`, 0,5 donnait ±10 % avec l'œil en orbite).
@@ -135,8 +145,8 @@ clip, clic visible, masque, vitesse, opacité du curseur), puis revient avec un 
 vidéo, l'écran perd 2 à 3 % de taille pendant deux images : un tapotement, pas un saut. C'est le
 réglage « Click impact » du curseur, le même sous toutes les caméras (A.1).
 
-Chaînée à un angle fixe, une région `follow-cursor` ne mélange jamais les deux modèles : la
-transition passe par l'écran droit à mi-course. Entre deux régions `follow-cursor`, le cadreur ne
+Chaînée à un angle fixe, une région `orbit` ne mélange jamais les deux modèles : la
+transition passe par l'écran droit à mi-course. Entre deux orbites en focus auto, le cadreur ne
 dépend pas de la région : l'orbite continue sans à-coup pendant que le zoom change.
 
 **Rendu exact.** Le warp bilinéaire s'écarte de la projection de cette caméra de
@@ -194,7 +204,7 @@ lointain.
 Le natif porte la preview **et** l'export (`sceneDescription` → `scene.rs`). Le seul autre
 consommateur de l'attitude est `getRotation3D` (`types.ts`), lu par
 `computeRotation3DContainScale` via `zoomRegionUtils` — la preview CSS (`VirtualPreview.tsx`) ne
-porte **aucun** tilt. Pour `follow-cursor`, `getRotation3D` rend la pose de repos de l'orbite
+porte **aucun** tilt. Pour `orbit`, `getRotation3D` rend la pose de repos de l'orbite
 (X = −4° : caméra 4° au-dessus, le bord haut vient vers nous) : le chemin canvas n'a ni la piste ni
 la caméra.
 

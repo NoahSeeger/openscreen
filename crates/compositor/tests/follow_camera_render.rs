@@ -1,4 +1,4 @@
-//! La caméra réelle de `follow-cursor` (l'orbite) rendue par le vrai compositeur D3D11.
+//! La caméra réelle de `orbit` (en focus auto) rendue par le vrai compositeur D3D11.
 //!
 //! Deux tests sans variable d'environnement, sur une frame NV12 SYNTHÉTIQUE (une grille, donc une
 //! géométrie connue au texel près ; sans adaptateur matériel, ils se sautent : « test saute ») :
@@ -134,7 +134,7 @@ fn grid_scene_dof(scale: f32, dof: bool) -> Scene {
                        "screenRect":{{"x":0.1,"y":0.1,"width":0.8,"height":0.8}}}},
             "effects":{{"padding":0.2,"blur":false,"shadow":0,"roundnessFrac":0.0,"motionBlur":0,"depthOfField":{dof}}},
             "background":{{"kind":"color","color":"#000000"}},
-            "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":"follow-cursor"}}],
+            "zoomRegions":[{{"clipIndex":0,"startSec":0,"endSec":10,"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"auto","rotation":"orbit"}}],
             "annotations":[],
             "cursor":{{"show":true,"size":0.05,"smoothing":0,"motionBlur":0,"clickBounce":0,"clipToBounds":false,"theme":"none"}},
             "cropByClip":[null],
@@ -390,7 +390,7 @@ fn orbit_scene(source: &str, regions: &str, (w, h): (u32, u32)) -> Scene {
 
 fn orbit_region(start: f32, end: f32, scale: f32) -> String {
     format!(
-        r#"{{"clipIndex":0,"startSec":{start},"endSec":{end},"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"manual","rotation":"follow-cursor"}}"#
+        r#"{{"clipIndex":0,"startSec":{start},"endSec":{end},"scale":{scale},"focusX":0.5,"focusY":0.5,"focusMode":"auto","rotation":"orbit"}}"#
     )
 }
 
