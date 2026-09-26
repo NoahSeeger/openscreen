@@ -763,7 +763,7 @@
 .transport {
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	gap: 12px;
 }
 .transport .tbtn {
 	width: 32px;
@@ -793,7 +793,7 @@
 	background: var(--fg-2);
 }
 .transport .time {
-	font: 500 13px/1 var(--font-body);
+	font: 500 14px/1 var(--font-body);
 	font-variant-numeric: tabular-nums;
 	color: var(--fg);
 	min-width: 104px;

@@ -1327,9 +1327,12 @@
 	border-bottom: 1px solid var(--border-soft);
 }
 .tlTools {
+	/* Both side groups take an equal share of the row, so the transport between
+	   them sits in its centre. */
+	flex: 1;
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	gap: 6px;
 }
 .tlToolBtn {
 	width: 32px;
@@ -1354,7 +1357,8 @@
 	color: var(--accent, var(--fg));
 }
 .tlHints {
-	margin-left: auto;
+	flex: 1;
+	justify-content: flex-end;
 	display: flex;
 	align-items: center;
 	gap: 10px;
