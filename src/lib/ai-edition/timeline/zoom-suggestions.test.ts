@@ -135,6 +135,39 @@ describe("buildAutoZoomSuggestions", () => {
 		expect(suggestions).toEqual([]);
 	});
 
+	it("keeps a tap whose release shares its press sample when the cursor hides later", () => {
+		// The take records mouse-ups, but the second tap was released within one sampler tick.
+		const suggestions = buildAutoZoomSuggestions({
+			cursorTelemetry: [
+				{ ...click(500, 0.8, 0.2), visible: true },
+				{ timeMs: 600, cx: 0.8, cy: 0.2, visible: true, interactionType: "mouseup" },
+				{ ...click(3000, 0.2, 0.8), visible: true },
+				{ timeMs: 3500, cx: 0.2, cy: 0.8, visible: false, interactionType: "move" },
+			],
+			totalMs: 6000,
+			existingRegions: [],
+			defaultDurationMs: 1000,
+		});
+		expect(suggestions.map((suggestion) => suggestion.focus)).toEqual([
+			{ cx: 0.8, cy: 0.2 },
+			{ cx: 0.2, cy: 0.8 },
+		]);
+	});
+
+	it("keeps a click whose mouse-up sample is already hidden", () => {
+		// Released, then typing hid the pointer before the next sampler tick.
+		const suggestions = buildAutoZoomSuggestions({
+			cursorTelemetry: [
+				{ ...click(1000, 0.5, 0.5), visible: true },
+				{ timeMs: 1033, cx: 0.5, cy: 0.5, visible: false, interactionType: "mouseup" },
+			],
+			totalMs: 4000,
+			existingRegions: [],
+			defaultDurationMs: 1000,
+		});
+		expect(suggestions.map((suggestion) => suggestion.focus)).toEqual([{ cx: 0.5, cy: 0.5 }]);
+	});
+
 	it("does not join visible samples across a hidden interval into a dwell", () => {
 		const suggestions = buildAutoZoomSuggestions({
 			cursorTelemetry: [
