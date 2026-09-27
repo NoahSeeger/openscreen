@@ -78,10 +78,16 @@ const DOC: AxcutDocument = {
 	legacyEditor: { aspectRatio: "16:9" },
 };
 
-function renderDialog() {
+/** A 640x360 recording: both fixed tiers, 720p and 1080p, are bigger than it. */
+const SMALL_SOURCE_DOC: AxcutDocument = {
+	...DOC,
+	assets: [{ ...DOC.assets[0], video: { codec: "h264", width: 640, height: 360, fps: 60 } }],
+};
+
+function renderDialog(document: AxcutDocument = DOC) {
 	render(
 		<I18nProvider>
-			<ExportDialog open={true} onClose={noop} document={DOC} />
+			<ExportDialog open={true} onClose={noop} document={document} />
 		</I18nProvider>,
 	);
 }
@@ -93,6 +99,15 @@ async function exportMp4() {
 	const params = vi.mocked(exportMultiNative).mock.calls.at(-1)?.[3];
 	await screen.findByTestId("export-show-in-folder");
 	return params;
+}
+
+/** Same for a GIF, counting calls so a run of exports cannot read the previous one's params. */
+async function exportGif() {
+	const calls = vi.mocked(exportGifNative).mock.calls.length;
+	fireEvent.click(screen.getByRole("button", { name: /export gif/i }));
+	await waitFor(() => expect(exportGifNative).toHaveBeenCalledTimes(calls + 1));
+	await screen.findByTestId("export-show-in-folder");
+	return vi.mocked(exportGifNative).mock.calls[calls][3];
 }
 
 describe("ExportDialog MP4 params", () => {
@@ -189,5 +204,34 @@ describe("ExportDialog destinations", () => {
 			fps: 15,
 			loopCount: 0,
 		});
+	});
+
+	it("sizes README GIF from the source, whatever MP4 tier was picked before", async () => {
+		// The report on #814: a 640x360 clip got an 852x480 GIF straight away, sized from the hidden
+		// 1080p tier the dialog opens on, and a 640x360 one after Studio, whose tier is "Source".
+		renderDialog(SMALL_SOURCE_DOC);
+		fireEvent.click(destination(/README GIF/));
+		expect(destination(/README GIF/)).toHaveTextContent("GIF · 640 × 360 · 15 fps");
+		const direct = await exportGif();
+		expect(direct).toMatchObject({ width: 640, height: 360 });
+
+		fireEvent.click(destination(/Studio/));
+		fireEvent.click(destination(/README GIF/));
+		expect(destination(/README GIF/)).toHaveTextContent("GIF · 640 × 360 · 15 fps");
+		expect(await exportGif()).toEqual(direct);
+	});
+
+	it("never exports a GIF bigger than its source, whatever the tier and size preset", async () => {
+		renderDialog(SMALL_SOURCE_DOC);
+		fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+		for (const tier of [/^720p/, /^1080p/, /^Source/]) {
+			fireEvent.click(screen.getByRole("button", { name: "MP4" }));
+			fireEvent.click(screen.getByRole("button", { name: tier }));
+			fireEvent.click(screen.getByRole("button", { name: "GIF" }));
+			for (const size of ["Small (480p)", "Medium (720p)", "Large (1080p)", "Original"]) {
+				fireEvent.click(screen.getByRole("button", { name: size }));
+				expect(await exportGif()).toMatchObject({ width: 640, height: 360 });
+			}
+		}
 	});
 });

@@ -248,8 +248,8 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 	);
 	// (The "largest clip" pick lived here for the old renderer-side GIF path, which
 	// sized to the best available footage independently of the quality tier. GIF now
-	// goes through the same native exporter as MP4 and shares its sizing, so only the
-	// smallest-clip pick below is still needed.)
+	// goes through the same native exporter as MP4 and starts from its "Source" size, so
+	// only the smallest-clip pick below is still needed.)
 
 	// Smallest clip's true (cropped) footprint on the timeline — a multiclip timeline can mix
 	// crops/resolutions, so this is what "Source" quality actually targets: sizing to the
@@ -280,25 +280,6 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 	// quality actually uses these as its target size; 720p/1080p target a fixed short side
 	// regardless (`calculateDimensionsForShortSide`), so this only changes what "Source"
 	// resolves to.
-	// GIF is 8-bit indexed and grows fast with area, so the size preset caps the
-	// output height rather than following the quality tier. `original` keeps the
-	// tier's dims; the native side falls back to its own defaults when undefined.
-	const gifOutputDims = (
-		preset: GifSizePreset,
-		tierDims: { width: number; height: number } | null,
-	): { width?: number; height?: number } => {
-		if (!tierDims) return {};
-		const maxHeight = GIF_SIZE_PRESETS[preset].maxHeight;
-		if (!Number.isFinite(maxHeight) || tierDims.height <= maxHeight) {
-			return { width: tierDims.width, height: tierDims.height };
-		}
-		const scale = maxHeight / tierDims.height;
-		// Even dimensions: the compositor rasterises to this size and the readback
-		// assumes a tightly-packed RGBA buffer.
-		const even = (n: number) => Math.max(2, Math.round(n * scale) & ~1);
-		return { width: even(tierDims.width), height: even(tierDims.height) };
-	};
-
 	const tierOutputDims = (value: ExportQuality) =>
 		smallestSource
 			? calculateMp4ExportSettings({
@@ -309,6 +290,26 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 					frameRate: fps,
 				})
 			: null;
+
+	// GIF is 8-bit indexed and grows fast with area, so the size preset caps the output
+	// height. It starts from the "Source" size, never from the quality tier: that control is
+	// MP4-only and hidden while GIF is picked, yet the tier an MP4 choice left behind used to
+	// size the GIF (a 640x360 clip gave 852x480 after Web / YouTube, 640x360 after Studio).
+	// So no preset upscales and `original` is the source size. The native side falls back
+	// to its own defaults when undefined.
+	const gifOutputDims = (preset: GifSizePreset): { width?: number; height?: number } => {
+		const source = tierOutputDims("source");
+		if (!source) return {};
+		const maxHeight = GIF_SIZE_PRESETS[preset].maxHeight;
+		if (source.height <= maxHeight) {
+			return { width: source.width, height: source.height };
+		}
+		const scale = maxHeight / source.height;
+		// Even dimensions: the compositor rasterises to this size and the readback
+		// assumes a tightly-packed RGBA buffer.
+		const even = (n: number) => Math.max(2, Math.round(n * scale) & ~1);
+		return { width: even(source.width), height: even(source.height) };
+	};
 
 	useEffect(() => {
 		if (!open) {
@@ -456,9 +457,7 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 								pickedPath,
 								sceneJson,
 								{
-									// GIF is 256-colour and grows fast; cap the long edge at the
-									// chosen preset rather than exporting at source size.
-									...gifOutputDims(gifSize, outDims),
+									...gifOutputDims(gifSize),
 									fps: gifFrameRate,
 									// 0 = infinite, the historical GIF default; 1 = play once.
 									loopCount: gifLoop ? 0 : 1,
@@ -536,12 +535,12 @@ export function ExportDialog({ open, onClose, document }: ExportDialogProps) {
 	};
 	/** What a destination produces, in the numbers the Advanced settings show. */
 	const destinationSummary = (set: Partial<ExportChoice>) => {
-		const dims = tierOutputDims(set.quality ?? quality);
 		if (set.format === "gif") {
-			const gif = gifOutputDims(set.gifSize ?? gifSize, dims);
+			const gif = gifOutputDims(set.gifSize ?? gifSize);
 			const size = gif.width ? `${gif.width} × ${gif.height} · ` : "";
 			return `GIF · ${size}${set.gifFrameRate ?? gifFrameRate} fps`;
 		}
+		const dims = tierOutputDims(set.quality ?? quality);
 		const size = dims ? `${dims.width} × ${dims.height} · ` : "";
 		return `MP4 · ${size}${set.fps ?? fps} fps`;
 	};
