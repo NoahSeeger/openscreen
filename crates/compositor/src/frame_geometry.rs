@@ -3451,9 +3451,6 @@ pub fn cursor_alpha(
     if !scene.map(|s| s.cursor.show).unwrap_or(cfg.cursor) {
         return 0.0;
     }
-    if !track.visible_at(t) {
-        return 0.0;
-    }
     let idle_alpha = track.opacity_at(t, live.cursor_auto_hide);
     let zoom_alpha = match scene {
         Some(s) => {
@@ -3482,6 +3479,9 @@ pub fn cursor_plane_point(cut: [f32; 4], uv_max: [f32; 2], p: (f32, f32)) -> Opt
 ///
 /// - curseur visible (`cursor_alpha`) : `cursor.show` explicite, la piste étant chargée même
 ///   curseur masqué (le focus auto la suit) ;
+/// - curseur caché par l'application (`visible: false`) : ses clics ne sont pas chargés
+///   (`CursorTrack::load`). Un clic visible va au bout même si le pointeur disparaît juste après
+///   (un glisser sur un champ numérique) : le couper là ferait sauter l'écran en plein creux ;
 /// - clics dans la fenêtre source du clip actif seulement (cf. `click_impact`) ;
 /// - vitesse : poids `clamp(2 − vitesse, 0, 1)`. À 100× une frame couvre 3,3 s de source, la
 ///   courbe serait échantillonnée une fois, au hasard : une secousse d'une frame ;
@@ -3523,6 +3523,11 @@ fn click_impact_at(
 pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorPlan> {
     let (rw, rh) = (input.render_px[0], input.render_px[1]);
 
+    // Caché par l'application (`visible: false`) : rien de ce plan n'est dessiné, ni le sprite,
+    // ni le modèle et son ombre, ni l'anneau d'un clic. Les trois backends passent tous par ici.
+    if !input.track.visible_at(input.t) {
+        return None;
+    }
     let alpha = cursor_alpha(input.scene, input.cfg, &input.live, input.track, input.t);
     if alpha <= 0.001 {
         return None;
@@ -3613,12 +3618,18 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
 
     let blur01 = lp.cursor_motion_blur.clamp(0.0, 1.0);
     let has_scene = input.scene.is_some();
+    // La traînée ne remonte pas dans une phase cachée : à sa réapparition, le curseur ne vient pas
+    // de là où il était caché.
+    let trail_from = |t: f32| {
+        let prev = if input.track.visible_at(t) { place(at(t), g.s_dst_prev) } else { None };
+        prev.unwrap_or(placement)
+    };
     let (taps, prev_placement) = if !has_scene {
         let taps = input.cfg.mblur_n;
         let prev = if taps <= 1 {
             placement
         } else {
-            place(at(input.t - 1.0 / FPS), g.s_dst_prev).unwrap_or(placement)
+            trail_from(input.t - 1.0 / FPS)
         };
         (taps, prev)
     } else if blur01 <= 0.001 {
@@ -3626,7 +3637,7 @@ pub fn plan_cursor(g: &FrameGeometry, input: &CursorPlanInput) -> Option<CursorP
     } else {
         // Intervalle d'obturateur court, borné à 1 frame (100% blur = 1 frame d'exposition)
         let trail_dt = blur01 / FPS;
-        let prev = place(at(input.t - trail_dt), g.s_dst_prev).unwrap_or(placement);
+        let prev = trail_from(input.t - trail_dt);
         let c_now = placement.upright_center();
         let c_prev = prev.upright_center();
         let dist_px = ((c_now[0] - c_prev[0]) * rw).hypot((c_now[1] - c_prev[1]) * rh);
@@ -6603,6 +6614,33 @@ mod tests {
         }
     }
 
+    /// Un clic visible dont le pointeur disparaît juste après (un glisser sur un champ numérique)
+    /// garde tout son impact : l'éteindre au masquage ferait sauter l'écran en plein creux.
+    #[test]
+    fn a_click_hidden_right_after_keeps_its_impact() {
+        let cfg = crate::config::all().pop().expect("au moins une config");
+        let samples: Vec<_> = (0..=90).map(|i| (i as f32 / 30.0, 0.6, 0.3)).collect();
+        let track = |visibility| -> &'static crate::cursor::CursorTrack {
+            Box::leak(Box::new(crate::cursor::CursorTrack::new_with_visibility(
+                samples.clone(),
+                vec![1.45],
+                vec![],
+                visibility,
+            )))
+        };
+        let json = zoomed_golden_scene_json()
+            .replace(r#""rotation":"none""#, r#""rotation":"iso""#)
+            .replace(r#""cursor":{"#, r#""cursor":{"clickImpact":true,"#);
+        let scene = Scene::from_json(&json).expect("scène");
+        let tilt = |track| {
+            plan_frame(&FrameGeometryInput { cursor: Some(track), ..golden_input(&scene, &cfg) })
+                .zoom_rotation_dyn
+        };
+        let on = tilt(track(vec![]));
+        assert!(on[1] > 0.75 * crate::regions::CLICK_IMPACT_DEG, "garde : {on:?}");
+        assert_eq!(tilt(track(vec![(0.0, true), (1.48, false)])), on);
+    }
+
     /// L'orbite en focus auto passe par `plan_frame` : l'écran n'est pas incliné, la caméra vise et tourne
     /// avec le pointeur lu dans le RECADRAGE, la boîte zoome sur son centre sans glisser, la mise au
     /// point suit la visée, un clic fait reculer l'œil sans presser l'écran, et curseur masqué
@@ -8347,6 +8385,51 @@ mod tests {
         assert_eq!(cpu.taps, 1);
         assert_eq!(cpu.prev_placement.upright_center(), cpu.placement.upright_center());
         assert_eq!(plan(false).for_backend(true).taps, plan(false).taps, "le sprite plat garde sa traînée");
+    }
+
+    /// Caché par l'application (`visible: false`), le curseur ne dessine rien, sprite plat comme
+    /// modèle (ombre et anneau compris), et sa traînée ne remonte pas dans la phase cachée à la
+    /// réapparition : il y filait à droite, il réapparaît là où il avait cliqué.
+    #[test]
+    fn a_hidden_phase_draws_no_cursor_and_no_trail_into_it() {
+        let scene = model_scene();
+        let cfg = crate::config::all().pop().expect("cfg");
+        let fg = full_frame_geometry();
+        let track = crate::cursor::CursorTrack::new_with_visibility(
+            vec![(0.0, 0.3, 0.6), (1.0, 0.3, 0.6), (1.1, 0.35, 0.6), (1.467, 0.9, 0.6), (1.5, 0.3, 0.6), (3.0, 0.3, 0.6)],
+            vec![1.0],
+            vec![],
+            vec![(0.0, true), (1.1, false), (1.5, true)],
+        );
+        let plan = |model3d: bool, t: f32| {
+            plan_cursor(
+                &fg,
+                &CursorPlanInput {
+                    render_px: [1920.0, 1080.0],
+                    u_max: 1.0,
+                    v_max: 1.0,
+                    cfg: &cfg,
+                    live: LiveParams {
+                        cursor_model3d: model3d,
+                        cursor_bounce_scale: MODEL_CLICK_BOUNCE_REF,
+                        cursor_motion_blur: 1.0,
+                        ..LiveParams::default()
+                    },
+                    scene: Some(&scene),
+                    track: &track,
+                    t,
+                },
+            )
+        };
+        for model3d in [false, true] {
+            assert!(plan(model3d, 1.05).is_some(), "model3d {model3d} : visible avant");
+            for t in [1.1, 1.2, 1.4, 1.49] {
+                assert!(plan(model3d, t).is_none(), "model3d {model3d} : dessiné caché à {t} s");
+            }
+            let back = plan(model3d, 1.505).expect("réapparu");
+            assert_eq!(back.taps, 1, "model3d {model3d} : traînée venue de la phase cachée");
+        }
+        assert!(!plan(true, 1.08).expect("visible").impacts.is_empty(), "garde : l'anneau du clic");
     }
 
     /// Sous un angle fixe, l'écran tourne autour du centre de sa boîte ZOOMÉE, réduit de son

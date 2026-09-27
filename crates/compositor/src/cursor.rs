@@ -142,7 +142,7 @@ impl CursorTrack {
         CursorTrack::new_with_visibility(samples, clicks, types, Vec::new())
     }
 
-    fn new_with_visibility(
+    pub(crate) fn new_with_visibility(
         samples: Vec<(f32, f32, f32)>,
         clicks: Vec<f32>,
         types: Vec<(f32, String)>,
@@ -203,8 +203,10 @@ impl CursorTrack {
             let tm = s["timeMs"].as_f64().unwrap_or(-1.0);
             if tm >= 0.0 && tm <= offset_ms && tm >= visibility_sample_time {
                 visibility_sample_time = tm;
-                visibility_at_offset =
-                    s.get("visible").and_then(|value| value.as_bool()).unwrap_or(true);
+                visibility_at_offset = s
+                    .get("visible")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true);
             }
         }
         let mut visibility = vec![(0.0, visibility_at_offset)];
@@ -218,7 +220,10 @@ impl CursorTrack {
             let cx = s["cx"].as_f64().unwrap_or(0.0) as f32;
             let cy = s["cy"].as_f64().unwrap_or(0.0) as f32;
             samples.push((t, cx, cy));
-            let visible = s.get("visible").and_then(|value| value.as_bool()).unwrap_or(true);
+            let visible = s
+                .get("visible")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
             if visibility.last().map(|(_, previous)| *previous) != Some(visible) {
                 visibility.push((t, visible));
             }
@@ -246,7 +251,9 @@ impl CursorTrack {
         clicks.sort_by(|a, b| a.partial_cmp(b).unwrap());
         types.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         visibility.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        Ok(CursorTrack::new_with_visibility(samples, clicks, types, visibility))
+        Ok(CursorTrack::new_with_visibility(
+            samples, clicks, types, visibility,
+        ))
     }
 
     /// Position lissée au temps `t`, pour le suivi auto du zoom. La télémétrie brute est
@@ -519,7 +526,10 @@ impl CursorTrack {
         CursorTrack {
             click_points: self.click_points.clone(),
             ..CursorTrack::new_with_visibility(
-                samples, self.clicks.clone(), self.types.clone(), self.visibility.clone(),
+                samples,
+                self.clicks.clone(),
+                self.types.clone(),
+                self.visibility.clone(),
             )
         }
     }
@@ -832,7 +842,9 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let path = std::env::temp_dir().join(format!(
-            "openscreen-cursor-visibility-{}-{}.json", std::process::id(), unique
+            "openscreen-cursor-visibility-{}-{}.json",
+            std::process::id(),
+            unique
         ));
         std::fs::write(
             &path,
@@ -852,13 +864,29 @@ mod tests {
         assert!(!track.visible_at(0.1));
         assert!(!track.visible_at(0.59));
         assert!(track.visible_at(0.6));
-        assert_eq!(track.clicks, vec![0.6], "le clic masqué ne doit pas animer le curseur");
-        assert!(!clipped.visible_at(0.0), "la fenêtre commence dans la phase masquée");
-        assert!(!clipped.visible_at(0.39), "l'état masqué tient jusqu'à la transition");
-        assert!(clipped.visible_at(0.4), "la transition visible garde son temps relatif");
+        assert_eq!(
+            track.clicks,
+            vec![0.6],
+            "le clic masqué ne doit pas animer le curseur"
+        );
+        assert!(
+            !clipped.visible_at(0.0),
+            "la fenêtre commence dans la phase masquée"
+        );
+        assert!(
+            !clipped.visible_at(0.39),
+            "l'état masqué tient jusqu'à la transition"
+        );
+        assert!(
+            clipped.visible_at(0.4),
+            "la transition visible garde son temps relatif"
+        );
 
         let smoothed = track.smoothed(0.5);
-        assert!(!smoothed.visible_at(0.3), "le lissage garde la phase masquée");
+        assert!(
+            !smoothed.visible_at(0.3),
+            "le lissage garde la phase masquée"
+        );
         assert!(smoothed.visible_at(0.6));
         let reappeared = smoothed.at(0.6).expect("position at reappearance");
         assert!(
