@@ -75,7 +75,7 @@ OpenScreen は、Windows、macOS、Linux に対応した、MIT ライセンス�
 ## winget、Homebrew、Flathub で OpenScreen をインストールできますか？ {#can-i-install-openscreen-with-winget-homebrew-or-flathub}
 
 - **winget：** はい。Store のソース経由でインストールできます（`winget install --source msstore OpenScreen`）。
-- **Homebrew：** 公式の cask はありません。2026 年 9 月時点で、元のプロジェクトの `siddharthvaddem/openscreen` tap は、まだバージョン 1.5.0 に固定されています。代わりに[ダウンロードページ](/download/)の `.dmg` を使ってください。
+- **Homebrew：** はい。公式の tap からインストールできます（`brew install --cask getopenscreen/openscreen/openscreen`）。安定版のリリースごとに cask が更新されます。
 - **Flathub：** 掲載されていません。
 
 ## これは元の OpenScreen プロジェクトですか？ {#is-this-the-original-openscreen-project}
@@ -128,7 +128,7 @@ Windows と macOS では、ネイティブのレコーダーが 1 秒単位の�
 2026 年 9 月に確認：
 
 - 元のリポジトリとそのアーカイブの告知：[github.com/siddharthvaddem/openscreen](https://github.com/siddharthvaddem/openscreen)
-- 元のプロジェクトの Homebrew tap：[github.com/siddharthvaddem/homebrew-openscreen](https://github.com/siddharthvaddem/homebrew-openscreen)
+- 公式の Homebrew tap：[github.com/getopenscreen/homebrew-openscreen](https://github.com/getopenscreen/homebrew-openscreen)
 - Open Screen：[openscreen.io](https://openscreen.io/)
 
 Open Screen、Loom、OBS Studio、およびこのページに記載のその他の製品名は、各所有者の商標です。OpenScreen は、Open Screen（openscreen.io）、Loom、OBS Studio のいずれとも提携していません。

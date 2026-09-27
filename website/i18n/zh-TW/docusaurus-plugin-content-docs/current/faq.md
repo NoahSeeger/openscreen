@@ -75,7 +75,7 @@ OpenScreen 是一款採用 MIT 授權的免費螢幕錄影與影片剪輯軟體�
 ## 可以用 winget、Homebrew 或 Flathub 安裝 OpenScreen 嗎？ {#can-i-install-openscreen-with-winget-homebrew-or-flathub}
 
 - **winget：** 可以，透過 Store 來源安裝：`winget install --source msstore OpenScreen`。
-- **Homebrew：** 沒有官方的 cask。截至 2026 年 9 月，原始專案的 `siddharthvaddem/openscreen` tap 仍固定在 1.5.0 版。請改用[下載頁面](/download/)上的 `.dmg`。
+- **Homebrew：** 可以，透過官方 tap 安裝：`brew install --cask getopenscreen/openscreen/openscreen`。每次發布穩定版都會更新這個 cask。
 - **Flathub：** 沒有上架。
 
 ## 這是原始的 OpenScreen 專案嗎？ {#is-this-the-original-openscreen-project}
@@ -128,7 +128,7 @@ OpenScreen 是一款採用 MIT 授權的免費螢幕錄影與影片剪輯軟體�
 2026 年 9 月查證：
 
 - 原始儲存庫與其封存公告：[github.com/siddharthvaddem/openscreen](https://github.com/siddharthvaddem/openscreen)
-- 原始專案的 Homebrew tap：[github.com/siddharthvaddem/homebrew-openscreen](https://github.com/siddharthvaddem/homebrew-openscreen)
+- 官方 Homebrew tap：[github.com/getopenscreen/homebrew-openscreen](https://github.com/getopenscreen/homebrew-openscreen)
 - Open Screen：[openscreen.io](https://openscreen.io/)
 
 Open Screen、Loom、OBS Studio 以及本頁提到的其他產品名稱，均為其各自所有者的商標。OpenScreen 與 Open Screen（openscreen.io）、Loom 或 OBS Studio 均無關聯。

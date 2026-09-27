@@ -75,7 +75,7 @@ A [Instalação](./installation.md) traz os passos para cada plataforma.
 ## Posso instalar o OpenScreen com winget, Homebrew ou Flathub? {#can-i-install-openscreen-with-winget-homebrew-or-flathub}
 
 - **winget:** sim, pela fonte da Store: `winget install --source msstore OpenScreen`.
-- **Homebrew:** não há cask oficial. Em setembro de 2026, o tap `siddharthvaddem/openscreen` do projeto original ainda está fixado na versão 1.5.0. Em vez disso, use o `.dmg` da [página de download](/download/).
+- **Homebrew:** sim, pelo tap oficial: `brew install --cask getopenscreen/openscreen/openscreen`. Cada versão estável atualiza o cask.
 - **Flathub:** o OpenScreen não está listado.
 
 ## Este é o projeto OpenScreen original? {#is-this-the-original-openscreen-project}
@@ -128,7 +128,7 @@ Se você precisa de algum destes itens, o OpenScreen não é a ferramenta certa:
 Verificadas em setembro de 2026:
 
 - Repositório original e seu aviso de arquivamento: [github.com/siddharthvaddem/openscreen](https://github.com/siddharthvaddem/openscreen)
-- Tap do Homebrew do projeto original: [github.com/siddharthvaddem/homebrew-openscreen](https://github.com/siddharthvaddem/homebrew-openscreen)
+- Tap oficial do Homebrew: [github.com/getopenscreen/homebrew-openscreen](https://github.com/getopenscreen/homebrew-openscreen)
 - Open Screen: [openscreen.io](https://openscreen.io/)
 
 Open Screen, Loom, OBS Studio e os demais nomes de produtos nesta página são marcas de seus respectivos proprietários. O OpenScreen não tem vínculo com o Open Screen (openscreen.io), o Loom nem o OBS Studio.
